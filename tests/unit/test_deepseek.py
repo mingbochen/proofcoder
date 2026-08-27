@@ -18,6 +18,20 @@ REASONING_SENTINEL = "internal-reasoning-must-stay-private"
 class _FakeMessage:
     content: str | None
     reasoning_content: str | None
+    tool_calls: list[_FakeToolCall] | None = None
+
+
+@dataclass
+class _FakeToolFunction:
+    name: str
+    arguments: str
+
+
+@dataclass
+class _FakeToolCall:
+    id: str
+    type: str
+    function: _FakeToolFunction
 
 
 @dataclass
@@ -114,6 +128,7 @@ def test_request_contract_and_response_normalization() -> None:
     assert completions.request["reasoning_effort"] == "high"
     assert completions.request["extra_body"] == {"thinking": {"type": "enabled"}}
     assert completions.request["messages"] == [{"role": "user", "content": "hello"}]
+    assert "tools" not in completions.request
     for forbidden in (
         "temperature",
         "top_p",
@@ -129,6 +144,66 @@ def test_request_contract_and_response_normalization() -> None:
     assert result.usage.prompt_tokens == 5
     assert result.usage.completion_tokens == 7
     assert result.usage.total_tokens == 12
+
+
+def test_tools_request_and_multiple_tool_calls_are_preserved() -> None:
+    raw_arguments = '{ "path": ".", "max_depth": 1 }'
+    response = _FakeResponse(
+        choices=[
+            _FakeChoice(
+                message=_FakeMessage(
+                    content=None,
+                    reasoning_content=REASONING_SENTINEL,
+                    tool_calls=[
+                        _FakeToolCall(
+                            id="call-1",
+                            type="function",
+                            function=_FakeToolFunction(
+                                name="list_files",
+                                arguments=raw_arguments,
+                            ),
+                        ),
+                        _FakeToolCall(
+                            id="call-2",
+                            type="function",
+                            function=_FakeToolFunction(
+                                name="list_files",
+                                arguments="{}",
+                            ),
+                        ),
+                    ],
+                ),
+                finish_reason="tool_calls",
+            )
+        ],
+        usage=None,
+    )
+    completions = _FakeCompletions(response)
+    client = DeepSeekClient(
+        _config(),
+        client=_FakeOpenAIClient(_FakeChat(completions)),
+    )
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "list_files",
+                "description": "list",
+                "parameters": {"type": "object"},
+            },
+        }
+    ]
+
+    result = client.complete([{"role": "user", "content": "list"}], tools)
+
+    assert completions.request is not None
+    assert completions.request["tools"] == tools
+    assert completions.request["max_tokens"] == 1024
+    assert "strict" not in completions.request["tools"][0]["function"]
+    assert [call.id for call in result.tool_calls] == ["call-1", "call-2"]
+    assert result.tool_calls[0].function.name == "list_files"
+    assert result.tool_calls[0].function.arguments == raw_arguments
+    assert result.reasoning_content == REASONING_SENTINEL
 
 
 def test_connectivity_check_uses_minimal_message() -> None:

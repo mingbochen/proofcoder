@@ -15,7 +15,8 @@ from rich.console import Console
 import proofcoder.cli as cli
 from proofcoder.config import ProofCoderConfig
 from proofcoder.errors import DeepSeekAPIError
-from proofcoder.protocol import ModelResponse
+from proofcoder.llm.scripted import ScriptedClient
+from proofcoder.protocol import FunctionCall, ModelResponse, ToolCall
 
 SENSITIVE_SENTINEL = "never-print-this-value"
 REASONING_SENTINEL = "internal-reasoning-must-stay-private"
@@ -197,3 +198,121 @@ def test_help_is_available_from_both_entry_points(module_entry: bool) -> None:
 
     assert result.returncode == 0
     assert "doctor" in result.stdout
+    assert "run" in result.stdout
+
+
+def _scripted_response(
+    *,
+    content: str | None = None,
+    calls: tuple[ToolCall, ...] = (),
+) -> ModelResponse:
+    return ModelResponse(
+        content=content,
+        reasoning_content=REASONING_SENTINEL,
+        finish_reason="tool_calls" if calls else "stop",
+        usage=None,
+        tool_calls=calls,
+    )
+
+
+def _list_call(call_id: str = "list-1") -> ToolCall:
+    return ToolCall(
+        id=call_id,
+        function=FunctionCall(name="list_files", arguments="{}"),
+    )
+
+
+def test_run_cli_uses_scripted_client_and_hides_reasoning(tmp_path: Path) -> None:
+    (tmp_path / "visible.py").write_text("", encoding="utf-8")
+    scripted = ScriptedClient(
+        [
+            _scripted_response(calls=(_list_call(),)),
+            _scripted_response(content="Workspace listed."),
+        ]
+    )
+    stream = io.StringIO()
+    console = Console(file=stream, force_terminal=False, color_system=None, width=200)
+
+    code = cli.main(
+        ["run", "--workspace", str(tmp_path), "inspect"],
+        environ={"DEEPSEEK_API_KEY": SENSITIVE_SENTINEL},
+        cwd=tmp_path,
+        console=console,
+        run_client_factory=lambda config: scripted,
+    )
+    output = stream.getvalue()
+
+    assert code == 0
+    for label in ("TASK:", "MODEL:", "TOOL:", "RESULT:", "DONE:"):
+        assert label in output
+    assert "termination=model_stopped" in output
+    assert "verified" not in output
+    assert REASONING_SENTINEL not in output
+    assert SENSITIVE_SENTINEL not in output
+
+
+def test_run_cli_max_steps_has_distinct_exit_code(tmp_path: Path) -> None:
+    scripted = ScriptedClient([_scripted_response(calls=(_list_call(),))])
+    stream = io.StringIO()
+
+    code = cli.main(
+        ["run", "--workspace", str(tmp_path), "--max-steps", "1", "inspect"],
+        environ={"DEEPSEEK_API_KEY": SENSITIVE_SENTINEL},
+        cwd=tmp_path,
+        console=Console(file=stream, force_terminal=False, color_system=None),
+        run_client_factory=lambda config: scripted,
+    )
+
+    assert code == 3
+    assert "termination=max_steps" in stream.getvalue()
+
+
+def test_run_cli_rejects_missing_workspace_without_model_call(tmp_path: Path) -> None:
+    called = False
+
+    def forbidden(config: ProofCoderConfig) -> ScriptedClient:
+        nonlocal called
+        called = True
+        return ScriptedClient([])
+
+    stream = io.StringIO()
+    code = cli.main(
+        ["run", "--workspace", "missing", "inspect"],
+        environ={"DEEPSEEK_API_KEY": SENSITIVE_SENTINEL},
+        cwd=tmp_path,
+        console=Console(file=stream, force_terminal=False, color_system=None),
+        run_client_factory=forbidden,
+    )
+
+    assert code == 2
+    assert called is False
+    assert "termination=invalid_workspace" in stream.getvalue()
+
+
+def test_run_cli_script_exhaustion_is_api_error(tmp_path: Path) -> None:
+    scripted = ScriptedClient([_scripted_response(calls=(_list_call(),))])
+    stream = io.StringIO()
+
+    code = cli.main(
+        ["run", "--workspace", str(tmp_path), "--max-steps", "2", "inspect"],
+        environ={"DEEPSEEK_API_KEY": SENSITIVE_SENTINEL},
+        cwd=tmp_path,
+        console=Console(file=stream, force_terminal=False, color_system=None),
+        run_client_factory=lambda config: scripted,
+    )
+
+    assert code == 1
+    assert "termination=api_error" in stream.getvalue()
+
+
+def test_run_help_is_available_without_configuration() -> None:
+    result = subprocess.run(
+        [sys.executable, "-m", "proofcoder", "run", "--help"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    assert "--workspace" in result.stdout
+    assert "--max-steps" in result.stdout

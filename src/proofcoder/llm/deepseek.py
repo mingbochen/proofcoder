@@ -9,7 +9,8 @@ from openai import OpenAI
 
 from proofcoder.config import ProofCoderConfig
 from proofcoder.errors import ConfigurationError, DeepSeekAPIError
-from proofcoder.protocol import ModelResponse, TokenUsage
+from proofcoder.llm.base import ChatMessagePayload, ToolSchema
+from proofcoder.protocol import FunctionCall, ModelResponse, TokenUsage, ToolCall
 
 
 class _CompletionsAPI(Protocol):
@@ -25,7 +26,6 @@ class _OpenAIClient(Protocol):
 
 
 _ClientFactory = Callable[..., _OpenAIClient]
-_Message = Mapping[str, str]
 _DEFAULT_CLIENT_FACTORY = cast(_ClientFactory, OpenAI)
 
 
@@ -56,18 +56,25 @@ class DeepSeekClient:
                     "DeepSeek API client initialization failed; check the endpoint configuration."
                 ) from None
 
-    def complete(self, messages: Sequence[_Message]) -> ModelResponse:
+    def complete(
+        self,
+        messages: Sequence[ChatMessagePayload],
+        tools: Sequence[ToolSchema] = (),
+    ) -> ModelResponse:
         """Make one Chat Completions request and normalize its response."""
 
+        request: dict[str, object] = {
+            "model": self._config.model,
+            "messages": list(messages),
+            "stream": False,
+            "reasoning_effort": self._config.reasoning_effort,
+            "extra_body": {"thinking": {"type": "enabled"}},
+            "max_tokens": 1024 if tools else 16,
+        }
+        if tools:
+            request["tools"] = list(tools)
         try:
-            response = self._client.chat.completions.create(
-                model=self._config.model,
-                messages=list(messages),
-                stream=False,
-                reasoning_effort=self._config.reasoning_effort,
-                extra_body={"thinking": {"type": "enabled"}},
-                max_tokens=16,
-            )
+            response = self._client.chat.completions.create(**request)
         except Exception:
             raise DeepSeekAPIError(
                 "DeepSeek API request failed; check credentials, endpoint, and network."
@@ -105,7 +112,32 @@ def _normalize_response(response: object) -> ModelResponse:
         reasoning_content=_optional_text(_field(message, "reasoning_content")),
         finish_reason=_optional_text(_field(choice, "finish_reason")),
         usage=usage,
+        tool_calls=_normalize_tool_calls(_field(message, "tool_calls")),
     )
+
+
+def _normalize_tool_calls(value: object | None) -> tuple[ToolCall, ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        raise DeepSeekAPIError("DeepSeek API returned an invalid response.")
+
+    normalized: list[ToolCall] = []
+    for raw_call in value:
+        function = _field(raw_call, "function")
+        if function is None:
+            raise DeepSeekAPIError("DeepSeek API returned an invalid response.")
+        normalized.append(
+            ToolCall(
+                id=_required_text(_field(raw_call, "id")),
+                type=_required_text(_field(raw_call, "type")),
+                function=FunctionCall(
+                    name=_required_text(_field(function, "name")),
+                    arguments=_required_text(_field(function, "arguments")),
+                ),
+            )
+        )
+    return tuple(normalized)
 
 
 def _field(value: object, name: str) -> object | None:
@@ -118,6 +150,13 @@ def _optional_text(value: object | None) -> str | None:
     if value is None or isinstance(value, str):
         return value
     raise DeepSeekAPIError("DeepSeek API returned an invalid response.")
+
+
+def _required_text(value: object | None) -> str:
+    result = _optional_text(value)
+    if result is None:
+        raise DeepSeekAPIError("DeepSeek API returned an invalid response.")
+    return result
 
 
 def _optional_int(value: object | None) -> int | None:
