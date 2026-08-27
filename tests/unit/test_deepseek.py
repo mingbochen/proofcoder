@@ -1,0 +1,210 @@
+"""Offline protocol tests for the DeepSeek client."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+import pytest
+
+from proofcoder.config import ProofCoderConfig
+from proofcoder.errors import ConfigurationError, DeepSeekAPIError
+from proofcoder.llm.deepseek import DeepSeekClient
+
+SENSITIVE_SENTINEL = "never-print-this-value"
+REASONING_SENTINEL = "internal-reasoning-must-stay-private"
+
+
+@dataclass
+class _FakeMessage:
+    content: str | None
+    reasoning_content: str | None
+
+
+@dataclass
+class _FakeChoice:
+    message: _FakeMessage
+    finish_reason: str | None
+
+
+@dataclass
+class _FakeUsage:
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+
+
+@dataclass
+class _FakeResponse:
+    choices: list[_FakeChoice]
+    usage: _FakeUsage | None
+
+
+class _FakeCompletions:
+    def __init__(self, response: object | None = None, error: Exception | None = None) -> None:
+        self.response = response
+        self.error = error
+        self.request: dict[str, object] | None = None
+
+    def create(self, **kwargs: object) -> object:
+        self.request = kwargs
+        if self.error is not None:
+            raise self.error
+        assert self.response is not None
+        return self.response
+
+
+@dataclass
+class _FakeChat:
+    completions: _FakeCompletions
+
+
+@dataclass
+class _FakeOpenAIClient:
+    chat: _FakeChat
+
+
+def _config() -> ProofCoderConfig:
+    return ProofCoderConfig.from_env(environ={"DEEPSEEK_API_KEY": SENSITIVE_SENTINEL})
+
+
+def _response() -> _FakeResponse:
+    return _FakeResponse(
+        choices=[
+            _FakeChoice(
+                message=_FakeMessage(
+                    content="OK",
+                    reasoning_content=REASONING_SENTINEL,
+                ),
+                finish_reason="stop",
+            )
+        ],
+        usage=_FakeUsage(prompt_tokens=5, completion_tokens=7, total_tokens=12),
+    )
+
+
+def test_openai_client_is_constructed_with_retries_disabled() -> None:
+    captured: dict[str, object] = {}
+    completions = _FakeCompletions(_response())
+
+    def factory(**kwargs: object) -> _FakeOpenAIClient:
+        captured.update(kwargs)
+        return _FakeOpenAIClient(_FakeChat(completions))
+
+    DeepSeekClient(_config(), client_factory=factory)
+
+    assert captured == {
+        "api_key": SENSITIVE_SENTINEL,
+        "base_url": "https://api.deepseek.com",
+        "max_retries": 0,
+    }
+
+
+def test_request_contract_and_response_normalization() -> None:
+    completions = _FakeCompletions(_response())
+    client = DeepSeekClient(
+        _config(),
+        client=_FakeOpenAIClient(_FakeChat(completions)),
+    )
+
+    result = client.complete([{"role": "user", "content": "hello"}])
+
+    assert completions.request is not None
+    assert completions.request["model"] == "deepseek-v4-flash"
+    assert completions.request["stream"] is False
+    assert completions.request["reasoning_effort"] == "high"
+    assert completions.request["extra_body"] == {"thinking": {"type": "enabled"}}
+    assert completions.request["messages"] == [{"role": "user", "content": "hello"}]
+    for forbidden in (
+        "temperature",
+        "top_p",
+        "presence_penalty",
+        "frequency_penalty",
+    ):
+        assert forbidden not in completions.request
+
+    assert result.content == "OK"
+    assert result.reasoning_content == REASONING_SENTINEL
+    assert result.finish_reason == "stop"
+    assert result.usage is not None
+    assert result.usage.prompt_tokens == 5
+    assert result.usage.completion_tokens == 7
+    assert result.usage.total_tokens == 12
+
+
+def test_connectivity_check_uses_minimal_message() -> None:
+    completions = _FakeCompletions(_response())
+    client = DeepSeekClient(
+        _config(),
+        client=_FakeOpenAIClient(_FakeChat(completions)),
+    )
+
+    client.check_connection()
+
+    assert completions.request is not None
+    assert completions.request["messages"] == [{"role": "user", "content": "Reply with OK."}]
+
+
+def test_api_exception_is_converted_without_leaking_details() -> None:
+    completions = _FakeCompletions(error=RuntimeError(SENSITIVE_SENTINEL))
+    client = DeepSeekClient(
+        _config(),
+        client=_FakeOpenAIClient(_FakeChat(completions)),
+    )
+
+    with pytest.raises(DeepSeekAPIError) as captured:
+        client.check_connection()
+
+    assert SENSITIVE_SENTINEL not in str(captured.value)
+    assert captured.value.__cause__ is None
+
+
+def test_client_initialization_exception_is_safe() -> None:
+    def factory(**kwargs: object) -> _FakeOpenAIClient:
+        raise RuntimeError(f"{kwargs['api_key']} must not escape")
+
+    with pytest.raises(DeepSeekAPIError) as captured:
+        DeepSeekClient(_config(), client_factory=factory)
+
+    assert SENSITIVE_SENTINEL not in str(captured.value)
+    assert captured.value.__cause__ is None
+
+
+def test_missing_api_key_cannot_create_client() -> None:
+    config = ProofCoderConfig.from_env(offline=True, environ={})
+
+    with pytest.raises(ConfigurationError, match="DEEPSEEK_API_KEY is required"):
+        DeepSeekClient(config)
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        {"choices": []},
+        {"choices": [{"message": None, "finish_reason": "stop"}]},
+        {
+            "choices": [
+                {
+                    "message": {"content": ["invalid"], "reasoning_content": None},
+                    "finish_reason": "stop",
+                }
+            ]
+        },
+        {
+            "choices": [
+                {
+                    "message": {"content": "ok", "reasoning_content": None},
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {"prompt_tokens": "invalid"},
+        },
+    ],
+)
+def test_malformed_response_is_rejected(response: object) -> None:
+    client = DeepSeekClient(
+        _config(),
+        client=_FakeOpenAIClient(_FakeChat(_FakeCompletions(response))),
+    )
+
+    with pytest.raises(DeepSeekAPIError, match="invalid response"):
+        client.check_connection()
