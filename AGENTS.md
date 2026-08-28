@@ -7,6 +7,11 @@
 - Do not modify `docs/DEVELOPMENT_SPEC.md` unless the user explicitly requests it.
 - If a requested change conflicts with the specification or project redlines, stop and explain the conflict before editing.
 
+## Ownership scope
+
+- This is a single-author repository with no other contributors. No file in this codebase is owned by another teammate, including core entry points, main logic, routing files, and primary configuration files.
+- This clarification covers ownership only and does not expand task scope. Preserve existing worktree changes, and treat per-task file scope as defined by what the current prompt explicitly states may be inspected, implemented, or affected — not by the agent's own judgment of what is "reasonably required."
+
 ## Project redlines
 
 - Do not use any agent framework or agent SDK, including LangChain, LlamaIndex, OpenAI Agents SDK, Claude Agent SDK, AutoGen, or CrewAI.

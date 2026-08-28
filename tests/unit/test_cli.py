@@ -249,6 +249,11 @@ def test_run_cli_uses_scripted_client_and_hides_reasoning(tmp_path: Path) -> Non
     assert "verified" not in output
     assert REASONING_SENTINEL not in output
     assert SENSITIVE_SENTINEL not in output
+    assert [tool["function"]["name"] for tool in scripted.requests[0].tools] == [
+        "list_files",
+        "search_text",
+        "read_file",
+    ]
 
 
 def test_run_cli_max_steps_has_distinct_exit_code(tmp_path: Path) -> None:

@@ -109,6 +109,39 @@ def test_valid_arguments_receive_schema_defaults() -> None:
     assert result.data == {"arguments": {"count": 2, "label": "default"}}
 
 
+def test_string_length_constraints_are_locally_validated() -> None:
+    registry = ToolRegistry()
+    registry.register(
+        ToolDefinition(
+            name="bounded_text",
+            description="Validate shared schema string bounds.",
+            parameters={
+                "type": "object",
+                "properties": {"text": {"type": "string", "minLength": 1, "maxLength": 3}},
+                "required": ["text"],
+                "additionalProperties": False,
+            },
+            execute=lambda arguments: ToolResult.success(dict(arguments)),
+        )
+    )
+
+    empty = registry.dispatch(
+        ToolCall(
+            id="empty",
+            function=FunctionCall(name="bounded_text", arguments='{"text":""}'),
+        )
+    )
+    long = registry.dispatch(
+        ToolCall(
+            id="long",
+            function=FunctionCall(name="bounded_text", arguments='{"text":"four"}'),
+        )
+    )
+
+    assert _error_code(empty) == "INVALID_ARGUMENTS"
+    assert _error_code(long) == "INVALID_ARGUMENTS"
+
+
 def test_non_function_call_type_is_rejected() -> None:
     result = _registry().dispatch(_call('{"count":1}', call_type="custom"))
 

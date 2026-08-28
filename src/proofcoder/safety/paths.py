@@ -1,8 +1,11 @@
-"""Resolve list_files directories without leaving the selected workspace."""
+"""Resolve workspace-relative tool paths without crossing the workspace boundary."""
 
 from __future__ import annotations
 
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
+from typing import Literal
+
+from proofcoder.safety.secrets import is_sensitive_path
 
 
 class WorkspacePathError(Exception):
@@ -13,26 +16,59 @@ class WorkspacePathError(Exception):
         self.code = code
 
 
-def resolve_workspace_directory(workspace: Path, requested: str) -> tuple[Path, str]:
-    """Resolve a relative directory and return it with its POSIX workspace path."""
+def resolve_workspace_path(
+    workspace: Path,
+    requested: str,
+    *,
+    expected: Literal["directory", "file"],
+) -> tuple[Path, str]:
+    """Resolve one non-sensitive relative path and verify its expected kind."""
 
     workspace_root = workspace.resolve(strict=True)
-    requested_path = Path(requested)
-    if requested_path.is_absolute():
+    if _is_absolute_or_drive_qualified(requested):
         raise WorkspacePathError(
             "PATH_OUTSIDE_WORKSPACE",
             "path must be relative to the selected workspace",
         )
 
+    requested_path = Path(requested.replace("\\", "/"))
     resolved = (workspace_root / requested_path).resolve(strict=False)
     ensure_within_workspace(workspace_root, resolved)
+    relative = resolved.relative_to(workspace_root).as_posix() or "."
+    if is_sensitive_path(requested_path) or is_sensitive_path(relative):
+        raise WorkspacePathError(
+            "SENSITIVE_PATH",
+            "access to sensitive credential or key paths is blocked",
+        )
     if not resolved.exists():
         raise WorkspacePathError("PATH_NOT_FOUND", "requested path does not exist")
-    if not resolved.is_dir():
+    if expected == "directory" and not resolved.is_dir():
         raise WorkspacePathError("NOT_A_DIRECTORY", "requested path is not a directory")
+    if expected == "file" and not resolved.is_file():
+        raise WorkspacePathError("NOT_A_FILE", "requested path is not a regular file")
 
-    relative = resolved.relative_to(workspace_root).as_posix()
-    return resolved, relative or "."
+    return resolved, relative
+
+
+def resolve_workspace_directory(workspace: Path, requested: str) -> tuple[Path, str]:
+    """Resolve a relative directory and return it with its POSIX workspace path."""
+
+    return resolve_workspace_path(workspace, requested, expected="directory")
+
+
+def resolve_workspace_file(workspace: Path, requested: str) -> tuple[Path, str]:
+    """Resolve a relative regular file and return its POSIX workspace path."""
+
+    return resolve_workspace_path(workspace, requested, expected="file")
+
+
+def _is_absolute_or_drive_qualified(requested: str) -> bool:
+    """Recognize native, POSIX, and Windows absolute path forms on every host."""
+
+    native = Path(requested)
+    windows = PureWindowsPath(requested)
+    posix = PurePosixPath(requested)
+    return native.is_absolute() or posix.is_absolute() or bool(windows.drive)
 
 
 def ensure_within_workspace(workspace_root: Path, candidate: Path) -> None:

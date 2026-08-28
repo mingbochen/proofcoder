@@ -1,7 +1,8 @@
-"""Read-only deterministic workspace listing for Stage B."""
+"""Bounded, read-only workspace listing and UTF-8 file reading."""
 
 from __future__ import annotations
 
+import codecs
 from collections.abc import Mapping
 from fnmatch import fnmatchcase
 from pathlib import Path
@@ -10,11 +11,26 @@ from proofcoder.safety.paths import (
     WorkspacePathError,
     ensure_within_workspace,
     resolve_workspace_directory,
+    resolve_workspace_file,
 )
+from proofcoder.safety.secrets import is_sensitive_filename, is_sensitive_path
 from proofcoder.tools.base import ToolDefinition, ToolResult
 
 MAX_LIST_ENTRIES = 500
-_ALWAYS_IGNORED = frozenset(
+MAX_FILE_SIZE_BYTES = 1024 * 1024
+MAX_READ_LINES = 400
+MAX_READ_BYTES = 64 * 1024
+_BINARY_SIGNATURES = (
+    b"%PDF-",
+    b"GIF87a",
+    b"GIF89a",
+    b"PK\x03\x04",
+    b"\x1f\x8b",
+    b"\x7fELF",
+    b"\x89PNG\r\n\x1a\n",
+    b"\xff\xd8\xff",
+)
+DEFAULT_IGNORED_DIRECTORIES = frozenset(
     {
         ".git",
         ".venv",
@@ -28,22 +44,10 @@ _ALWAYS_IGNORED = frozenset(
         ".proofcoder-runs",
     }
 )
-_SENSITIVE_NAMES = frozenset(
-    {
-        "credentials",
-        "credentials.json",
-        "id_dsa",
-        "id_ecdsa",
-        "id_ed25519",
-        "id_rsa",
-        "secrets.json",
-    }
-)
-_SENSITIVE_SUFFIXES = frozenset({".key", ".p12", ".pem", ".pfx"})
 
 
 def create_list_files_tool(workspace: Path) -> ToolDefinition:
-    """Create the only Stage B local tool, bound to one workspace."""
+    """Create a deterministic directory-listing tool bound to one workspace."""
 
     workspace_root = workspace.resolve(strict=True)
 
@@ -90,15 +94,47 @@ def create_list_files_tool(workspace: Path) -> ToolDefinition:
     )
 
 
-def is_sensitive_filename(name: str) -> bool:
-    """Return whether a filename is always hidden from list_files."""
+def create_read_file_tool(workspace: Path) -> ToolDefinition:
+    """Create a bounded UTF-8 file reader bound to one workspace."""
 
-    lowered = name.casefold()
-    if lowered == ".env.example":
-        return False
-    if lowered == ".env" or lowered.startswith(".env."):
-        return True
-    return lowered in _SENSITIVE_NAMES or Path(lowered).suffix in _SENSITIVE_SUFFIXES
+    workspace_root = workspace.resolve(strict=True)
+
+    def execute(arguments: Mapping[str, object]) -> ToolResult:
+        return _read_file(workspace_root, arguments)
+
+    return ToolDefinition(
+        name="read_file",
+        description=(
+            "Read a workspace-relative, non-sensitive UTF-8 text file with 1-based line "
+            "numbers. Reads at most 400 lines and 64 KiB per call; use start_line and "
+            "end_line to request another segment. Binary and files over 1 MiB are rejected."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Workspace-relative file to read.",
+                    "minLength": 1,
+                },
+                "start_line": {
+                    "type": "integer",
+                    "description": "First 1-based line to return.",
+                    "minimum": 1,
+                    "default": 1,
+                },
+                "end_line": {
+                    "type": ["integer", "null"],
+                    "description": "Optional inclusive 1-based final line.",
+                    "minimum": 1,
+                    "default": None,
+                },
+            },
+            "required": ["path"],
+            "additionalProperties": False,
+        },
+        execute=execute,
+    )
 
 
 def _list_files(workspace_root: Path, arguments: Mapping[str, object]) -> ToolResult:
@@ -134,6 +170,171 @@ def _list_files(workspace_root: Path, arguments: Mapping[str, object]) -> ToolRe
     )
 
 
+def _read_file(workspace_root: Path, arguments: Mapping[str, object]) -> ToolResult:
+    path = str(arguments["path"])
+    start_line = int(arguments["start_line"])
+    end_value = arguments["end_line"]
+    end_line = end_value if isinstance(end_value, int) and not isinstance(end_value, bool) else None
+
+    if end_line is not None and end_line < start_line:
+        return ToolResult.failure(
+            "INVALID_RANGE",
+            "end_line must be greater than or equal to start_line",
+            retryable=True,
+        )
+
+    try:
+        file_path, relative_path = resolve_workspace_file(workspace_root, path)
+        if file_path.stat().st_size > MAX_FILE_SIZE_BYTES:
+            return ToolResult.failure(
+                "FILE_TOO_LARGE",
+                f"file exceeds the {MAX_FILE_SIZE_BYTES}-byte read limit",
+                retryable=True,
+            )
+        raw = file_path.read_bytes()
+    except WorkspacePathError as error:
+        return ToolResult.failure(error.code, str(error), retryable=True)
+
+    if len(raw) > MAX_FILE_SIZE_BYTES:
+        return ToolResult.failure(
+            "FILE_TOO_LARGE",
+            f"file exceeds the {MAX_FILE_SIZE_BYTES}-byte read limit",
+            retryable=True,
+        )
+    if _looks_binary(raw):
+        return ToolResult.failure(
+            "BINARY_FILE",
+            "binary files cannot be read as model context",
+            retryable=True,
+        )
+
+    has_bom = raw.startswith(codecs.BOM_UTF8)
+    try:
+        text = raw.decode("utf-8-sig" if has_bom else "utf-8")
+    except UnicodeDecodeError:
+        return ToolResult.failure(
+            "DECODE_ERROR",
+            "file is not valid UTF-8 text",
+            retryable=True,
+        )
+
+    lines = text.splitlines()
+    total_lines = len(lines)
+    newline_style = _detect_newline_style(text)
+    encoding = "utf-8-sig" if has_bom else "utf-8"
+
+    if total_lines == 0:
+        if start_line != 1:
+            return ToolResult.failure(
+                "INVALID_RANGE",
+                "start_line is beyond the empty file",
+                retryable=True,
+            )
+        return ToolResult.success(
+            {
+                "path": relative_path,
+                "content": "",
+                "total_lines": 0,
+                "start_line": None,
+                "end_line": None,
+                "actual_start_line": None,
+                "actual_end_line": None,
+                "returned_line_count": 0,
+                "returned_bytes": 0,
+                "encoding": encoding,
+                "newline_style": newline_style,
+            }
+        )
+
+    if start_line > total_lines:
+        return ToolResult.failure(
+            "INVALID_RANGE",
+            f"start_line exceeds the file's {total_lines} lines",
+            retryable=True,
+        )
+
+    requested_end = total_lines if end_line is None else min(end_line, total_lines)
+    line_limited_end = min(requested_end, start_line + MAX_READ_LINES - 1)
+    content, actual_end, byte_truncated = _render_numbered_lines(
+        lines,
+        start_line=start_line,
+        end_line=line_limited_end,
+    )
+    truncated = line_limited_end < requested_end or byte_truncated
+    returned_line_count = actual_end - start_line + 1
+    return ToolResult.success(
+        {
+            "path": relative_path,
+            "content": content,
+            "total_lines": total_lines,
+            "start_line": start_line,
+            "end_line": actual_end,
+            "actual_start_line": start_line,
+            "actual_end_line": actual_end,
+            "returned_line_count": returned_line_count,
+            "returned_bytes": len(content.encode("utf-8")),
+            "encoding": encoding,
+            "newline_style": newline_style,
+        },
+        truncated=truncated,
+    )
+
+
+def _looks_binary(raw: bytes) -> bool:
+    return b"\x00" in raw or raw.startswith(_BINARY_SIGNATURES)
+
+
+def _detect_newline_style(text: str) -> str:
+    styles: set[str] = set()
+    index = 0
+    while index < len(text):
+        character = text[index]
+        if character == "\r":
+            if index + 1 < len(text) and text[index + 1] == "\n":
+                styles.add("crlf")
+                index += 2
+                continue
+            styles.add("cr")
+        elif character == "\n":
+            styles.add("lf")
+        index += 1
+    if not styles:
+        return "none"
+    if len(styles) > 1:
+        return "mixed"
+    return next(iter(styles))
+
+
+def _render_numbered_lines(
+    lines: list[str],
+    *,
+    start_line: int,
+    end_line: int,
+) -> tuple[str, int, bool]:
+    rendered: list[str] = []
+    used_bytes = 0
+    actual_end = start_line - 1
+    byte_truncated = False
+    for line_number in range(start_line, end_line + 1):
+        separator = "\n" if rendered else ""
+        fragment = f"{separator}{line_number}: {lines[line_number - 1]}"
+        encoded = fragment.encode("utf-8")
+        remaining = MAX_READ_BYTES - used_bytes
+        if len(encoded) <= remaining:
+            rendered.append(fragment)
+            used_bytes += len(encoded)
+            actual_end = line_number
+            continue
+
+        clipped = encoded[:remaining].decode("utf-8", errors="ignore")
+        if clipped:
+            rendered.append(clipped)
+            actual_end = line_number
+        byte_truncated = True
+        break
+    return "".join(rendered), actual_end, byte_truncated
+
+
 def _collect_entries(
     *,
     workspace_root: Path,
@@ -148,12 +349,17 @@ def _collect_entries(
         if depth >= max_depth:
             return
         for entry in sorted(current.iterdir(), key=lambda item: item.name):
-            if entry.name in _ALWAYS_IGNORED or is_sensitive_filename(entry.name):
+            if entry.name.casefold() in DEFAULT_IGNORED_DIRECTORIES or is_sensitive_filename(
+                entry.name
+            ):
                 continue
             if entry.name.startswith(".") and not include_hidden:
                 continue
 
             ensure_within_workspace(workspace_root, entry)
+            resolved_relative = entry.resolve(strict=False).relative_to(workspace_root).as_posix()
+            if is_sensitive_path(resolved_relative):
+                continue
             relative = entry.relative_to(workspace_root).as_posix()
             is_symlink = entry.is_symlink()
             if is_symlink:

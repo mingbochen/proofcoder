@@ -16,8 +16,9 @@ from proofcoder.protocol import (
     ToolMessage,
 )
 from proofcoder.tools.base import ToolDefinition, ToolResult
-from proofcoder.tools.files import create_list_files_tool
+from proofcoder.tools.files import create_list_files_tool, create_read_file_tool
 from proofcoder.tools.registry import ToolRegistry
+from proofcoder.tools.search import create_search_text_tool
 
 REASONING_SENTINEL = "reasoning-remains-in-history-only"
 
@@ -46,6 +47,14 @@ def _call(call_id: str, arguments: str = "{}", *, name: str = "list_files") -> T
 def _list_registry(workspace: Path) -> ToolRegistry:
     registry = ToolRegistry()
     registry.register(create_list_files_tool(workspace))
+    return registry
+
+
+def _read_only_registry(workspace: Path) -> ToolRegistry:
+    registry = ToolRegistry()
+    registry.register(create_list_files_tool(workspace))
+    registry.register(create_search_text_tool(workspace))
+    registry.register(create_read_file_tool(workspace))
     return registry
 
 
@@ -100,6 +109,48 @@ def test_list_files_result_is_returned_to_second_model_call(tmp_path: Path) -> N
     assert tool["role"] == "tool"
     assert tool["tool_call_id"] == "list-1"
     assert json.loads(tool["content"])["ok"] is True
+
+
+def test_search_then_read_results_form_complete_three_request_history(tmp_path: Path) -> None:
+    (tmp_path / "agent.py").write_text("class AgentLoop:\n    pass\n", encoding="utf-8")
+    client = ScriptedClient(
+        [
+            _response(
+                content="Locating the implementation.",
+                calls=(_call("search-1", '{"query":"AgentLoop"}', name="search_text"),),
+            ),
+            _response(
+                content="Reading the relevant segment.",
+                calls=(
+                    _call(
+                        "read-1",
+                        '{"path":"agent.py","start_line":1,"end_line":2}',
+                        name="read_file",
+                    ),
+                ),
+            ),
+            _response(content="AgentLoop is defined in agent.py."),
+        ]
+    )
+
+    result = _loop(tmp_path, client, registry=_read_only_registry(tmp_path)).run("find it")
+
+    assert result.termination_reason is TerminationReason.MODEL_STOPPED
+    assert result.tool_call_count == 2
+    assert result.tool_error_count == 0
+    assert len(client.requests) == 3
+    assert [tool["function"]["name"] for tool in client.requests[0].tools] == [
+        "list_files",
+        "search_text",
+        "read_file",
+    ]
+    second_messages = client.requests[1].messages
+    assert second_messages[2]["reasoning_content"] == REASONING_SENTINEL
+    assert second_messages[3]["tool_call_id"] == "search-1"
+    third_messages = client.requests[2].messages
+    assert third_messages[4]["reasoning_content"] == REASONING_SENTINEL
+    assert third_messages[5]["tool_call_id"] == "read-1"
+    assert "1: class AgentLoop:" in json.loads(third_messages[5]["content"])["data"]["content"]
 
 
 def test_multiple_valid_calls_execute_synchronously_in_model_order(tmp_path: Path) -> None:

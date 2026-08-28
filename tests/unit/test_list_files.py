@@ -100,6 +100,10 @@ def test_sensitive_environment_and_private_key_names_are_always_filtered() -> No
     assert is_sensitive_filename("id_rsa") is True
     assert is_sensitive_filename("server.pem") is True
     assert is_sensitive_filename(".env.example") is False
+    assert is_sensitive_filename(".ENV.Local") is True
+    assert is_sensitive_filename("CLIENT.CRT") is True
+    assert is_sensitive_filename("keyboard.py") is False
+    assert is_sensitive_filename("tokenizer.py") is False
 
 
 def test_default_ignored_directories_are_never_traversed(tmp_path: Path) -> None:

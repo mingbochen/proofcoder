@@ -131,6 +131,13 @@ def _validate_arguments(
                 return _invalid_arguments(f"argument '{name}' is below its minimum")
             if isinstance(maximum, int) and value > maximum:
                 return _invalid_arguments(f"argument '{name}' is above its maximum")
+        if isinstance(value, str):
+            minimum_length = property_schema_value.get("minLength")
+            maximum_length = property_schema_value.get("maxLength")
+            if isinstance(minimum_length, int) and len(value) < minimum_length:
+                return _invalid_arguments(f"argument '{name}' is shorter than its minimum length")
+            if isinstance(maximum_length, int) and len(value) > maximum_length:
+                return _invalid_arguments(f"argument '{name}' is longer than its maximum length")
     return None
 
 
