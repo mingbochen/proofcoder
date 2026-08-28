@@ -9,6 +9,7 @@ from pathlib import Path
 from proofcoder.agent import AgentLoop
 from proofcoder.llm.scripted import ScriptedClient
 from proofcoder.protocol import (
+    AssistantMessage,
     FunctionCall,
     ModelResponse,
     TerminationReason,
@@ -16,6 +17,7 @@ from proofcoder.protocol import (
     ToolMessage,
 )
 from proofcoder.tools.base import ToolDefinition, ToolResult
+from proofcoder.tools.edit import create_create_file_tool, create_replace_in_file_tool
 from proofcoder.tools.files import create_list_files_tool, create_read_file_tool
 from proofcoder.tools.registry import ToolRegistry
 from proofcoder.tools.search import create_search_text_tool
@@ -55,6 +57,13 @@ def _read_only_registry(workspace: Path) -> ToolRegistry:
     registry.register(create_list_files_tool(workspace))
     registry.register(create_search_text_tool(workspace))
     registry.register(create_read_file_tool(workspace))
+    return registry
+
+
+def _editable_registry(workspace: Path) -> ToolRegistry:
+    registry = _read_only_registry(workspace)
+    registry.register(create_create_file_tool(workspace))
+    registry.register(create_replace_in_file_tool(workspace))
     return registry
 
 
@@ -318,3 +327,172 @@ def test_duplicate_ids_reject_whole_batch_with_one_result_per_call(tmp_path: Pat
     assert len(payloads) == 2
     assert {payload["error"]["code"] for payload in payloads} == {"DUPLICATE_TOOL_CALL_ID"}
     assert result.tool_error_count == 2
+
+
+def test_search_read_create_read_replace_read_flow_is_protocol_complete(tmp_path: Path) -> None:
+    (tmp_path / "seed.txt").write_text("reference", encoding="utf-8")
+    calls = (
+        _call("search", '{"query":"reference"}', name="search_text"),
+        _call("read-seed", '{"path":"seed.txt"}', name="read_file"),
+        _call(
+            "create",
+            '{"path":"result.txt","content":"old\\n"}',
+            name="create_file",
+        ),
+        _call("read-created", '{"path":"result.txt"}', name="read_file"),
+        _call(
+            "replace",
+            '{"path":"result.txt","old_text":"old","new_text":"new"}',
+            name="replace_in_file",
+        ),
+        _call("read-replaced", '{"path":"result.txt"}', name="read_file"),
+    )
+    client = ScriptedClient(
+        [*(_response(calls=(call,)) for call in calls), _response(content="Modified, unverified.")]
+    )
+
+    result = _loop(
+        tmp_path,
+        client,
+        registry=_editable_registry(tmp_path),
+        max_steps=8,
+    ).run("create and update result")
+
+    assert result.termination_reason is TerminationReason.MODEL_STOPPED
+    assert result.tool_call_count == 6
+    assert result.tool_error_count == 0
+    assert (tmp_path / "result.txt").read_text(encoding="utf-8") == "new\n"
+    tool_messages = [
+        message for message in result.history.messages if isinstance(message, ToolMessage)
+    ]
+    assert [message.tool_call_id for message in tool_messages] == [call.id for call in calls]
+    assistants = [
+        message for message in result.history.messages if isinstance(message, AssistantMessage)
+    ]
+    assert all(message.reasoning_content == REASONING_SENTINEL for message in assistants)
+    assert [tool["function"]["name"] for tool in client.requests[0].tools] == [
+        "list_files",
+        "search_text",
+        "read_file",
+        "create_file",
+        "replace_in_file",
+    ]
+    final_read = json.loads(client.requests[-1].messages[-1]["content"])
+    assert "1: new" in final_read["data"]["content"]
+
+
+def test_invalid_create_batch_has_no_write_side_effect(tmp_path: Path) -> None:
+    client = ScriptedClient(
+        [
+            _response(
+                calls=(
+                    _call(
+                        "valid",
+                        '{"path":"would-exist.txt","content":"data"}',
+                        name="create_file",
+                    ),
+                    _call(
+                        "invalid",
+                        '{"path":"other.txt","content":"data","unknown":true}',
+                        name="create_file",
+                    ),
+                )
+            ),
+            _response(content="corrected"),
+        ]
+    )
+
+    result = _loop(tmp_path, client, registry=_editable_registry(tmp_path)).run("batch")
+
+    assert not (tmp_path / "would-exist.txt").exists()
+    assert not (tmp_path / "other.txt").exists()
+    assert [_payload["error"]["code"] for _payload in _tool_payloads(result)] == [
+        "BATCH_REJECTED",
+        "INVALID_ARGUMENTS",
+    ]
+
+
+def test_duplicate_create_ids_have_no_write_side_effect(tmp_path: Path) -> None:
+    duplicate = _call(
+        "same",
+        '{"path":"duplicate.txt","content":"data"}',
+        name="create_file",
+    )
+    client = ScriptedClient(
+        [_response(calls=(duplicate, duplicate)), _response(content="corrected")]
+    )
+
+    result = _loop(tmp_path, client, registry=_editable_registry(tmp_path)).run("duplicates")
+
+    assert not (tmp_path / "duplicate.txt").exists()
+    assert {payload["error"]["code"] for payload in _tool_payloads(result)} == {
+        "DUPLICATE_TOOL_CALL_ID"
+    }
+
+
+def test_agent_recovers_from_existing_create_target(tmp_path: Path) -> None:
+    (tmp_path / "existing.txt").write_text("original", encoding="utf-8")
+    client = ScriptedClient(
+        [
+            _response(
+                calls=(
+                    _call(
+                        "existing",
+                        '{"path":"existing.txt","content":"new"}',
+                        name="create_file",
+                    ),
+                )
+            ),
+            _response(
+                calls=(
+                    _call(
+                        "alternative",
+                        '{"path":"alternative.txt","content":"new"}',
+                        name="create_file",
+                    ),
+                )
+            ),
+            _response(content="used another path"),
+        ]
+    )
+
+    result = _loop(tmp_path, client, registry=_editable_registry(tmp_path)).run("create")
+
+    assert _tool_payloads(result)[0]["error"]["code"] == "PATH_ALREADY_EXISTS"
+    assert (tmp_path / "existing.txt").read_text(encoding="utf-8") == "original"
+    assert (tmp_path / "alternative.txt").read_text(encoding="utf-8") == "new"
+
+
+def test_agent_reads_more_context_after_ambiguous_replace_and_retries(tmp_path: Path) -> None:
+    target = tmp_path / "values.txt"
+    target.write_text("old and old", encoding="utf-8")
+    client = ScriptedClient(
+        [
+            _response(
+                calls=(
+                    _call(
+                        "ambiguous",
+                        '{"path":"values.txt","old_text":"old","new_text":"new"}',
+                        name="replace_in_file",
+                    ),
+                )
+            ),
+            _response(calls=(_call("read", '{"path":"values.txt"}', name="read_file"),)),
+            _response(
+                calls=(
+                    _call(
+                        "retry",
+                        '{"path":"values.txt","old_text":"old","new_text":"new",'
+                        '"expected_replacements":2}',
+                        name="replace_in_file",
+                    ),
+                )
+            ),
+            _response(content="updated both occurrences"),
+        ]
+    )
+
+    result = _loop(tmp_path, client, registry=_editable_registry(tmp_path)).run("replace")
+
+    assert _tool_payloads(result)[0]["error"]["code"] == "AMBIGUOUS_MATCH"
+    assert target.read_text(encoding="utf-8") == "new and new"

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Literal
 
@@ -60,6 +61,44 @@ def resolve_workspace_file(workspace: Path, requested: str) -> tuple[Path, str]:
     """Resolve a relative regular file and return its POSIX workspace path."""
 
     return resolve_workspace_path(workspace, requested, expected="file")
+
+
+def resolve_workspace_new_file(workspace: Path, requested: str) -> tuple[Path, str]:
+    """Resolve a non-sensitive new-file target without following its final component."""
+
+    workspace_root = workspace.resolve(strict=True)
+    if _is_absolute_or_drive_qualified(requested):
+        raise WorkspacePathError(
+            "PATH_OUTSIDE_WORKSPACE",
+            "path must be relative to the selected workspace",
+        )
+
+    requested_path = Path(requested.replace("\\", "/"))
+    if requested_path.name == "..":
+        raise WorkspacePathError(
+            "PATH_OUTSIDE_WORKSPACE",
+            "path must stay within the selected workspace",
+        )
+    parent = (workspace_root / requested_path.parent).resolve(strict=False)
+    ensure_within_workspace(workspace_root, parent)
+    target = parent / requested_path.name
+    relative = target.relative_to(workspace_root).as_posix() or "."
+    if is_sensitive_path(requested_path) or is_sensitive_path(relative):
+        raise WorkspacePathError(
+            "SENSITIVE_PATH",
+            "access to sensitive credential or key paths is blocked",
+        )
+    if not parent.exists():
+        raise WorkspacePathError("PARENT_NOT_FOUND", "target parent directory does not exist")
+    if not parent.is_dir():
+        raise WorkspacePathError("NOT_A_DIRECTORY", "target parent path is not a directory")
+    if os.path.lexists(target):
+        raise WorkspacePathError(
+            "PATH_ALREADY_EXISTS",
+            "target path already exists and will not be overwritten",
+        )
+
+    return target, relative
 
 
 def _is_absolute_or_drive_qualified(requested: str) -> bool:

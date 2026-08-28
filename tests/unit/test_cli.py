@@ -253,7 +253,42 @@ def test_run_cli_uses_scripted_client_and_hides_reasoning(tmp_path: Path) -> Non
         "list_files",
         "search_text",
         "read_file",
+        "create_file",
+        "replace_in_file",
     ]
+
+
+def test_run_cli_displays_bounded_write_result_without_reasoning(tmp_path: Path) -> None:
+    create_call = ToolCall(
+        id="create-1",
+        function=FunctionCall(
+            name="create_file",
+            arguments='{"path":"created.txt","content":"hello\\n"}',
+        ),
+    )
+    scripted = ScriptedClient(
+        [
+            _scripted_response(calls=(create_call,)),
+            _scripted_response(content="Modified but not verified by the Agent."),
+        ]
+    )
+    stream = io.StringIO()
+
+    code = cli.main(
+        ["run", "--workspace", str(tmp_path), "create a file"],
+        environ={"DEEPSEEK_API_KEY": SENSITIVE_SENTINEL},
+        cwd=tmp_path,
+        console=Console(file=stream, force_terminal=False, color_system=None, width=200),
+        run_client_factory=lambda config: scripted,
+    )
+    output = stream.getvalue()
+
+    assert code == 0
+    assert (tmp_path / "created.txt").read_text(encoding="utf-8") == "hello\n"
+    assert '"ok":true' in output
+    assert '"diff":"--- /dev/null\\n+++ b/created.txt\\n' in output
+    assert '"truncated":false' in output
+    assert REASONING_SENTINEL not in output
 
 
 def test_run_cli_max_steps_has_distinct_exit_code(tmp_path: Path) -> None:

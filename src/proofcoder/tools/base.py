@@ -11,9 +11,10 @@ from proofcoder.protocol import ToolCall
 
 
 class RiskLevel(StrEnum):
-    """Stage B tool risk labels."""
+    """Tool risk labels used by local safety and presentation layers."""
 
     READ_ONLY = "read_only"
+    WRITE = "write"
 
 
 @dataclass(frozen=True, slots=True)

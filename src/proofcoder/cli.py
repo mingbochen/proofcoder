@@ -1,4 +1,4 @@
-"""Command-line interface for diagnostics and the Stage C1 read-only agent."""
+"""Command-line interface for diagnostics and the Stage C2 local file agent."""
 
 from __future__ import annotations
 
@@ -20,6 +20,7 @@ from proofcoder.llm.base import LLMClient
 from proofcoder.llm.deepseek import DeepSeekClient
 from proofcoder.prompt import STAGE_B_SYSTEM_PROMPT
 from proofcoder.protocol import AssistantMessage, ModelResponse, TerminationReason, ToolMessage
+from proofcoder.tools.edit import create_create_file_tool, create_replace_in_file_tool
 from proofcoder.tools.files import create_list_files_tool, create_read_file_tool
 from proofcoder.tools.registry import ToolRegistry
 from proofcoder.tools.search import create_search_text_tool
@@ -56,7 +57,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="run local checks without reading an API key or accessing the network",
     )
-    run = commands.add_parser("run", help="run the read-only agent loop")
+    run = commands.add_parser("run", help="run the local file agent loop")
     run.add_argument("--workspace", required=True, help="existing workspace directory")
     run.add_argument(
         "--max-steps",
@@ -64,7 +65,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=8,
         help=f"maximum model calls, from 1 to {_MAX_AGENT_STEPS} (default: 8)",
     )
-    run.add_argument("task", help="task for the read-only discovery loop")
+    run.add_argument("task", help="task for the local file agent loop")
     return parser
 
 
@@ -195,6 +196,8 @@ def _run_agent(
     registry.register(create_list_files_tool(workspace))
     registry.register(create_search_text_tool(workspace))
     registry.register(create_read_file_tool(workspace))
+    registry.register(create_create_file_tool(workspace))
+    registry.register(create_replace_in_file_tool(workspace))
     try:
         client = client_factory(config)
     except ProofCoderError:
