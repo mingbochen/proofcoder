@@ -230,6 +230,7 @@ def test_run_cli_uses_scripted_client_and_hides_reasoning(tmp_path: Path) -> Non
         [
             _scripted_response(calls=(_list_call(),)),
             _scripted_response(content="Workspace listed."),
+            _scripted_response(content="Workspace listed."),
         ]
     )
     stream = io.StringIO()
@@ -248,6 +249,11 @@ def test_run_cli_uses_scripted_client_and_hides_reasoning(tmp_path: Path) -> Non
     for label in ("TASK:", "MODEL:", "TOOL:", "RESULT:", "DONE:"):
         assert label in output
     assert "termination=model_stopped" in output
+    assert "WARN: PROTOCOL_REPAIR" in output
+    assert "api_attempts=3" in output
+    assert "api_retries=0" in output
+    assert "context_compactions=0" in output
+    assert "elapsed_seconds=" in output
     assert "verified" not in output
     assert REASONING_SENTINEL not in output
     assert SENSITIVE_SENTINEL not in output
@@ -431,6 +437,63 @@ def test_run_cli_script_exhaustion_is_api_error(tmp_path: Path) -> None:
     assert "termination=api_error" in stream.getvalue()
 
 
+def test_run_cli_keyboard_interrupt_during_setup_exits_130(tmp_path: Path) -> None:
+    def interrupt(config: ProofCoderConfig) -> ScriptedClient:
+        raise KeyboardInterrupt
+
+    stream = io.StringIO()
+
+    code = cli.main(
+        ["run", "--workspace", str(tmp_path), "inspect"],
+        environ={"DEEPSEEK_API_KEY": SENSITIVE_SENTINEL},
+        cwd=tmp_path,
+        console=Console(file=stream, force_terminal=False, color_system=None),
+        run_client_factory=interrupt,
+    )
+
+    assert code == 130
+    assert "termination=interrupted" in stream.getvalue()
+
+
+def test_run_cli_agent_interrupt_exits_130_with_stats(tmp_path: Path) -> None:
+    class InterruptingClient:
+        def complete(self, messages: object, tools: object = ()) -> ModelResponse:
+            raise KeyboardInterrupt
+
+    stream = io.StringIO()
+
+    code = cli.main(
+        ["run", "--workspace", str(tmp_path), "inspect"],
+        environ={"DEEPSEEK_API_KEY": SENSITIVE_SENTINEL},
+        cwd=tmp_path,
+        console=Console(file=stream, force_terminal=False, color_system=None),
+        run_client_factory=lambda config: InterruptingClient(),
+    )
+    output = stream.getvalue()
+
+    assert code == 130
+    assert "termination=interrupted" in output
+    assert "completion=none" in output
+    assert "api_attempts=1" in output
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["--max-seconds", "0"],
+        ["--max-seconds", "3601"],
+        ["--context-budget-bytes", "4095"],
+        ["--context-budget-bytes", "2097153"],
+        ["--max-consecutive-failures", "0"],
+        ["--max-api-attempts", "0"],
+        ["--max-api-attempts", "4"],
+    ],
+)
+def test_run_cli_rejects_out_of_range_d2_limits(arguments: list[str]) -> None:
+    with pytest.raises(SystemExit, match="2"):
+        cli.build_parser().parse_args(["run", "--workspace", ".", *arguments, "task"])
+
+
 def test_run_help_is_available_without_configuration() -> None:
     result = subprocess.run(
         [sys.executable, "-m", "proofcoder", "run", "--help"],
@@ -442,6 +505,10 @@ def test_run_help_is_available_without_configuration() -> None:
     assert result.returncode == 0
     assert "--workspace" in result.stdout
     assert "--max-steps" in result.stdout
+    assert "--max-seconds" in result.stdout
+    assert "--context-budget-bytes" in result.stdout
+    assert "--max-consecutive-failures" in result.stdout
+    assert "--max-api-attempts" in result.stdout
 
 
 def _finish_call(arguments: dict[str, object], call_id: str = "finish-1") -> ToolCall:

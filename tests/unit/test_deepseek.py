@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import httpx
 import pytest
+from openai import APIConnectionError, APIStatusError, APITimeoutError
 
 from proofcoder.config import ProofCoderConfig
-from proofcoder.errors import ConfigurationError, DeepSeekAPIError
+from proofcoder.errors import ConfigurationError, DeepSeekAPIError, LLMErrorCategory
 from proofcoder.llm.deepseek import DeepSeekClient
 
 SENSITIVE_SENTINEL = "never-print-this-value"
@@ -231,6 +233,81 @@ def test_api_exception_is_converted_without_leaking_details() -> None:
 
     assert SENSITIVE_SENTINEL not in str(captured.value)
     assert captured.value.__cause__ is None
+
+
+@pytest.mark.parametrize(
+    ("status", "category", "retryable"),
+    [
+        (400, LLMErrorCategory.BAD_REQUEST, False),
+        (401, LLMErrorCategory.AUTHENTICATION, False),
+        (402, LLMErrorCategory.PAYMENT_REQUIRED, False),
+        (422, LLMErrorCategory.UNPROCESSABLE, False),
+        (429, LLMErrorCategory.RATE_LIMIT, True),
+        (500, LLMErrorCategory.SERVER, True),
+        (503, LLMErrorCategory.SERVER, True),
+        (502, LLMErrorCategory.PERMANENT, False),
+    ],
+)
+def test_status_errors_are_classified_without_response_body(
+    status: int,
+    category: LLMErrorCategory,
+    retryable: bool,
+) -> None:
+    request = httpx.Request("POST", "https://example.invalid/chat")
+    response = httpx.Response(
+        status,
+        request=request,
+        headers={"retry-after": "7", "x-request-id": "request-safe"},
+        text=SENSITIVE_SENTINEL,
+    )
+    error = APIStatusError(SENSITIVE_SENTINEL, response=response, body=SENSITIVE_SENTINEL)
+    client = DeepSeekClient(
+        _config(),
+        client=_FakeOpenAIClient(_FakeChat(_FakeCompletions(error=error))),
+    )
+
+    with pytest.raises(DeepSeekAPIError) as captured:
+        client.check_connection()
+
+    assert captured.value.category is category
+    assert captured.value.status_code == status
+    assert captured.value.retryable is retryable
+    assert captured.value.retry_after_seconds == 7
+    assert captured.value.request_id == "request-safe"
+    assert SENSITIVE_SENTINEL not in str(captured.value)
+
+
+@pytest.mark.parametrize(
+    ("error", "category"),
+    [
+        (
+            APIConnectionError(
+                message=SENSITIVE_SENTINEL,
+                request=httpx.Request("POST", "https://example.invalid/chat"),
+            ),
+            LLMErrorCategory.CONNECTION,
+        ),
+        (
+            APITimeoutError(httpx.Request("POST", "https://example.invalid/chat")),
+            LLMErrorCategory.TIMEOUT,
+        ),
+    ],
+)
+def test_transport_errors_are_retryable_and_sanitized(
+    error: Exception,
+    category: LLMErrorCategory,
+) -> None:
+    client = DeepSeekClient(
+        _config(),
+        client=_FakeOpenAIClient(_FakeChat(_FakeCompletions(error=error))),
+    )
+
+    with pytest.raises(DeepSeekAPIError) as captured:
+        client.check_connection()
+
+    assert captured.value.category is category
+    assert captured.value.retryable is True
+    assert SENSITIVE_SENTINEL not in str(captured.value)
 
 
 def test_client_initialization_exception_is_safe() -> None:

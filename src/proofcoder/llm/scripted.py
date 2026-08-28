@@ -6,7 +6,7 @@ from collections.abc import Sequence
 from copy import deepcopy
 from dataclasses import dataclass
 
-from proofcoder.errors import ScriptedClientError
+from proofcoder.errors import LLMRequestError, ScriptedClientError
 from proofcoder.llm.base import ChatMessagePayload, ToolSchema
 from proofcoder.protocol import ModelResponse
 
@@ -22,7 +22,7 @@ class RecordedRequest:
 class ScriptedClient:
     """Return predefined responses in order without performing I/O."""
 
-    def __init__(self, responses: Sequence[ModelResponse]) -> None:
+    def __init__(self, responses: Sequence[ModelResponse | LLMRequestError]) -> None:
         self._responses = tuple(responses)
         self._next_response = 0
         self.requests: list[RecordedRequest] = []
@@ -44,4 +44,6 @@ class ScriptedClient:
             raise ScriptedClientError("ScriptedClient response sequence is exhausted.")
         response = self._responses[self._next_response]
         self._next_response += 1
+        if isinstance(response, LLMRequestError):
+            raise response
         return response

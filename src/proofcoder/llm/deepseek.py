@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
+from math import isfinite
 from typing import Protocol, cast
 
-from openai import OpenAI
+from openai import APIConnectionError, APIStatusError, APITimeoutError, OpenAI
 
 from proofcoder.config import ProofCoderConfig
-from proofcoder.errors import ConfigurationError, DeepSeekAPIError
+from proofcoder.errors import ConfigurationError, DeepSeekAPIError, LLMErrorCategory
 from proofcoder.llm.base import ChatMessagePayload, ToolSchema
 from proofcoder.protocol import FunctionCall, ModelResponse, TokenUsage, ToolCall
 
@@ -53,7 +56,8 @@ class DeepSeekClient:
                 )
             except Exception:
                 raise DeepSeekAPIError(
-                    "DeepSeek API client initialization failed; check the endpoint configuration."
+                    "DeepSeek API client initialization failed; check the endpoint configuration.",
+                    category=LLMErrorCategory.PERMANENT,
                 ) from None
 
     def complete(
@@ -75,10 +79,8 @@ class DeepSeekClient:
             request["tools"] = list(tools)
         try:
             response = self._client.chat.completions.create(**request)
-        except Exception:
-            raise DeepSeekAPIError(
-                "DeepSeek API request failed; check credentials, endpoint, and network."
-            ) from None
+        except Exception as error:
+            raise _classify_api_error(error) from None
 
         return _normalize_response(response)
 
@@ -91,12 +93,12 @@ class DeepSeekClient:
 def _normalize_response(response: object) -> ModelResponse:
     choices = _field(response, "choices")
     if not isinstance(choices, Sequence) or isinstance(choices, (str, bytes)) or not choices:
-        raise DeepSeekAPIError("DeepSeek API returned an invalid response.")
+        raise _invalid_response_error()
 
     choice = choices[0]
     message = _field(choice, "message")
     if message is None:
-        raise DeepSeekAPIError("DeepSeek API returned an invalid response.")
+        raise _invalid_response_error()
 
     usage_value = _field(response, "usage")
     usage = None
@@ -120,13 +122,13 @@ def _normalize_tool_calls(value: object | None) -> tuple[ToolCall, ...]:
     if value is None:
         return ()
     if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
-        raise DeepSeekAPIError("DeepSeek API returned an invalid response.")
+        raise _invalid_response_error()
 
     normalized: list[ToolCall] = []
     for raw_call in value:
         function = _field(raw_call, "function")
         if function is None:
-            raise DeepSeekAPIError("DeepSeek API returned an invalid response.")
+            raise _invalid_response_error()
         normalized.append(
             ToolCall(
                 id=_required_text(_field(raw_call, "id")),
@@ -149,17 +151,95 @@ def _field(value: object, name: str) -> object | None:
 def _optional_text(value: object | None) -> str | None:
     if value is None or isinstance(value, str):
         return value
-    raise DeepSeekAPIError("DeepSeek API returned an invalid response.")
+    raise _invalid_response_error()
 
 
 def _required_text(value: object | None) -> str:
     result = _optional_text(value)
     if result is None:
-        raise DeepSeekAPIError("DeepSeek API returned an invalid response.")
+        raise _invalid_response_error()
     return result
 
 
 def _optional_int(value: object | None) -> int | None:
     if value is None or isinstance(value, int):
         return value
-    raise DeepSeekAPIError("DeepSeek API returned an invalid response.")
+    raise _invalid_response_error()
+
+
+def _classify_api_error(error: Exception) -> DeepSeekAPIError:
+    if isinstance(error, APITimeoutError):
+        category = LLMErrorCategory.TIMEOUT
+        status_code = None
+    elif isinstance(error, APIConnectionError):
+        category = LLMErrorCategory.CONNECTION
+        status_code = None
+    elif isinstance(error, APIStatusError):
+        status_code = error.status_code
+        category = {
+            400: LLMErrorCategory.BAD_REQUEST,
+            401: LLMErrorCategory.AUTHENTICATION,
+            402: LLMErrorCategory.PAYMENT_REQUIRED,
+            422: LLMErrorCategory.UNPROCESSABLE,
+            429: LLMErrorCategory.RATE_LIMIT,
+            500: LLMErrorCategory.SERVER,
+            503: LLMErrorCategory.SERVER,
+        }.get(status_code, LLMErrorCategory.PERMANENT)
+    else:
+        category = LLMErrorCategory.PERMANENT
+        status_code = None
+    return DeepSeekAPIError(
+        f"DeepSeek API request failed ({category.value}).",
+        category=category,
+        status_code=status_code,
+        retry_after_seconds=_retry_after_seconds(error),
+        request_id=_request_id(error),
+    )
+
+
+def _invalid_response_error() -> DeepSeekAPIError:
+    return DeepSeekAPIError(
+        "DeepSeek API returned an invalid response.",
+        category=LLMErrorCategory.INVALID_RESPONSE,
+    )
+
+
+def _retry_after_seconds(error: Exception) -> float | None:
+    response = getattr(error, "response", None)
+    headers = getattr(response, "headers", None)
+    if headers is None:
+        return None
+    try:
+        value = headers.get("retry-after")
+    except Exception:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        seconds = float(value)
+    except ValueError:
+        try:
+            retry_at = parsedate_to_datetime(value)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if retry_at.tzinfo is None:
+            retry_at = retry_at.replace(tzinfo=UTC)
+        seconds = (retry_at - datetime.now(UTC)).total_seconds()
+    if seconds < 0 or not isfinite(seconds):
+        return None
+    return seconds
+
+
+def _request_id(error: Exception) -> str | None:
+    request_id = getattr(error, "request_id", None)
+    if isinstance(request_id, str) and request_id:
+        return request_id[:128]
+    response = getattr(error, "response", None)
+    headers = getattr(response, "headers", None)
+    if headers is None:
+        return None
+    try:
+        value = headers.get("x-request-id")
+    except Exception:
+        return None
+    return value[:128] if isinstance(value, str) and value else None

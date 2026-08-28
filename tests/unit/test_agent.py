@@ -121,6 +121,7 @@ def test_list_files_result_is_returned_to_second_model_call(tmp_path: Path) -> N
         [
             _response(calls=(_call("list-1"),)),
             _response(content="I found the workspace listing."),
+            _response(content="I found the workspace listing."),
         ]
     )
 
@@ -128,10 +129,10 @@ def test_list_files_result_is_returned_to_second_model_call(tmp_path: Path) -> N
 
     assert result.termination_reason is TerminationReason.MODEL_STOPPED
     assert result.final_text == "I found the workspace listing."
-    assert result.model_call_count == 2
+    assert result.model_call_count == 3
     assert result.tool_call_count == 1
     assert result.tool_error_count == 0
-    assert len(client.requests) == 2
+    assert len(client.requests) == 3
     assert client.requests[0].tools[0]["function"]["name"] == "list_files"
 
     second_messages = client.requests[1].messages
@@ -163,6 +164,7 @@ def test_search_then_read_results_form_complete_three_request_history(tmp_path: 
                 ),
             ),
             _response(content="AgentLoop is defined in agent.py."),
+            _response(content="AgentLoop is defined in agent.py."),
         ]
     )
 
@@ -171,7 +173,7 @@ def test_search_then_read_results_form_complete_three_request_history(tmp_path: 
     assert result.termination_reason is TerminationReason.MODEL_STOPPED
     assert result.tool_call_count == 2
     assert result.tool_error_count == 0
-    assert len(client.requests) == 3
+    assert len(client.requests) == 4
     assert [tool["function"]["name"] for tool in client.requests[0].tools] == [
         "list_files",
         "search_text",
@@ -273,6 +275,7 @@ def test_unknown_tool_gets_structured_result_and_loop_continues(tmp_path: Path) 
         [
             _response(calls=(_call("unknown", "{}", name="not_registered"),)),
             _response(content="corrected"),
+            _response(content="corrected"),
         ]
     )
 
@@ -310,11 +313,16 @@ def test_tool_exception_is_returned_without_stopping_other_protocol_steps(tmp_pa
 
 
 def test_response_without_tool_calls_stops_controlled(tmp_path: Path) -> None:
-    result = _loop(tmp_path, ScriptedClient([_response(content="visible")])).run("task")
+    result = _loop(
+        tmp_path,
+        ScriptedClient([_response(content="visible"), _response(content="visible")]),
+    ).run("task")
 
     assert result.termination_reason is TerminationReason.MODEL_STOPPED
     assert result.final_text == "visible"
     assert result.tool_call_count == 0
+    assert result.model_call_count == 2
+    assert result.warnings == ("PROTOCOL_REPAIR",)
 
 
 def test_max_steps_stops_after_processing_last_tool_group(tmp_path: Path) -> None:
@@ -333,7 +341,8 @@ def test_script_exhaustion_becomes_controlled_api_error(tmp_path: Path) -> None:
     result = _loop(tmp_path, client, max_steps=2).run("exhaust")
 
     assert result.termination_reason is TerminationReason.API_ERROR
-    assert result.model_call_count == 2
+    assert result.model_call_count == 1
+    assert result.api_attempt_count == 2
     assert len(client.requests) == 2
 
 
@@ -372,7 +381,11 @@ def test_search_read_create_read_replace_read_flow_is_protocol_complete(tmp_path
         _call("read-replaced", '{"path":"result.txt"}', name="read_file"),
     )
     client = ScriptedClient(
-        [*(_response(calls=(call,)) for call in calls), _response(content="Modified, unverified.")]
+        [
+            *(_response(calls=(call,)) for call in calls),
+            _response(content="Modified, unverified."),
+            _response(content="Modified, unverified."),
+        ]
     )
 
     result = _loop(
@@ -401,7 +414,7 @@ def test_search_read_create_read_replace_read_flow_is_protocol_complete(tmp_path
         "create_file",
         "replace_in_file",
     ]
-    final_read = json.loads(client.requests[-1].messages[-1]["content"])
+    final_read = json.loads(client.requests[-2].messages[-1]["content"])
     assert "1: new" in final_read["data"]["content"]
 
 
@@ -599,7 +612,11 @@ def test_scripted_failure_read_edit_success_flow_preserves_protocol(tmp_path: Pa
     )
     final_text = "Ran python check.py: exit 1; after the exact edit, python check.py: exit 0."
     client = ScriptedClient(
-        [*(_response(calls=(call,)) for call in calls), _response(content=final_text)]
+        [
+            *(_response(calls=(call,)) for call in calls),
+            _response(content=final_text),
+            _response(content=final_text),
+        ]
     )
 
     result = _loop(

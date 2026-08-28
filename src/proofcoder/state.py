@@ -1,4 +1,4 @@
-"""Minimal local run state and evidence records for Stage D1."""
+"""Program-owned run facts and evidence records through Stage D2."""
 
 from __future__ import annotations
 
@@ -25,6 +25,9 @@ class RunState:
     """Program-owned facts for one synchronous agent run."""
 
     original_task: str
+    started_at: float = 0.0
+    elapsed_seconds: float = 0.0
+    final_text: str | None = None
     model_step: int = 0
     event_sequence: int = 0
     last_modified_events: dict[str, int] = field(default_factory=dict)
@@ -33,6 +36,15 @@ class RunState:
     model_call_count: int = 0
     tool_call_count: int = 0
     tool_error_count: int = 0
+    api_attempt_count: int = 0
+    api_retry_count: int = 0
+    context_compaction_count: int = 0
+    compressed_group_count: int = 0
+    protocol_repair_count: int = 0
+    consecutive_failure_count: int = 0
+    no_progress_count: int = 0
+    stable_error_codes: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
     termination_reason: TerminationReason | None = None
     completion_status: CompletionStatus | None = None
     _changed_files: list[str] = field(default_factory=list, repr=False)
@@ -71,3 +83,14 @@ class RunState:
         self.command_observations.append(observation)
         if observation.accepted_as_verification:
             self.latest_verification = observation
+
+    def record_error_code(self, code: str) -> None:
+        """Retain a bounded list of stable error codes for local context facts."""
+
+        self.stable_error_codes.append(code)
+        del self.stable_error_codes[:-16]
+
+    def warn(self, code: str) -> None:
+        """Record one safe program-generated warning code."""
+
+        self.warnings.append(code)

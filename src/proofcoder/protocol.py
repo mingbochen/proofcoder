@@ -80,12 +80,18 @@ Message: TypeAlias = SystemMessage | UserMessage | AssistantMessage | ToolMessag
 
 
 class TerminationReason(StrEnum):
-    """Controlled termination reasons implemented through Stage D1."""
+    """Controlled termination reasons implemented through Stage D2."""
 
     FINISH_TASK = "finish_task"
     MODEL_STOPPED = "model_stopped"
     MAX_STEPS = "max_steps"
+    MAX_TIME = "max_time"
+    MAX_CONSECUTIVE_FAILURES = "max_consecutive_failures"
+    NO_PROGRESS = "no_progress"
+    INTERRUPTED = "interrupted"
     API_ERROR = "api_error"
+    CONTEXT_BUDGET_EXCEEDED = "context_budget_exceeded"
+    INTERNAL_ERROR = "internal_error"
 
 
 class CompletionStatus(StrEnum):
@@ -113,3 +119,10 @@ class RunResult:
     verification_command: tuple[str, ...] | None = None
     verification_cwd: str | None = None
     verification_exit_code: int | None = None
+    elapsed_seconds: float = 0.0
+    api_attempt_count: int = 0
+    api_retry_count: int = 0
+    context_compaction_count: int = 0
+    consecutive_failure_count: int = 0
+    no_progress_count: int = 0
+    warnings: tuple[str, ...] = ()
