@@ -90,6 +90,7 @@ class TerminationReason(StrEnum):
     NO_PROGRESS = "no_progress"
     INTERRUPTED = "interrupted"
     API_ERROR = "api_error"
+    CONFIGURATION_ERROR = "configuration_error"
     CONTEXT_BUDGET_EXCEEDED = "context_budget_exceeded"
     INTERNAL_ERROR = "internal_error"
 
@@ -126,3 +127,9 @@ class RunResult:
     consecutive_failure_count: int = 0
     no_progress_count: int = 0
     warnings: tuple[str, ...] = ()
+    input_token_count: int = 0
+    output_token_count: int = 0
+    run_id: str = ""
+    trace_path: str | None = None
+    trace_complete: bool = True
+    event_count: int = 0

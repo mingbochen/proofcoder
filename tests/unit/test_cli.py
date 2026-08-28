@@ -19,6 +19,7 @@ from proofcoder.config import ProofCoderConfig
 from proofcoder.errors import DeepSeekAPIError
 from proofcoder.llm.scripted import ScriptedClient
 from proofcoder.protocol import FunctionCall, ModelResponse, ToolCall
+from proofcoder.trace import list_traces, read_trace
 
 SENSITIVE_SENTINEL = "never-print-this-value"
 REASONING_SENTINEL = "internal-reasoning-must-stay-private"
@@ -295,9 +296,10 @@ def test_run_cli_displays_bounded_write_result_without_reasoning(tmp_path: Path)
 
     assert code == 1
     assert (tmp_path / "created.txt").read_text(encoding="utf-8") == "hello\n"
-    assert '"ok":true' in output
-    assert '"diff":"--- /dev/null\\n+++ b/created.txt\\n' in output
-    assert '"truncated":false' in output
+    assert "RESULT: id=create-1 success=true" in output
+    assert "DIFF: path=created.txt" in output
+    assert "--- /dev/null" in output
+    assert "truncated=false" in output
     assert REASONING_SENTINEL not in output
 
 
@@ -340,13 +342,13 @@ def test_run_cli_displays_command_observation_without_reasoning_or_secret(tmp_pa
 
     assert code == 1
     assert "TOOL: run_command" in output
-    assert '"command_kind":"script"' in output
-    assert '"exit_code":0' in output
-    assert '"stdout_truncated":false' in output
-    assert '"stderr_truncated":false' in output
-    assert '"audit_path":".proofcoder/runtime/commands/' in output
-    assert "cli-stdout" in output
-    assert "cli-stderr" in output
+    assert "RESULT: id=command-1 success=true" in output
+    assert "exit_code=0" in output
+    assert 'VERIFY: argv=["python","cli_check.py"]' in output
+    assert "accepted=false" in output
+    assert "cli-stdout" not in output
+    assert "cli-stderr" not in output
+    assert ".proofcoder/runtime/commands/" not in output
     assert REASONING_SENTINEL not in output
     assert SENSITIVE_SENTINEL not in output
 
@@ -421,6 +423,32 @@ def test_run_cli_rejects_missing_workspace_without_model_call(tmp_path: Path) ->
     assert "termination=invalid_workspace" in stream.getvalue()
 
 
+def test_run_configuration_error_has_complete_trace_without_model_call(tmp_path: Path) -> None:
+    called = False
+
+    def forbidden(config: ProofCoderConfig) -> ScriptedClient:
+        nonlocal called
+        called = True
+        return ScriptedClient([])
+
+    stream = io.StringIO()
+    code = cli.main(
+        ["run", "--workspace", str(tmp_path), "inspect"],
+        environ={},
+        cwd=tmp_path,
+        console=Console(file=stream, force_terminal=False, color_system=None),
+        run_client_factory=forbidden,
+    )
+
+    assert code == 1
+    assert called is False
+    assert "termination=configuration_error" in stream.getvalue()
+    summaries = list_traces(tmp_path)
+    assert len(summaries) == 1
+    assert summaries[0].status == "configuration_error"
+    assert summaries[0].trace_complete is True
+
+
 def test_run_cli_script_exhaustion_is_api_error(tmp_path: Path) -> None:
     scripted = ScriptedClient([_scripted_response(calls=(_list_call(),))])
     stream = io.StringIO()
@@ -453,6 +481,12 @@ def test_run_cli_keyboard_interrupt_during_setup_exits_130(tmp_path: Path) -> No
 
     assert code == 130
     assert "termination=interrupted" in stream.getvalue()
+    summaries = list_traces(tmp_path)
+    assert len(summaries) == 1
+    assert summaries[0].status == "interrupted"
+    assert summaries[0].trace_complete is True
+    trace = read_trace(tmp_path, summaries[0].run_id)
+    assert trace.events[-1].payload["termination_reason"] == "interrupted"
 
 
 def test_run_cli_agent_interrupt_exits_130_with_stats(tmp_path: Path) -> None:

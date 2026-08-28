@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import importlib
-import json
 import os
 import sys
 from collections.abc import Callable, Mapping, Sequence
@@ -18,23 +17,26 @@ from proofcoder.agent import AgentLoop
 from proofcoder.config import ProofCoderConfig
 from proofcoder.context import DEFAULT_CONTEXT_BUDGET_BYTES
 from proofcoder.errors import ConfigurationError, ProofCoderError
+from proofcoder.events import CompositeSink, EventEmitter, EventType, TerminalSink, new_run_id
 from proofcoder.llm.base import LLMClient
 from proofcoder.llm.deepseek import DeepSeekClient
 from proofcoder.prompt import STAGE_B_SYSTEM_PROMPT
-from proofcoder.protocol import (
-    AssistantMessage,
-    CompletionStatus,
-    ModelResponse,
-    TerminationReason,
-    ToolMessage,
-)
+from proofcoder.protocol import CompletionStatus, ModelResponse, TerminationReason
 from proofcoder.retry import DEFAULT_MAX_API_ATTEMPTS
+from proofcoder.safety.secrets import sensitive_environment_values
 from proofcoder.tools.command import create_run_command_tool
 from proofcoder.tools.edit import create_create_file_tool, create_replace_in_file_tool
 from proofcoder.tools.files import create_list_files_tool, create_read_file_tool
 from proofcoder.tools.finish import create_finish_task_tool
 from proofcoder.tools.registry import ToolRegistry
 from proofcoder.tools.search import create_search_text_tool
+from proofcoder.trace import (
+    TracePathError,
+    TraceRecorder,
+    final_trace_report,
+    list_traces,
+    read_trace,
+)
 
 _MINIMUM_PYTHON = (3, 11)
 
@@ -108,6 +110,13 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"attempts per model response, 1-{DEFAULT_MAX_API_ATTEMPTS} (default: 3)",
     )
     run.add_argument("task", help="task for the local coding agent loop")
+    trace = commands.add_parser("trace", help="inspect safe workspace JSONL traces")
+    trace_commands = trace.add_subparsers(dest="trace_command", required=True)
+    trace_list = trace_commands.add_parser("list", help="list workspace run traces")
+    trace_list.add_argument("--workspace", required=True, help="existing workspace directory")
+    trace_show = trace_commands.add_parser("show", help="show one safe run trace")
+    trace_show.add_argument("--workspace", required=True, help="existing workspace directory")
+    trace_show.add_argument("run_id", help="32-character lowercase hexadecimal run ID")
     return parser
 
 
@@ -151,6 +160,14 @@ def main(
         except KeyboardInterrupt:
             output.print("DONE: termination=interrupted", markup=False)
             return 130
+    if args.command == "trace":
+        return _run_trace(
+            trace_command=str(args.trace_command),
+            workspace_argument=str(args.workspace),
+            run_id=None if not hasattr(args, "run_id") else str(args.run_id),
+            cwd=base_cwd,
+            console=output,
+        )
     return 2
 
 
@@ -274,26 +291,49 @@ def _run_agent(
     console: Console,
     client_factory: _RunClientFactory,
 ) -> int:
-    try:
-        config = ProofCoderConfig.from_env(environ=environ)
-    except ConfigurationError as error:
-        console.print(f"DONE: termination=configuration_error ({error})", markup=False)
-        return 1
-
     workspace_input = Path(workspace_argument)
     workspace = (
         workspace_input.resolve(strict=False)
         if workspace_input.is_absolute()
         else (cwd / workspace_input).resolve(strict=False)
     )
-    secret = config.api_key
     if not workspace.exists() or not workspace.is_dir():
-        _safe_print(
-            console,
+        console.print(
             "DONE: termination=invalid_workspace (workspace must be an existing directory)",
-            secret,
+            markup=False,
         )
         return 2
+
+    secret: str | None = None
+    sensitive_values = sensitive_environment_values(environ)
+    run_id = new_run_id()
+    try:
+        recorder = TraceRecorder(
+            workspace,
+            run_id,
+            sensitive_values=sensitive_values,
+        )
+    except TracePathError as error:
+        console.print(
+            f"DONE: termination=trace_error error_code={error.code}",
+            markup=False,
+        )
+        return 1
+    terminal = TerminalSink(lambda line: _safe_print(console, line, secret))
+    try:
+        config = ProofCoderConfig.from_env(environ=environ)
+    except ConfigurationError:
+        _emit_setup_termination(
+            task=task,
+            run_id=run_id,
+            trace_path=recorder.trace_path,
+            termination_reason=TerminationReason.CONFIGURATION_ERROR,
+            sink=CompositeSink(terminal, recorder),
+            sensitive_values=sensitive_values,
+        )
+        recorder.close()
+        return 1
+    secret = config.api_key
 
     registry = ToolRegistry()
     registry.register(create_list_files_tool(workspace))
@@ -305,77 +345,146 @@ def _run_agent(
     registry.register(create_finish_task_tool(workspace))
     try:
         client = client_factory(config)
+    except KeyboardInterrupt:
+        _emit_setup_termination(
+            task=task,
+            run_id=run_id,
+            trace_path=recorder.trace_path,
+            termination_reason=TerminationReason.INTERRUPTED,
+            sink=CompositeSink(terminal, recorder),
+            sensitive_values=sensitive_values,
+        )
+        recorder.close()
+        return 130
+    except SystemExit:
+        recorder.close()
+        raise
     except ProofCoderError:
-        console.print("DONE: termination=api_error", markup=False)
+        _emit_setup_termination(
+            task=task,
+            run_id=run_id,
+            trace_path=recorder.trace_path,
+            termination_reason=TerminationReason.API_ERROR,
+            sink=CompositeSink(terminal, recorder),
+            sensitive_values=sensitive_values,
+        )
+        recorder.close()
         return 1
 
-    _safe_print(console, f"TASK: {task}", secret)
-    result = AgentLoop(
-        client=client,
-        registry=registry,
-        workspace=workspace,
-        system_prompt=STAGE_B_SYSTEM_PROMPT,
-        max_steps=max_steps,
-        max_seconds=max_seconds,
-        context_budget_bytes=context_budget_bytes,
-        max_consecutive_failures=max_consecutive_failures,
-        max_api_attempts=max_api_attempts,
-    ).run(task)
-
-    for warning in result.warnings:
-        _safe_print(console, f"WARN: {warning}", secret)
-
-    for message in result.history.messages:
-        if isinstance(message, AssistantMessage):
-            visible = message.content if message.content else "<no visible text>"
-            _safe_print(console, f"MODEL: {visible}", secret)
-            for call in message.tool_calls:
-                _safe_print(
-                    console,
-                    f"TOOL: {call.function.name} (id={call.id})",
-                    secret,
-                )
-        elif isinstance(message, ToolMessage):
-            _safe_print(
-                console,
-                f"RESULT: id={message.tool_call_id} {message.content}",
-                secret,
-            )
+    try:
+        result = AgentLoop(
+            client=client,
+            registry=registry,
+            workspace=workspace,
+            system_prompt=STAGE_B_SYSTEM_PROMPT,
+            max_steps=max_steps,
+            max_seconds=max_seconds,
+            context_budget_bytes=context_budget_bytes,
+            max_consecutive_failures=max_consecutive_failures,
+            max_api_attempts=max_api_attempts,
+            event_sink=CompositeSink(terminal, recorder),
+            run_id_factory=lambda: run_id,
+            sensitive_values=sensitive_values,
+            trace_path=recorder.trace_path,
+        ).run(task)
+    finally:
+        recorder.close()
 
     if result.final_report is not None:
         _safe_print(console, f"REPORT: {result.final_report}", secret)
-    completion_status = (
-        "none" if result.completion_status is None else result.completion_status.value
-    )
-    changed_files = json.dumps(
-        list(result.changed_files), ensure_ascii=False, separators=(",", ":")
-    )
-    verification_argv = (
-        "null"
-        if result.verification_command is None
-        else json.dumps(
-            list(result.verification_command),
-            ensure_ascii=False,
-            separators=(",", ":"),
-        )
-    )
-    _safe_print(
-        console,
-        (
-            f"DONE: termination={result.termination_reason.value} "
-            f"completion={completion_status} changed_files={changed_files} "
-            f"verification_argv={verification_argv} "
-            f"verification_cwd={result.verification_cwd} "
-            f"verification_exit_code={result.verification_exit_code} "
-            f"model_calls={result.model_call_count} tool_calls={result.tool_call_count} "
-            f"tool_errors={result.tool_error_count} "
-            f"elapsed_seconds={result.elapsed_seconds:.3f} "
-            f"api_attempts={result.api_attempt_count} api_retries={result.api_retry_count} "
-            f"context_compactions={result.context_compaction_count}"
-        ),
-        secret,
-    )
     return _run_exit_code(result.termination_reason, result.completion_status)
+
+
+def _emit_setup_termination(
+    *,
+    task: str,
+    run_id: str,
+    trace_path: str,
+    termination_reason: TerminationReason,
+    sink: CompositeSink,
+    sensitive_values: tuple[str, ...],
+) -> None:
+    """Persist a minimal complete trajectory when setup stops before AgentLoop."""
+
+    emitter = EventEmitter(
+        run_id=run_id,
+        sink=sink,
+        sensitive_values=sensitive_values,
+    )
+    emitter.emit(EventType.TASK, step=0, payload={"task": task})
+    emitter.emit(
+        EventType.TERMINATION,
+        step=0,
+        payload={
+            "api_attempts": 0,
+            "api_retries": 0,
+            "changed_files": [],
+            "completion_status": "none",
+            "context_compactions": 0,
+            "elapsed_seconds": 0.0,
+            "event_count": emitter.event_count + 1,
+            "input_tokens": 0,
+            "model_calls": 0,
+            "output_tokens": 0,
+            "termination_reason": termination_reason.value,
+            "tool_calls": 0,
+            "tool_errors": 0,
+            "trace_complete": emitter.trace_complete,
+            "trace_path": trace_path,
+            "verification": None,
+            "warning_count": 0,
+        },
+    )
+
+
+def _run_trace(
+    *,
+    trace_command: str,
+    workspace_argument: str,
+    run_id: str | None,
+    cwd: Path,
+    console: Console,
+) -> int:
+    workspace_input = Path(workspace_argument)
+    workspace = (
+        workspace_input.resolve(strict=False)
+        if workspace_input.is_absolute()
+        else (cwd / workspace_input).resolve(strict=False)
+    )
+    if not workspace.exists() or not workspace.is_dir():
+        console.print(
+            "FAIL trace: workspace must be an existing directory",
+            markup=False,
+        )
+        return 2
+    try:
+        if trace_command == "list":
+            summaries = list_traces(workspace)
+            console.print("run_id started_at status events trace_complete", markup=False)
+            for summary in summaries:
+                console.print(
+                    f"{summary.run_id} {summary.started_at} {summary.status} "
+                    f"{summary.event_count} {str(summary.trace_complete).lower()}",
+                    markup=False,
+                )
+            return 0
+        if trace_command == "show" and run_id is not None:
+            trace = read_trace(workspace, run_id)
+            terminal = TerminalSink(lambda line: console.print(line, markup=False))
+            for event in trace.events:
+                terminal.emit(event)
+            for issue in trace.issues:
+                location = "" if issue.line_number is None else f" line={issue.line_number}"
+                console.print(
+                    f"WARN: {issue.code}{location} ({issue.message})",
+                    markup=False,
+                )
+            console.print(f"REPORT: {final_trace_report(trace)}", markup=False)
+            return 0 if trace.trace_complete else 1
+    except TracePathError as error:
+        console.print(f"FAIL trace: {error.code} ({error})", markup=False)
+        return 1
+    return 2
 
 
 def _run_exit_code(

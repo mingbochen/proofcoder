@@ -25,6 +25,7 @@ class RunState:
     """Program-owned facts for one synchronous agent run."""
 
     original_task: str
+    run_id: str = ""
     started_at: float = 0.0
     elapsed_seconds: float = 0.0
     final_text: str | None = None
@@ -43,10 +44,15 @@ class RunState:
     protocol_repair_count: int = 0
     consecutive_failure_count: int = 0
     no_progress_count: int = 0
+    input_token_count: int = 0
+    output_token_count: int = 0
     stable_error_codes: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     termination_reason: TerminationReason | None = None
     completion_status: CompletionStatus | None = None
+    limitations: tuple[str, ...] = ()
+    blocked_reason: str | None = None
+    finish_warnings: tuple[str, ...] = ()
     _changed_files: list[str] = field(default_factory=list, repr=False)
 
     @property

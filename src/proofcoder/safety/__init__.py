@@ -9,10 +9,12 @@ from proofcoder.safety.paths import (
     resolve_workspace_new_file,
 )
 from proofcoder.safety.secrets import (
+    is_safe_token_statistic,
     is_sensitive_environment_name,
     is_sensitive_filename,
     is_sensitive_path,
     minimal_subprocess_environment,
+    redact_text,
     sensitive_environment_values,
 )
 from proofcoder.safety.writes import (
@@ -31,10 +33,12 @@ __all__ = [
     "commit_replacement",
     "discard_temporary_file",
     "is_internal_runtime_path",
+    "is_safe_token_statistic",
     "is_sensitive_environment_name",
     "is_sensitive_filename",
     "is_sensitive_path",
     "minimal_subprocess_environment",
+    "redact_text",
     "resolve_workspace_argument_path",
     "resolve_workspace_directory",
     "resolve_workspace_file",

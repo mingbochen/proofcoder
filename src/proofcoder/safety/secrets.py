@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import re
+import unicodedata
 from collections.abc import Mapping
 from pathlib import Path, PurePath, PurePosixPath
 
@@ -21,6 +23,9 @@ _ALLOWED_ENVIRONMENT_NAMES = frozenset(
     }
 )
 _SENSITIVE_ENVIRONMENT_MARKERS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL")
+_SAFE_TOKEN_STATISTIC_NAMES = frozenset(
+    {"completion_tokens", "input_tokens", "output_tokens", "prompt_tokens", "total_tokens"}
+)
 _COMMAND_ENVIRONMENT_DEFAULTS = {
     "GIT_PAGER": "cat",
     "GIT_TERMINAL_PROMPT": "0",
@@ -62,6 +67,14 @@ _SENSITIVE_SUFFIXES = frozenset(
         ".pfx",
     }
 )
+_AUTHORIZATION_PATTERN = re.compile(r"(?i)\b(authorization\s*[:=]\s*(?:bearer\s+)?)([^\s,;]+)")
+_NAMED_SECRET_PATTERN = re.compile(
+    r"(?i)\b([A-Z0-9_.-]*(?:API[_-]?KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)"
+    r"[A-Z0-9_.-]*)(\s*[:=]\s*)([^\s,;}]+)"
+)
+_COMMON_TOKEN_PATTERN = re.compile(r"(?i)\b(?:sk|ds)-[A-Za-z0-9_-]{8,}\b")
+_ANSI_CSI_PATTERN = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+_ANSI_OSC_PATTERN = re.compile(r"\x1b\][^\x07]*(?:\x07|\x1b\\)")
 
 
 def is_sensitive_filename(name: str) -> bool:
@@ -89,6 +102,14 @@ def is_sensitive_environment_name(name: str) -> bool:
 
     upper_name = name.upper()
     return any(marker in upper_name for marker in _SENSITIVE_ENVIRONMENT_MARKERS)
+
+
+def is_safe_token_statistic(name: str, value: object) -> bool:
+    """Return whether a value is a non-secret structured token-count statistic."""
+
+    return name.casefold() in _SAFE_TOKEN_STATISTIC_NAMES and (
+        value is None or (type(value) is int and value >= 0)
+    )
 
 
 def minimal_subprocess_environment(
@@ -120,3 +141,29 @@ def sensitive_environment_values(environ: Mapping[str, str] | None = None) -> tu
         source[name] for name in source if is_sensitive_environment_name(name) and source[name]
     }
     return tuple(sorted(values, key=lambda value: (-len(value), value)))
+
+
+def redact_text(text: str, *, sensitive_values: tuple[str, ...] = ()) -> str:
+    """Redact known values and common credential assignments from arbitrary text."""
+
+    redacted = _ANSI_OSC_PATTERN.sub("", _ANSI_CSI_PATTERN.sub("", text))
+    redacted = "".join(
+        character
+        for character in redacted
+        if character in {"\n", "\t"} or unicodedata.category(character) not in {"Cc", "Cf"}
+    )
+    for value in sorted(
+        (item for item in sensitive_values if item),
+        key=lambda item: (-len(item), item),
+    ):
+        redacted = redacted.replace(value, "[redacted]")
+    redacted = _AUTHORIZATION_PATTERN.sub(r"\1[redacted]", redacted)
+    redacted = _NAMED_SECRET_PATTERN.sub(_redact_named_secret, redacted)
+    return _COMMON_TOKEN_PATTERN.sub("[redacted]", redacted)
+
+
+def _redact_named_secret(match: re.Match[str]) -> str:
+    name, separator, value = match.groups()
+    if value.isascii() and value.isdecimal() and is_safe_token_statistic(name, int(value)):
+        return match.group(0)
+    return f"{name}{separator}[redacted]"
