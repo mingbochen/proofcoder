@@ -69,6 +69,10 @@ class ToolRegistry:
         validation_error = _validate_arguments(definition, arguments)
         if validation_error is not None:
             return validation_error
+        if definition.preflight is not None:
+            preflight_error = definition.preflight(arguments)
+            if preflight_error is not None:
+                return preflight_error
         return PreparedToolCall(call=call, definition=definition, arguments=arguments)
 
     def execute(self, prepared: PreparedToolCall) -> ToolResult:

@@ -15,6 +15,7 @@ class RiskLevel(StrEnum):
 
     READ_ONLY = "read_only"
     WRITE = "write"
+    EXECUTE = "execute"
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,11 +42,18 @@ class ToolMeta:
 
     duration_ms: int = 0
     truncated: bool = False
+    warnings: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, object]:
         """Return a deterministic JSON-compatible mapping."""
 
-        return {"duration_ms": self.duration_ms, "truncated": self.truncated}
+        result: dict[str, object] = {
+            "duration_ms": self.duration_ms,
+            "truncated": self.truncated,
+        }
+        if self.warnings:
+            result["warnings"] = list(self.warnings)
+        return result
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,11 +70,22 @@ class ToolResult:
         cls,
         data: dict[str, object],
         *,
+        duration_ms: int = 0,
         truncated: bool = False,
+        warnings: tuple[str, ...] = (),
     ) -> ToolResult:
         """Build a successful tool result."""
 
-        return cls(ok=True, data=data, error=None, meta=ToolMeta(truncated=truncated))
+        return cls(
+            ok=True,
+            data=data,
+            error=None,
+            meta=ToolMeta(
+                duration_ms=duration_ms,
+                truncated=truncated,
+                warnings=warnings,
+            ),
+        )
 
     @classmethod
     def failure(
@@ -75,13 +94,22 @@ class ToolResult:
         message: str,
         *,
         retryable: bool,
+        data: dict[str, object] | None = None,
+        duration_ms: int = 0,
+        truncated: bool = False,
+        warnings: tuple[str, ...] = (),
     ) -> ToolResult:
         """Build a structured failure without including exception details."""
 
         return cls(
             ok=False,
-            data=None,
+            data=data,
             error=ToolError(code=code, message=message, retryable=retryable),
+            meta=ToolMeta(
+                duration_ms=duration_ms,
+                truncated=truncated,
+                warnings=warnings,
+            ),
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -105,6 +133,7 @@ class ToolResult:
 
 
 ToolExecutor = Callable[[Mapping[str, object]], ToolResult]
+ToolPreflight = Callable[[Mapping[str, object]], ToolResult | None]
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,6 +144,7 @@ class ToolDefinition:
     description: str
     parameters: dict[str, object]
     execute: ToolExecutor = field(repr=False)
+    preflight: ToolPreflight | None = field(default=None, repr=False)
     modifies_workspace: bool = False
     risk_level: RiskLevel = RiskLevel.READ_ONLY
 

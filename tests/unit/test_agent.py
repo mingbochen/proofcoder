@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import sys
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -17,6 +19,7 @@ from proofcoder.protocol import (
     ToolMessage,
 )
 from proofcoder.tools.base import ToolDefinition, ToolResult
+from proofcoder.tools.command import create_run_command_tool
 from proofcoder.tools.edit import create_create_file_tool, create_replace_in_file_tool
 from proofcoder.tools.files import create_list_files_tool, create_read_file_tool
 from proofcoder.tools.registry import ToolRegistry
@@ -64,6 +67,24 @@ def _editable_registry(workspace: Path) -> ToolRegistry:
     registry = _read_only_registry(workspace)
     registry.register(create_create_file_tool(workspace))
     registry.register(create_replace_in_file_tool(workspace))
+    return registry
+
+
+def _c3_registry(workspace: Path) -> ToolRegistry:
+    registry = _editable_registry(workspace)
+    registry.register(
+        create_run_command_tool(
+            workspace,
+            environ={
+                "PATH": str(Path(sys.executable).resolve().parent),
+                "PATHEXT": os.environ.get("PATHEXT", ".EXE;.COM"),
+                "SYSTEMROOT": os.environ.get("SYSTEMROOT", r"C:\Windows"),
+                "TEMP": str(workspace),
+                "TMP": str(workspace),
+                "WINDIR": os.environ.get("WINDIR", r"C:\Windows"),
+            },
+        )
+    )
     return registry
 
 
@@ -496,3 +517,118 @@ def test_agent_reads_more_context_after_ambiguous_replace_and_retries(tmp_path: 
 
     assert _tool_payloads(result)[0]["error"]["code"] == "AMBIGUOUS_MATCH"
     assert target.read_text(encoding="utf-8") == "new and new"
+
+
+def test_blocked_command_rejects_same_batch_write_before_any_side_effect(tmp_path: Path) -> None:
+    client = ScriptedClient(
+        [
+            _response(
+                calls=(
+                    _call(
+                        "write",
+                        '{"path":"must-not-exist.txt","content":"data"}',
+                        name="create_file",
+                    ),
+                    _call(
+                        "blocked",
+                        '{"argv":["python","-c","print(1)"]}',
+                        name="run_command",
+                    ),
+                )
+            ),
+            _response(content="selected a safer approach"),
+        ]
+    )
+
+    result = _loop(tmp_path, client, registry=_c3_registry(tmp_path)).run("unsafe batch")
+
+    assert not (tmp_path / "must-not-exist.txt").exists()
+    payloads = _tool_payloads(result)
+    assert [payload["error"]["code"] for payload in payloads] == [
+        "BATCH_REJECTED",
+        "COMMAND_BLOCKED",
+    ]
+    assert result.tool_error_count == 2
+
+
+def test_duplicate_command_ids_do_not_execute_any_command(tmp_path: Path) -> None:
+    (tmp_path / "marker.py").write_text(
+        "from pathlib import Path\nPath('marker.txt').write_text('ran', encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    duplicate = _call(
+        "duplicate-command",
+        '{"argv":["python","marker.py"]}',
+        name="run_command",
+    )
+    client = ScriptedClient(
+        [_response(calls=(duplicate, duplicate)), _response(content="used unique IDs")]
+    )
+
+    result = _loop(tmp_path, client, registry=_c3_registry(tmp_path)).run("duplicate IDs")
+
+    assert not (tmp_path / "marker.txt").exists()
+    assert not (tmp_path / ".proofcoder").exists()
+    assert {payload["error"]["code"] for payload in _tool_payloads(result)} == {
+        "DUPLICATE_TOOL_CALL_ID"
+    }
+
+
+def test_scripted_failure_read_edit_success_flow_preserves_protocol(tmp_path: Path) -> None:
+    (tmp_path / "check.py").write_text(
+        "import subject\n"
+        "print(f'VALUE={subject.VALUE}')\n"
+        "raise SystemExit(0 if subject.VALUE == 'fixed' else 1)\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "subject.py").write_text('VALUE = "broken"\n', encoding="utf-8")
+    command_arguments = '{"argv":["python","check.py"],"timeout_seconds":10}'
+    calls = (
+        _call("read-test", '{"path":"check.py"}', name="read_file"),
+        _call("run-failing", command_arguments, name="run_command"),
+        _call("read-source", '{"path":"subject.py"}', name="read_file"),
+        _call(
+            "edit-source",
+            '{"path":"subject.py","old_text":"broken","new_text":"fixed"}',
+            name="replace_in_file",
+        ),
+        _call("run-passing", command_arguments, name="run_command"),
+    )
+    final_text = "Ran python check.py: exit 1; after the exact edit, python check.py: exit 0."
+    client = ScriptedClient(
+        [*(_response(calls=(call,)) for call in calls), _response(content=final_text)]
+    )
+
+    result = _loop(
+        tmp_path,
+        client,
+        registry=_c3_registry(tmp_path),
+        max_steps=7,
+    ).run("fix the failing check and report the real exit codes")
+
+    assert result.termination_reason is TerminationReason.MODEL_STOPPED
+    assert result.final_text == final_text
+    assert result.tool_call_count == 5
+    assert result.tool_error_count == 0
+    assert (tmp_path / "subject.py").read_text(encoding="utf-8") == 'VALUE = "fixed"\n'
+    payloads = _tool_payloads(result)
+    assert payloads[1]["data"]["exit_code"] == 1
+    assert payloads[1]["data"]["stdout"] == "VALUE=broken\n"
+    assert payloads[4]["data"]["exit_code"] == 0
+    assert payloads[4]["data"]["stdout"] == "VALUE=fixed\n"
+    tool_messages = [
+        message for message in result.history.messages if isinstance(message, ToolMessage)
+    ]
+    assert [message.tool_call_id for message in tool_messages] == [call.id for call in calls]
+    assistants = [
+        message for message in result.history.messages if isinstance(message, AssistantMessage)
+    ]
+    assert all(message.reasoning_content == REASONING_SENTINEL for message in assistants)
+    assert [tool["function"]["name"] for tool in client.requests[0].tools] == [
+        "list_files",
+        "search_text",
+        "read_file",
+        "create_file",
+        "replace_in_file",
+        "run_command",
+    ]

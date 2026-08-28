@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import os
 import shutil
 import subprocess
 import sys
@@ -255,6 +256,7 @@ def test_run_cli_uses_scripted_client_and_hides_reasoning(tmp_path: Path) -> Non
         "read_file",
         "create_file",
         "replace_in_file",
+        "run_command",
     ]
 
 
@@ -289,6 +291,88 @@ def test_run_cli_displays_bounded_write_result_without_reasoning(tmp_path: Path)
     assert '"diff":"--- /dev/null\\n+++ b/created.txt\\n' in output
     assert '"truncated":false' in output
     assert REASONING_SENTINEL not in output
+
+
+def test_run_cli_displays_command_observation_without_reasoning_or_secret(tmp_path: Path) -> None:
+    (tmp_path / "cli_check.py").write_text(
+        "import sys\nprint('cli-stdout')\nprint('cli-stderr', file=sys.stderr)\n",
+        encoding="utf-8",
+    )
+    command_call = ToolCall(
+        id="command-1",
+        function=FunctionCall(
+            name="run_command",
+            arguments='{"argv":["python","cli_check.py"],"timeout_seconds":10}',
+        ),
+    )
+    scripted = ScriptedClient(
+        [
+            _scripted_response(calls=(command_call,)),
+            _scripted_response(content="Ran python cli_check.py with exit code 0."),
+        ]
+    )
+    stream = io.StringIO()
+    environment = {
+        "DEEPSEEK_API_KEY": SENSITIVE_SENTINEL,
+        "PATH": str(Path(sys.executable).resolve().parent),
+        "PATHEXT": os.environ.get("PATHEXT", ".EXE;.COM"),
+        "SYSTEMROOT": os.environ.get("SYSTEMROOT", r"C:\Windows"),
+        "TEMP": str(tmp_path),
+        "WINDIR": os.environ.get("WINDIR", r"C:\Windows"),
+    }
+
+    code = cli.main(
+        ["run", "--workspace", str(tmp_path), "run the check"],
+        environ=environment,
+        cwd=tmp_path,
+        console=Console(file=stream, force_terminal=False, color_system=None, width=240),
+        run_client_factory=lambda config: scripted,
+    )
+    output = stream.getvalue()
+
+    assert code == 0
+    assert "TOOL: run_command" in output
+    assert '"command_kind":"script"' in output
+    assert '"exit_code":0' in output
+    assert '"stdout_truncated":false' in output
+    assert '"stderr_truncated":false' in output
+    assert '"audit_path":".proofcoder/runtime/commands/' in output
+    assert "cli-stdout" in output
+    assert "cli-stderr" in output
+    assert REASONING_SENTINEL not in output
+    assert SENSITIVE_SENTINEL not in output
+
+
+def test_run_cli_displays_stable_blocked_command_code(tmp_path: Path) -> None:
+    blocked_call = ToolCall(
+        id="blocked-1",
+        function=FunctionCall(
+            name="run_command",
+            arguments='{"argv":["python","-c","print(1)"]}',
+        ),
+    )
+    scripted = ScriptedClient(
+        [
+            _scripted_response(calls=(blocked_call,)),
+            _scripted_response(content="The unsafe command was not run."),
+        ]
+    )
+    stream = io.StringIO()
+
+    code = cli.main(
+        ["run", "--workspace", str(tmp_path), "do not bypass policy"],
+        environ={"DEEPSEEK_API_KEY": SENSITIVE_SENTINEL},
+        cwd=tmp_path,
+        console=Console(file=stream, force_terminal=False, color_system=None, width=200),
+        run_client_factory=lambda config: scripted,
+    )
+    output = stream.getvalue()
+
+    assert code == 0
+    assert "TOOL: run_command" in output
+    assert "COMMAND_BLOCKED" in output
+    assert REASONING_SENTINEL not in output
+    assert SENSITIVE_SENTINEL not in output
 
 
 def test_run_cli_max_steps_has_distinct_exit_code(tmp_path: Path) -> None:

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 import shutil
 import subprocess
@@ -17,29 +16,13 @@ from proofcoder.safety.paths import (
     ensure_within_workspace,
     resolve_workspace_directory,
 )
-from proofcoder.safety.secrets import is_sensitive_path
+from proofcoder.safety.secrets import is_sensitive_path, minimal_subprocess_environment
 from proofcoder.tools.base import ToolDefinition, ToolResult
 from proofcoder.tools.files import DEFAULT_IGNORED_DIRECTORIES, MAX_FILE_SIZE_BYTES
 
 MAX_SEARCH_RESULTS = 200
 MAX_SEARCH_FILE_SIZE_BYTES = MAX_FILE_SIZE_BYTES
 MAX_MATCH_LINE_CHARS = 500
-
-_ALLOWED_ENVIRONMENT_NAMES = frozenset(
-    {
-        "LANG",
-        "LC_ALL",
-        "LC_CTYPE",
-        "PATH",
-        "PATHEXT",
-        "SYSTEMROOT",
-        "TEMP",
-        "TMP",
-        "TMPDIR",
-        "WINDIR",
-    }
-)
-_SENSITIVE_ENVIRONMENT_MARKERS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL")
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,23 +98,6 @@ def create_search_text_tool(workspace: Path) -> ToolDefinition:
         },
         execute=execute,
     )
-
-
-def minimal_subprocess_environment(
-    environ: Mapping[str, str] | None = None,
-) -> dict[str, str]:
-    """Return only process essentials, excluding names that resemble credentials."""
-
-    source = os.environ if environ is None else environ
-    filtered: dict[str, str] = {}
-    for name in source:
-        upper_name = name.upper()
-        if upper_name not in _ALLOWED_ENVIRONMENT_NAMES:
-            continue
-        if any(marker in upper_name for marker in _SENSITIVE_ENVIRONMENT_MARKERS):
-            continue
-        filtered[name] = source[name]
-    return filtered
 
 
 def _search_text(workspace_root: Path, arguments: Mapping[str, object]) -> ToolResult:

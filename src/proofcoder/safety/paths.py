@@ -36,7 +36,11 @@ def resolve_workspace_path(
     resolved = (workspace_root / requested_path).resolve(strict=False)
     ensure_within_workspace(workspace_root, resolved)
     relative = resolved.relative_to(workspace_root).as_posix() or "."
-    if is_sensitive_path(requested_path) or is_sensitive_path(relative):
+    if (
+        is_sensitive_path(requested_path)
+        or is_sensitive_path(relative)
+        or is_internal_runtime_path(relative)
+    ):
         raise WorkspacePathError(
             "SENSITIVE_PATH",
             "access to sensitive credential or key paths is blocked",
@@ -83,7 +87,11 @@ def resolve_workspace_new_file(workspace: Path, requested: str) -> tuple[Path, s
     ensure_within_workspace(workspace_root, parent)
     target = parent / requested_path.name
     relative = target.relative_to(workspace_root).as_posix() or "."
-    if is_sensitive_path(requested_path) or is_sensitive_path(relative):
+    if (
+        is_sensitive_path(requested_path)
+        or is_sensitive_path(relative)
+        or is_internal_runtime_path(relative)
+    ):
         raise WorkspacePathError(
             "SENSITIVE_PATH",
             "access to sensitive credential or key paths is blocked",
@@ -120,3 +128,39 @@ def ensure_within_workspace(workspace_root: Path, candidate: Path) -> None:
             "PATH_OUTSIDE_WORKSPACE",
             "resolved path leaves the selected workspace",
         ) from None
+
+
+def resolve_workspace_argument_path(
+    workspace: Path,
+    cwd: Path,
+    requested: str,
+) -> tuple[Path, str]:
+    """Resolve a possibly not-yet-existing command argument path inside the workspace."""
+
+    workspace_root = workspace.resolve(strict=True)
+    if _is_absolute_or_drive_qualified(requested):
+        raise WorkspacePathError(
+            "PATH_OUTSIDE_WORKSPACE",
+            "command path arguments must be workspace relative",
+        )
+    resolved = (cwd / Path(requested.replace("\\", "/"))).resolve(strict=False)
+    ensure_within_workspace(workspace_root, resolved)
+    relative = resolved.relative_to(workspace_root).as_posix() or "."
+    if is_sensitive_path(requested) or is_sensitive_path(relative):
+        raise WorkspacePathError(
+            "SENSITIVE_PATH",
+            "access to sensitive credential or key paths is blocked",
+        )
+    if is_internal_runtime_path(relative):
+        raise WorkspacePathError(
+            "SENSITIVE_PATH",
+            "access to internal runtime paths is blocked",
+        )
+    return resolved, relative
+
+
+def is_internal_runtime_path(relative: str) -> bool:
+    """Return whether a workspace-relative path enters ProofCoder runtime state."""
+
+    parts = PurePosixPath(relative).parts
+    return bool(parts) and parts[0].casefold() == ".proofcoder"
