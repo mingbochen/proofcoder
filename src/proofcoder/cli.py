@@ -1,9 +1,10 @@
-"""Command-line interface for diagnostics and the Stage C3 local coding agent."""
+"""Command-line interface for diagnostics and the Stage D1 local coding agent."""
 
 from __future__ import annotations
 
 import argparse
 import importlib
+import json
 import os
 import sys
 from collections.abc import Callable, Mapping, Sequence
@@ -19,10 +20,17 @@ from proofcoder.errors import ConfigurationError, ProofCoderError
 from proofcoder.llm.base import LLMClient
 from proofcoder.llm.deepseek import DeepSeekClient
 from proofcoder.prompt import STAGE_B_SYSTEM_PROMPT
-from proofcoder.protocol import AssistantMessage, ModelResponse, TerminationReason, ToolMessage
+from proofcoder.protocol import (
+    AssistantMessage,
+    CompletionStatus,
+    ModelResponse,
+    TerminationReason,
+    ToolMessage,
+)
 from proofcoder.tools.command import create_run_command_tool
 from proofcoder.tools.edit import create_create_file_tool, create_replace_in_file_tool
 from proofcoder.tools.files import create_list_files_tool, create_read_file_tool
+from proofcoder.tools.finish import create_finish_task_tool
 from proofcoder.tools.registry import ToolRegistry
 from proofcoder.tools.search import create_search_text_tool
 
@@ -200,6 +208,7 @@ def _run_agent(
     registry.register(create_create_file_tool(workspace))
     registry.register(create_replace_in_file_tool(workspace))
     registry.register(create_run_command_tool(workspace, environ=environ))
+    registry.register(create_finish_task_tool(workspace))
     try:
         client = client_factory(config)
     except ProofCoderError:
@@ -232,20 +241,52 @@ def _run_agent(
                 secret,
             )
 
+    if result.final_report is not None:
+        _safe_print(console, f"REPORT: {result.final_report}", secret)
+    completion_status = (
+        "none" if result.completion_status is None else result.completion_status.value
+    )
+    changed_files = json.dumps(
+        list(result.changed_files), ensure_ascii=False, separators=(",", ":")
+    )
+    verification_argv = (
+        "null"
+        if result.verification_command is None
+        else json.dumps(
+            list(result.verification_command),
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+    )
     _safe_print(
         console,
         (
             f"DONE: termination={result.termination_reason.value} "
+            f"completion={completion_status} changed_files={changed_files} "
+            f"verification_argv={verification_argv} "
+            f"verification_cwd={result.verification_cwd} "
+            f"verification_exit_code={result.verification_exit_code} "
             f"model_calls={result.model_call_count} tool_calls={result.tool_call_count} "
             f"tool_errors={result.tool_error_count}"
         ),
         secret,
     )
+    return _run_exit_code(result.termination_reason, result.completion_status)
+
+
+def _run_exit_code(
+    termination_reason: TerminationReason,
+    completion_status: CompletionStatus | None,
+) -> int:
+    if termination_reason is not TerminationReason.FINISH_TASK:
+        return 1
     return {
-        TerminationReason.MODEL_STOPPED: 0,
-        TerminationReason.API_ERROR: 1,
-        TerminationReason.MAX_STEPS: 3,
-    }[result.termination_reason]
+        CompletionStatus.COMPLETED_VERIFIED: 0,
+        CompletionStatus.COMPLETED_NO_CHANGES: 0,
+        CompletionStatus.COMPLETED_UNVERIFIED: 3,
+        CompletionStatus.BLOCKED: 4,
+        None: 1,
+    }[completion_status]
 
 
 def _local_checks(cwd: Path) -> tuple[_CheckResult, ...]:

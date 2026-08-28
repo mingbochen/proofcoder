@@ -80,16 +80,26 @@ Message: TypeAlias = SystemMessage | UserMessage | AssistantMessage | ToolMessag
 
 
 class TerminationReason(StrEnum):
-    """Stage B controlled termination reasons."""
+    """Controlled termination reasons implemented through Stage D1."""
 
+    FINISH_TASK = "finish_task"
     MODEL_STOPPED = "model_stopped"
     MAX_STEPS = "max_steps"
     API_ERROR = "api_error"
 
 
+class CompletionStatus(StrEnum):
+    """Locally determined outcomes for an accepted ``finish_task`` call."""
+
+    COMPLETED_VERIFIED = "completed_verified"
+    COMPLETED_UNVERIFIED = "completed_unverified"
+    COMPLETED_NO_CHANGES = "completed_no_changes"
+    BLOCKED = "blocked"
+
+
 @dataclass(frozen=True, slots=True)
 class RunResult:
-    """Observable result of one bounded Stage B agent run."""
+    """Observable result of one bounded agent run."""
 
     termination_reason: TerminationReason
     final_text: str | None
@@ -97,3 +107,9 @@ class RunResult:
     model_call_count: int
     tool_call_count: int
     tool_error_count: int
+    completion_status: CompletionStatus | None = None
+    final_report: str | None = None
+    changed_files: tuple[str, ...] = ()
+    verification_command: tuple[str, ...] | None = None
+    verification_cwd: str | None = None
+    verification_exit_code: int | None = None

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import json
 import os
 import shutil
 import subprocess
@@ -243,7 +244,7 @@ def test_run_cli_uses_scripted_client_and_hides_reasoning(tmp_path: Path) -> Non
     )
     output = stream.getvalue()
 
-    assert code == 0
+    assert code == 1
     for label in ("TASK:", "MODEL:", "TOOL:", "RESULT:", "DONE:"):
         assert label in output
     assert "termination=model_stopped" in output
@@ -257,6 +258,7 @@ def test_run_cli_uses_scripted_client_and_hides_reasoning(tmp_path: Path) -> Non
         "create_file",
         "replace_in_file",
         "run_command",
+        "finish_task",
     ]
 
 
@@ -285,7 +287,7 @@ def test_run_cli_displays_bounded_write_result_without_reasoning(tmp_path: Path)
     )
     output = stream.getvalue()
 
-    assert code == 0
+    assert code == 1
     assert (tmp_path / "created.txt").read_text(encoding="utf-8") == "hello\n"
     assert '"ok":true' in output
     assert '"diff":"--- /dev/null\\n+++ b/created.txt\\n' in output
@@ -330,7 +332,7 @@ def test_run_cli_displays_command_observation_without_reasoning_or_secret(tmp_pa
     )
     output = stream.getvalue()
 
-    assert code == 0
+    assert code == 1
     assert "TOOL: run_command" in output
     assert '"command_kind":"script"' in output
     assert '"exit_code":0' in output
@@ -368,7 +370,7 @@ def test_run_cli_displays_stable_blocked_command_code(tmp_path: Path) -> None:
     )
     output = stream.getvalue()
 
-    assert code == 0
+    assert code == 1
     assert "TOOL: run_command" in output
     assert "COMMAND_BLOCKED" in output
     assert REASONING_SENTINEL not in output
@@ -387,7 +389,7 @@ def test_run_cli_max_steps_has_distinct_exit_code(tmp_path: Path) -> None:
         run_client_factory=lambda config: scripted,
     )
 
-    assert code == 3
+    assert code == 1
     assert "termination=max_steps" in stream.getvalue()
 
 
@@ -440,3 +442,153 @@ def test_run_help_is_available_without_configuration() -> None:
     assert result.returncode == 0
     assert "--workspace" in result.stdout
     assert "--max-steps" in result.stdout
+
+
+def _finish_call(arguments: dict[str, object], call_id: str = "finish-1") -> ToolCall:
+    return ToolCall(
+        id=call_id,
+        function=FunctionCall(name="finish_task", arguments=json.dumps(arguments)),
+    )
+
+
+def test_run_cli_verified_completion_has_evidence_and_exit_zero(tmp_path: Path) -> None:
+    (tmp_path / "subject.py").write_text('VALUE = "broken"\n', encoding="utf-8")
+    (tmp_path / "test_subject.py").write_text(
+        "import unittest\n"
+        "import subject\n\n"
+        "class SubjectTest(unittest.TestCase):\n"
+        "    def test_value(self):\n"
+        "        self.assertEqual(subject.VALUE, 'fixed')\n",
+        encoding="utf-8",
+    )
+    verification_argv = ["python", "-m", "unittest", "-q"]
+    edit_call = ToolCall(
+        id="edit-1",
+        function=FunctionCall(
+            name="replace_in_file",
+            arguments=('{"path":"subject.py","old_text":"broken","new_text":"fixed"}'),
+        ),
+    )
+    command_call = ToolCall(
+        id="verify-1",
+        function=FunctionCall(
+            name="run_command",
+            arguments=('{"argv":["python","-m","unittest","-q"],"timeout_seconds":10}'),
+        ),
+    )
+    scripted = ScriptedClient(
+        [
+            _scripted_response(calls=(edit_call,)),
+            _scripted_response(calls=(command_call,)),
+            _scripted_response(
+                calls=(
+                    _finish_call(
+                        {
+                            "summary": "fixed and verified",
+                            "changed_files": ["subject.py"],
+                            "verification_command": verification_argv,
+                            "limitations": [],
+                        }
+                    ),
+                )
+            ),
+        ]
+    )
+    environment = {
+        "DEEPSEEK_API_KEY": SENSITIVE_SENTINEL,
+        "PATH": str(Path(sys.executable).resolve().parent),
+        "PATHEXT": os.environ.get("PATHEXT", ".EXE;.COM"),
+        "SYSTEMROOT": os.environ.get("SYSTEMROOT", r"C:\Windows"),
+        "TEMP": str(tmp_path),
+        "TMP": str(tmp_path),
+        "WINDIR": os.environ.get("WINDIR", r"C:\Windows"),
+    }
+    stream = io.StringIO()
+
+    code = cli.main(
+        ["run", "--workspace", str(tmp_path), "fix and verify"],
+        environ=environment,
+        cwd=tmp_path,
+        console=Console(file=stream, force_terminal=False, color_system=None, width=300),
+        run_client_factory=lambda config: scripted,
+    )
+    output = stream.getvalue()
+
+    assert code == 0
+    assert "termination=finish_task" in output
+    assert "completion=completed_verified" in output
+    assert 'changed_files=["subject.py"]' in output
+    assert 'verification_argv=["python","-m","unittest","-q"]' in output
+    assert "verification_exit_code=0" in output
+    assert REASONING_SENTINEL not in output
+    assert SENSITIVE_SENTINEL not in output
+
+
+def test_run_cli_unverified_completion_has_exit_three(tmp_path: Path) -> None:
+    create_call = ToolCall(
+        id="create-1",
+        function=FunctionCall(
+            name="create_file",
+            arguments='{"path":"created.txt","content":"content"}',
+        ),
+    )
+    scripted = ScriptedClient(
+        [
+            _scripted_response(calls=(create_call,)),
+            _scripted_response(
+                calls=(_finish_call({"summary": "created", "changed_files": ["created.txt"]}),)
+            ),
+        ]
+    )
+    stream = io.StringIO()
+
+    code = cli.main(
+        ["run", "--workspace", str(tmp_path), "create"],
+        environ={"DEEPSEEK_API_KEY": SENSITIVE_SENTINEL},
+        cwd=tmp_path,
+        console=Console(file=stream, force_terminal=False, color_system=None),
+        run_client_factory=lambda config: scripted,
+    )
+
+    assert code == 3
+    assert "completion=completed_unverified" in stream.getvalue()
+
+
+def test_run_cli_blocked_completion_has_exit_four(tmp_path: Path) -> None:
+    scripted = ScriptedClient(
+        [
+            _scripted_response(
+                calls=(_finish_call({"summary": "blocked", "blocked_reason": "input unavailable"}),)
+            )
+        ]
+    )
+    stream = io.StringIO()
+
+    code = cli.main(
+        ["run", "--workspace", str(tmp_path), "blocked"],
+        environ={"DEEPSEEK_API_KEY": SENSITIVE_SENTINEL},
+        cwd=tmp_path,
+        console=Console(file=stream, force_terminal=False, color_system=None),
+        run_client_factory=lambda config: scripted,
+    )
+
+    assert code == 4
+    assert "completion=blocked" in stream.getvalue()
+
+
+def test_run_cli_no_change_completion_has_exit_zero(tmp_path: Path) -> None:
+    scripted = ScriptedClient(
+        [_scripted_response(calls=(_finish_call({"summary": "already satisfied"}),))]
+    )
+    stream = io.StringIO()
+
+    code = cli.main(
+        ["run", "--workspace", str(tmp_path), "inspect"],
+        environ={"DEEPSEEK_API_KEY": SENSITIVE_SENTINEL},
+        cwd=tmp_path,
+        console=Console(file=stream, force_terminal=False, color_system=None),
+        run_client_factory=lambda config: scripted,
+    )
+
+    assert code == 0
+    assert "completion=completed_no_changes" in stream.getvalue()

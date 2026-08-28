@@ -12,6 +12,7 @@ from proofcoder.agent import AgentLoop
 from proofcoder.llm.scripted import ScriptedClient
 from proofcoder.protocol import (
     AssistantMessage,
+    CompletionStatus,
     FunctionCall,
     ModelResponse,
     TerminationReason,
@@ -22,6 +23,7 @@ from proofcoder.tools.base import ToolDefinition, ToolResult
 from proofcoder.tools.command import create_run_command_tool
 from proofcoder.tools.edit import create_create_file_tool, create_replace_in_file_tool
 from proofcoder.tools.files import create_list_files_tool, create_read_file_tool
+from proofcoder.tools.finish import create_finish_task_tool
 from proofcoder.tools.registry import ToolRegistry
 from proofcoder.tools.search import create_search_text_tool
 
@@ -85,6 +87,7 @@ def _c3_registry(workspace: Path) -> ToolRegistry:
             },
         )
     )
+    registry.register(create_finish_task_tool(workspace))
     return registry
 
 
@@ -631,4 +634,175 @@ def test_scripted_failure_read_edit_success_flow_preserves_protocol(tmp_path: Pa
         "create_file",
         "replace_in_file",
         "run_command",
+        "finish_task",
     ]
+
+
+def test_read_modify_fail_modify_pass_finish_is_locally_verified(tmp_path: Path) -> None:
+    (tmp_path / "subject.py").write_text('VALUE = "initial"\n', encoding="utf-8")
+    (tmp_path / "test_subject.py").write_text(
+        "import unittest\n"
+        "import subject\n\n"
+        "class SubjectTest(unittest.TestCase):\n"
+        "    def test_value(self):\n"
+        "        self.assertEqual(subject.VALUE, 'fixed')\n\n"
+        "if __name__ == '__main__':\n"
+        "    unittest.main()\n",
+        encoding="utf-8",
+    )
+    verification_arguments = ["python", "-m", "unittest", "-q"]
+    calls = (
+        _call("read", '{"path":"subject.py"}', name="read_file"),
+        _call(
+            "first-edit",
+            '{"path":"subject.py","old_text":"initial","new_text":"broken"}',
+            name="replace_in_file",
+        ),
+        _call(
+            "failing-test",
+            json.dumps({"argv": verification_arguments, "timeout_seconds": 10}),
+            name="run_command",
+        ),
+        _call(
+            "second-edit",
+            '{"path":"subject.py","old_text":"broken","new_text":"fixed"}',
+            name="replace_in_file",
+        ),
+        _call(
+            "passing-test",
+            json.dumps({"argv": verification_arguments, "timeout_seconds": 10}),
+            name="run_command",
+        ),
+        _call(
+            "finish",
+            json.dumps(
+                {
+                    "summary": "fixed the value",
+                    "changed_files": ["subject.py"],
+                    "verification_command": verification_arguments,
+                    "limitations": [],
+                    "blocked_reason": None,
+                }
+            ),
+            name="finish_task",
+        ),
+    )
+    client = ScriptedClient([*(_response(calls=(call,)) for call in calls)])
+
+    result = _loop(
+        tmp_path,
+        client,
+        registry=_c3_registry(tmp_path),
+        max_steps=8,
+    ).run("fix and verify")
+
+    assert result.termination_reason is TerminationReason.FINISH_TASK
+    assert result.completion_status is CompletionStatus.COMPLETED_VERIFIED
+    assert result.changed_files == ("subject.py",)
+    assert result.verification_command == tuple(verification_arguments)
+    assert result.verification_cwd == "."
+    assert result.verification_exit_code == 0
+    assert result.final_report is not None
+    assert "exit_code=1" in result.final_report
+    assert "exit_code=0" in result.final_report
+    assert "Valid verification after latest modification: event=5" in result.final_report
+    assert len(client.requests) == len(calls)
+    assert result.model_call_count == len(calls)
+    assert result.tool_call_count == len(calls)
+    assert result.tool_error_count == 0
+    tool_messages = [
+        message for message in result.history.messages if isinstance(message, ToolMessage)
+    ]
+    assert [message.tool_call_id for message in tool_messages] == [call.id for call in calls]
+    assistants = [
+        message for message in result.history.messages if isinstance(message, AssistantMessage)
+    ]
+    assert all(message.reasoning_content == REASONING_SENTINEL for message in assistants)
+
+
+def test_modified_then_finish_is_unverified_and_uses_actual_path(tmp_path: Path) -> None:
+    create = _call(
+        "create",
+        '{"path":"actual.txt","content":"content"}',
+        name="create_file",
+    )
+    finish = _call(
+        "finish",
+        json.dumps(
+            {
+                "summary": "created a file",
+                "changed_files": ["claimed.txt"],
+                "verification_command": ["python", "-m", "pytest", "-q"],
+            }
+        ),
+        name="finish_task",
+    )
+    client = ScriptedClient([_response(calls=(create,)), _response(calls=(finish,))])
+
+    result = _loop(tmp_path, client, registry=_c3_registry(tmp_path)).run("create")
+
+    assert result.completion_status is CompletionStatus.COMPLETED_UNVERIFIED
+    assert result.changed_files == ("actual.txt",)
+    assert result.verification_command is None
+    assert result.final_report is not None
+    assert "MODEL_CHANGED_FILES_MISMATCH" in result.final_report
+    assert "MODEL_VERIFICATION_UNCONFIRMED" in result.final_report
+
+
+def test_finish_mixed_batch_rejects_all_calls_without_side_effect(tmp_path: Path) -> None:
+    create = _call(
+        "create",
+        '{"path":"must-not-exist.txt","content":"content"}',
+        name="create_file",
+    )
+    mixed_finish = _call(
+        "mixed-finish",
+        '{"summary":"done","changed_files":[]}',
+        name="finish_task",
+    )
+    sole_finish = _call(
+        "sole-finish",
+        '{"summary":"nothing changed","changed_files":[]}',
+        name="finish_task",
+    )
+    client = ScriptedClient(
+        [
+            _response(calls=(create, mixed_finish)),
+            _response(calls=(sole_finish,)),
+        ]
+    )
+
+    result = _loop(tmp_path, client, registry=_c3_registry(tmp_path)).run("batch")
+
+    assert not (tmp_path / "must-not-exist.txt").exists()
+    assert result.completion_status is CompletionStatus.COMPLETED_NO_CHANGES
+    payloads = _tool_payloads(result)
+    assert [payload["error"]["code"] for payload in payloads[:2]] == [
+        "BATCH_REJECTED",
+        "FINISH_TASK_MUST_BE_SOLE_CALL",
+    ]
+    assert payloads[2]["data"]["completion_status"] == "completed_no_changes"
+    assert result.tool_error_count == 2
+    tool_messages = [
+        message for message in result.history.messages if isinstance(message, ToolMessage)
+    ]
+    assert [message.tool_call_id for message in tool_messages] == [
+        "create",
+        "mixed-finish",
+        "sole-finish",
+    ]
+
+
+def test_finish_blocked_stops_without_requesting_another_model_response(tmp_path: Path) -> None:
+    finish = _call(
+        "finish",
+        '{"summary":"blocked","blocked_reason":"required input unavailable"}',
+        name="finish_task",
+    )
+    client = ScriptedClient([_response(calls=(finish,))])
+
+    result = _loop(tmp_path, client, registry=_c3_registry(tmp_path)).run("blocked")
+
+    assert result.termination_reason is TerminationReason.FINISH_TASK
+    assert result.completion_status is CompletionStatus.BLOCKED
+    assert len(client.requests) == 1
