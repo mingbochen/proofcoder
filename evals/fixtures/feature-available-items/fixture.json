@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "id": "feature-available-items",
+  "category": "feature_addition",
+  "task": "Update available_names to return only in-stock item names in their original order, and add an empty-inventory regression test without changing total_units.",
+  "validation": {
+    "argv": ["python", "-m", "unittest", "discover", "-s", "tests", "-v"],
+    "cwd": ".",
+    "success_exit_code": 0,
+    "initial_exit_code": 1,
+    "initial_output_contains": "FAIL: test_omits_out_of_stock_items"
+  },
+  "allowed_modified_files": ["inventory.py", "tests/test_inventory.py"],
+  "required_modified_files": ["inventory.py", "tests/test_inventory.py"]
+}
