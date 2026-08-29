@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import os
+import stat
+import subprocess
 from dataclasses import replace
 from pathlib import Path
 
@@ -16,6 +18,7 @@ from proofcoder.eval_core import (
     WorkspaceSnapshotError,
     aggregate_evaluation_results,
     compare_snapshots,
+    is_runtime_artifact_path,
     run_evaluation_attempt,
     snapshot_workspace,
 )
@@ -103,7 +106,11 @@ def _change_bug_workspace(
         )
         test_path.write_text(test_text.replace(marker, regression + marker), encoding="utf-8")
     if unexpected:
-        (workspace / "unexpected.txt").write_text("outside declared scope\n", encoding="utf-8")
+        (workspace / "notes.txt").write_text("outside declared scope\n", encoding="utf-8")
+        (workspace / "debug.log").write_text("outside declared scope\n", encoding="utf-8")
+        package = workspace / "package"
+        package.mkdir()
+        (package / "cache.py").write_text("VALUE = 1\n", encoding="utf-8")
 
 
 def _transition_fixture(tmp_path: Path) -> EvalFixture:
@@ -205,6 +212,57 @@ def test_success_records_independent_evidence_file_scope_and_run_statistics(
     assert result.trace_complete is True
 
 
+def test_changed_unittest_bytecode_is_ignored_without_masking_source_changes(
+    tmp_path: Path,
+) -> None:
+    fixture = _bug_fixture()
+    changed_bytecode: tuple[str, ...] = ()
+
+    def runner(_fixture: EvalFixture, workspace: Path) -> RunResult:
+        nonlocal changed_bytecode
+        before = {
+            path.relative_to(workspace).as_posix(): path.read_bytes()
+            for path in workspace.rglob("*.pyc")
+        }
+        assert before
+        _change_bug_workspace(workspace)
+        completed = subprocess.run(
+            fixture.validation.argv,
+            cwd=workspace,
+            env=_environment(tmp_path),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert completed.returncode == 0
+        after = {
+            path.relative_to(workspace).as_posix(): path.read_bytes()
+            for path in workspace.rglob("*.pyc")
+        }
+        changed_bytecode = tuple(
+            sorted(path for path, body in after.items() if before.get(path) != body)
+        )
+        assert changed_bytecode
+        return _run_result()
+
+    result = run_evaluation_attempt(
+        fixture,
+        tmp_path / "workspace",
+        1,
+        runner,
+        environ=_environment(tmp_path),
+    )
+
+    assert result.success is True
+    assert result.failure_reasons == ()
+    assert result.ignored_runtime_files == changed_bytecode
+    assert not set(result.ignored_runtime_files) & set(result.changed_files)
+    assert result.modified_files == (
+        "inclusive_total.py",
+        "tests/test_inclusive_total.py",
+    )
+
+
 def test_independent_validation_failure_overrides_verified_completion(tmp_path: Path) -> None:
     def runner(_fixture: EvalFixture, workspace: Path) -> RunResult:
         _change_bug_workspace(workspace, fix_source=False)
@@ -281,8 +339,8 @@ def test_unexpected_created_file_is_reported(tmp_path: Path) -> None:
 
     assert result.success is False
     assert result.failure_reasons == (EvaluationFailureReason.UNEXPECTED_FILES,)
-    assert result.added_files == ("unexpected.txt",)
-    assert result.unexpected_files == ("unexpected.txt",)
+    assert result.added_files == ("debug.log", "notes.txt", "package/cache.py")
+    assert result.unexpected_files == result.added_files
 
 
 def test_created_and_deleted_required_files_can_succeed(tmp_path: Path) -> None:
@@ -429,6 +487,9 @@ def test_snapshot_uses_posix_sha256_ignores_internal_files_and_tracks_all_change
         ),
         ("nested/value.txt", expected_hash),
     ]
+    assert [item.path for item in before.ignored_runtime_files] == [
+        ".proofcoder/traces/secret.jsonl"
+    ]
     assert all(len(item.sha256) == 64 for item in before.files)
     assert not hasattr(before.files[0], "content")
 
@@ -440,6 +501,70 @@ def test_snapshot_uses_posix_sha256_ignores_internal_files_and_tracks_all_change
     assert changes.added_files == ("add.txt",)
     assert changes.modified_files == ("nested/value.txt",)
     assert changes.deleted_files == ("delete.txt",)
+    assert changes.ignored_runtime_files == ()
+
+
+def test_runtime_artifacts_are_exactly_classified_audited_and_excluded(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    before = snapshot_workspace(workspace)
+    runtime_files = (
+        ".coverage",
+        ".coverage.worker",
+        ".proofcoder/runtime/audit.json",
+        ".ruff_cache/state",
+        "htmlcov/index.html",
+        "nested/.mypy_cache/state",
+        "nested/.pytest_cache/v/cache/nodeids",
+        "nested/__pycache__/module.cache",
+        "nested/module.pyc",
+        "nested/module.pyo",
+    )
+    scored_files = (
+        ".cache/state",
+        ".coverage-like",
+        ".hidden",
+        ".proofcoder-file",
+        ".pytest_cache.txt",
+        "build/output.py",
+        "debug.log",
+        "dist/output.py",
+        "htmlcov.txt",
+        "nested/.coverage",
+        "nested/__pycache_like__/module.cache",
+        "nested/htmlcov/index.html",
+        "nested/module.pyc.tmp",
+        "nested/upper.PYC",
+        "notes.txt",
+        "package/cache.py",
+        "scratch.tmp.py",
+    )
+    for relative in (*runtime_files, *scored_files):
+        target = workspace.joinpath(*relative.split("/"))
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(f"body for {relative}\n", encoding="utf-8")
+
+    after = snapshot_workspace(workspace)
+    changes = compare_snapshots(before, after)
+
+    assert tuple(item.path for item in after.ignored_runtime_files) == tuple(sorted(runtime_files))
+    assert changes.ignored_runtime_files == tuple(sorted(runtime_files))
+    assert changes.added_files == tuple(sorted(scored_files))
+    assert not set(changes.ignored_runtime_files) & set(changes.changed_files)
+    assert is_runtime_artifact_path(".proofcoder") is False
+
+
+@pytest.mark.parametrize(
+    "relative_path",
+    ("/absolute.pyc", "../escape.pyc", "a/../escape.pyc", "a\\module.pyc", "C:/x.pyc"),
+)
+def test_runtime_artifact_classifier_rejects_noncanonical_paths(
+    relative_path: str,
+) -> None:
+    with pytest.raises(ValueError, match="normalized relative POSIX"):
+        is_runtime_artifact_path(relative_path)
 
 
 def test_snapshot_rejects_symlink_directly(tmp_path: Path) -> None:
@@ -456,6 +581,49 @@ def test_snapshot_rejects_symlink_directly(tmp_path: Path) -> None:
         snapshot_workspace(workspace)
 
     assert captured.value.code == "SNAPSHOT_SYMLINK"
+
+
+def test_snapshot_rejects_symlink_even_inside_runtime_cache(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    cache = workspace / "__pycache__"
+    cache.mkdir(parents=True)
+    outside = tmp_path / "outside.pyc"
+    outside.write_bytes(b"outside")
+    try:
+        (cache / "linked.pyc").symlink_to(outside)
+    except OSError as error:
+        pytest.skip(f"file symlinks unavailable: {error}")
+
+    with pytest.raises(WorkspaceSnapshotError) as captured:
+        snapshot_workspace(workspace)
+
+    assert captured.value.code == "SNAPSHOT_SYMLINK"
+
+
+def test_snapshot_rejects_special_file_even_with_bytecode_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = tmp_path / "workspace"
+    cache = workspace / "__pycache__"
+    cache.mkdir(parents=True)
+    artifact = cache / "module.pyc"
+    artifact.write_bytes(b"derived")
+    original_stat = Path.stat
+
+    def special_stat(path: Path, *, follow_symlinks: bool = True) -> os.stat_result:
+        metadata = original_stat(path, follow_symlinks=follow_symlinks)
+        if path == artifact:
+            values = list(metadata)
+            values[stat.ST_MODE] = stat.S_IFIFO
+            return os.stat_result(values)
+        return metadata
+
+    monkeypatch.setattr(Path, "stat", special_stat)
+
+    with pytest.raises(WorkspaceSnapshotError) as captured:
+        snapshot_workspace(workspace)
+
+    assert captured.value.code == "SNAPSHOT_SPECIAL_FILE"
 
 
 def test_nonempty_target_becomes_a_materialization_failure(tmp_path: Path) -> None:
@@ -481,7 +649,10 @@ def test_aggregation_is_deterministic_and_sums_each_dimension() -> None:
         category=FixtureCategory.FEATURE_ADDITION,
         attempt_index=2,
         success=False,
-        failure_reasons=(EvaluationFailureReason.FINAL_VALIDATION_FAILED,),
+        failure_reasons=(
+            EvaluationFailureReason.UNEXPECTED_FILES,
+            EvaluationFailureReason.FINAL_VALIDATION_FAILED,
+        ),
         model_call_count=2,
         tool_call_count=5,
         tool_error_count=1,
@@ -538,6 +709,15 @@ def test_aggregation_is_deterministic_and_sums_each_dimension() -> None:
     assert aggregate.overall.attempts == 3
     assert aggregate.overall.successes == 2
     assert aggregate.overall.success_rate == pytest.approx(2 / 3)
+    expected_reasons = (
+        (EvaluationFailureReason.FINAL_VALIDATION_FAILED, 1),
+        (EvaluationFailureReason.UNEXPECTED_FILES, 1),
+    )
+    assert aggregate.fixtures[0].metrics.failure_reason_counts == ()
+    assert aggregate.fixtures[1].metrics.failure_reason_counts == expected_reasons
+    assert aggregate.categories[0].metrics.failure_reason_counts == ()
+    assert aggregate.categories[1].metrics.failure_reason_counts == expected_reasons
+    assert aggregate.overall.failure_reason_counts == expected_reasons
     assert (
         aggregate.overall.model_calls,
         aggregate.overall.tool_calls,

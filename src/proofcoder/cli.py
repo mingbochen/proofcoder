@@ -13,26 +13,37 @@ from typing import Protocol, cast
 
 from rich.console import Console
 
-from proofcoder.agent import AgentLoop
+from proofcoder.agent_runtime import (
+    AgentRunLimits,
+    build_agent_loop,
+    create_agent_runtime_resources,
+    emit_setup_termination,
+)
 from proofcoder.config import ProofCoderConfig
 from proofcoder.context import DEFAULT_CONTEXT_BUDGET_BYTES
 from proofcoder.errors import ConfigurationError, ProofCoderError
-from proofcoder.events import CompositeSink, EventEmitter, EventType, TerminalSink, new_run_id
+from proofcoder.eval_core import AgentRunner
+from proofcoder.eval_runner import (
+    DEFAULT_FIXTURES_ROOT,
+    DEFAULT_OUTPUT_ROOT,
+    DEFAULT_REPEAT,
+    MAX_REPEAT,
+    MIN_REPEAT,
+    EvaluationInfrastructureError,
+    EvaluationModelInfo,
+    EvaluationProgress,
+    EvaluationProgressKind,
+    create_evaluation_agent_runner,
+    run_evaluation,
+)
+from proofcoder.events import TerminalSink
 from proofcoder.llm.base import LLMClient
 from proofcoder.llm.deepseek import DeepSeekClient
-from proofcoder.prompt import STAGE_B_SYSTEM_PROMPT
 from proofcoder.protocol import CompletionStatus, ModelResponse, TerminationReason
 from proofcoder.retry import DEFAULT_MAX_API_ATTEMPTS
-from proofcoder.safety.secrets import sensitive_environment_values
-from proofcoder.tools.command import create_run_command_tool
-from proofcoder.tools.edit import create_create_file_tool, create_replace_in_file_tool
-from proofcoder.tools.files import create_list_files_tool, create_read_file_tool
-from proofcoder.tools.finish import create_finish_task_tool
-from proofcoder.tools.registry import ToolRegistry
-from proofcoder.tools.search import create_search_text_tool
+from proofcoder.safety.secrets import redact_text, sensitive_environment_values
 from proofcoder.trace import (
     TracePathError,
-    TraceRecorder,
     final_trace_report,
     list_traces,
     read_trace,
@@ -110,6 +121,69 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"attempts per model response, 1-{DEFAULT_MAX_API_ATTEMPTS} (default: 3)",
     )
     run.add_argument("task", help="task for the local coding agent loop")
+    evaluate = commands.add_parser(
+        "eval",
+        help="run repeated local fixtures using real model calls",
+        description=(
+            "Run ProofCoder's local evaluation fixtures. This command makes real model calls; "
+            "tests must inject a fake client or runner."
+        ),
+    )
+    evaluate.add_argument(
+        "--repeat",
+        type=_bounded_repeat,
+        default=DEFAULT_REPEAT,
+        help=f"attempts per fixture, {MIN_REPEAT}-{MAX_REPEAT} (default: {DEFAULT_REPEAT})",
+    )
+    evaluate.add_argument(
+        "--fixture",
+        action="append",
+        default=[],
+        help="fixture ID to run; repeat the option to select multiple (default: all)",
+    )
+    evaluate.add_argument(
+        "--fixtures-root",
+        default=str(DEFAULT_FIXTURES_ROOT),
+        help=f"fixture directory relative to the project root (default: {DEFAULT_FIXTURES_ROOT})",
+    )
+    evaluate.add_argument(
+        "--output-root",
+        default=str(DEFAULT_OUTPUT_ROOT),
+        help=f"result directory relative to the project root (default: {DEFAULT_OUTPUT_ROOT})",
+    )
+    evaluate.add_argument(
+        "--max-steps",
+        type=_bounded_max_steps,
+        default=8,
+        help=f"maximum assistant responses per attempt, 1-{_MAX_AGENT_STEPS} (default: 8)",
+    )
+    evaluate.add_argument(
+        "--max-seconds",
+        type=_bounded_max_seconds,
+        default=600.0,
+        help=f"maximum wall-clock seconds per attempt, 1-{_MAX_AGENT_SECONDS:g}",
+    )
+    evaluate.add_argument(
+        "--context-budget-bytes",
+        type=_bounded_context_budget,
+        default=DEFAULT_CONTEXT_BUDGET_BYTES,
+        help=(
+            f"request context budget per attempt, {_MIN_CONTEXT_BUDGET_BYTES}-"
+            f"{_MAX_CONTEXT_BUDGET_BYTES} bytes"
+        ),
+    )
+    evaluate.add_argument(
+        "--max-consecutive-failures",
+        type=_bounded_consecutive_failures,
+        default=5,
+        help=f"consecutive failed batches per attempt, 1-{_MAX_CONSECUTIVE_FAILURES}",
+    )
+    evaluate.add_argument(
+        "--max-api-attempts",
+        type=_bounded_api_attempts,
+        default=DEFAULT_MAX_API_ATTEMPTS,
+        help=f"API attempts per model response, 1-{DEFAULT_MAX_API_ATTEMPTS}",
+    )
     trace = commands.add_parser("trace", help="inspect safe workspace JSONL traces")
     trace_commands = trace.add_subparsers(dest="trace_command", required=True)
     trace_list = trace_commands.add_parser("list", help="list workspace run traces")
@@ -128,6 +202,8 @@ def main(
     console: Console | None = None,
     client_factory: _ConnectivityClientFactory = _DEFAULT_CONNECTIVITY_CLIENT_FACTORY,
     run_client_factory: _RunClientFactory = _DEFAULT_RUN_CLIENT_FACTORY,
+    eval_client_factory: _RunClientFactory = _DEFAULT_RUN_CLIENT_FACTORY,
+    eval_agent_runner: AgentRunner | None = None,
 ) -> int:
     """Run the ProofCoder CLI and return a process exit code."""
 
@@ -160,6 +236,53 @@ def main(
         except KeyboardInterrupt:
             output.print("DONE: termination=interrupted", markup=False)
             return 130
+    if args.command == "eval":
+        limits = AgentRunLimits(
+            max_steps=int(args.max_steps),
+            max_seconds=float(args.max_seconds),
+            context_budget_bytes=int(args.context_budget_bytes),
+            max_consecutive_failures=int(args.max_consecutive_failures),
+            max_api_attempts=int(args.max_api_attempts),
+        )
+        sensitive_values = sensitive_environment_values(environ)
+        try:
+            config = ProofCoderConfig.from_env(environ=environ)
+            runner = (
+                eval_agent_runner
+                if eval_agent_runner is not None
+                else create_evaluation_agent_runner(
+                    config=config,
+                    limits=limits,
+                    environ=environ,
+                    client_factory=eval_client_factory,
+                )
+            )
+            session = run_evaluation(
+                project_root=base_cwd,
+                fixtures_root=Path(str(args.fixtures_root)),
+                output_root=Path(str(args.output_root)),
+                fixture_ids=tuple(str(item) for item in args.fixture),
+                repeat=int(args.repeat),
+                agent_runner=runner,
+                model=EvaluationModelInfo(
+                    name=redact_text(config.model, sensitive_values=sensitive_values),
+                    base_url=redact_text(config.base_url, sensitive_values=sensitive_values),
+                    reasoning_effort=config.reasoning_effort,
+                ),
+                limits=limits,
+                environ=environ,
+                on_progress=lambda progress: _render_eval_progress(output, progress),
+            )
+        except ConfigurationError:
+            output.print("FAIL eval: CONFIGURATION_ERROR (check model environment)", markup=False)
+            return 2
+        except EvaluationInfrastructureError as error:
+            output.print(f"FAIL eval: {error.code} ({error})", markup=False)
+            return 2
+        except KeyboardInterrupt:
+            output.print("SUMMARY status=interrupted attempts=0 successes=0", markup=False)
+            return 130
+        return session.exit_code
     if args.command == "trace":
         return _run_trace(
             trace_command=str(args.trace_command),
@@ -179,6 +302,15 @@ def _bounded_max_steps(value: str) -> int:
     if not 1 <= parsed <= _MAX_AGENT_STEPS:
         raise argparse.ArgumentTypeError(f"max steps must be between 1 and {_MAX_AGENT_STEPS}")
     return parsed
+
+
+def _bounded_repeat(value: str) -> int:
+    return _bounded_integer(
+        value,
+        label="repeat",
+        minimum=MIN_REPEAT,
+        maximum=MAX_REPEAT,
+    )
 
 
 def _bounded_max_seconds(value: str) -> float:
@@ -306,11 +438,10 @@ def _run_agent(
 
     secret: str | None = None
     sensitive_values = sensitive_environment_values(environ)
-    run_id = new_run_id()
     try:
-        recorder = TraceRecorder(
+        resources = create_agent_runtime_resources(
             workspace,
-            run_id,
+            environ=environ,
             sensitive_values=sensitive_values,
         )
     except TracePathError as error:
@@ -323,118 +454,63 @@ def _run_agent(
     try:
         config = ProofCoderConfig.from_env(environ=environ)
     except ConfigurationError:
-        _emit_setup_termination(
+        emit_setup_termination(
             task=task,
-            run_id=run_id,
-            trace_path=recorder.trace_path,
+            resources=resources,
             termination_reason=TerminationReason.CONFIGURATION_ERROR,
-            sink=CompositeSink(terminal, recorder),
+            additional_sinks=(terminal,),
             sensitive_values=sensitive_values,
         )
-        recorder.close()
+        resources.close()
         return 1
     secret = config.api_key
 
-    registry = ToolRegistry()
-    registry.register(create_list_files_tool(workspace))
-    registry.register(create_search_text_tool(workspace))
-    registry.register(create_read_file_tool(workspace))
-    registry.register(create_create_file_tool(workspace))
-    registry.register(create_replace_in_file_tool(workspace))
-    registry.register(create_run_command_tool(workspace, environ=environ))
-    registry.register(create_finish_task_tool(workspace))
     try:
         client = client_factory(config)
     except KeyboardInterrupt:
-        _emit_setup_termination(
+        emit_setup_termination(
             task=task,
-            run_id=run_id,
-            trace_path=recorder.trace_path,
+            resources=resources,
             termination_reason=TerminationReason.INTERRUPTED,
-            sink=CompositeSink(terminal, recorder),
+            additional_sinks=(terminal,),
             sensitive_values=sensitive_values,
         )
-        recorder.close()
+        resources.close()
         return 130
     except SystemExit:
-        recorder.close()
+        resources.close()
         raise
     except ProofCoderError:
-        _emit_setup_termination(
+        emit_setup_termination(
             task=task,
-            run_id=run_id,
-            trace_path=recorder.trace_path,
+            resources=resources,
             termination_reason=TerminationReason.API_ERROR,
-            sink=CompositeSink(terminal, recorder),
+            additional_sinks=(terminal,),
             sensitive_values=sensitive_values,
         )
-        recorder.close()
+        resources.close()
         return 1
 
     try:
-        result = AgentLoop(
+        result = build_agent_loop(
             client=client,
-            registry=registry,
-            workspace=workspace,
-            system_prompt=STAGE_B_SYSTEM_PROMPT,
-            max_steps=max_steps,
-            max_seconds=max_seconds,
-            context_budget_bytes=context_budget_bytes,
-            max_consecutive_failures=max_consecutive_failures,
-            max_api_attempts=max_api_attempts,
-            event_sink=CompositeSink(terminal, recorder),
-            run_id_factory=lambda: run_id,
+            resources=resources,
+            limits=AgentRunLimits(
+                max_steps=max_steps,
+                max_seconds=max_seconds,
+                context_budget_bytes=context_budget_bytes,
+                max_consecutive_failures=max_consecutive_failures,
+                max_api_attempts=max_api_attempts,
+            ),
+            additional_sinks=(terminal,),
             sensitive_values=sensitive_values,
-            trace_path=recorder.trace_path,
         ).run(task)
     finally:
-        recorder.close()
+        resources.close()
 
     if result.final_report is not None:
         _safe_print(console, f"REPORT: {result.final_report}", secret)
     return _run_exit_code(result.termination_reason, result.completion_status)
-
-
-def _emit_setup_termination(
-    *,
-    task: str,
-    run_id: str,
-    trace_path: str,
-    termination_reason: TerminationReason,
-    sink: CompositeSink,
-    sensitive_values: tuple[str, ...],
-) -> None:
-    """Persist a minimal complete trajectory when setup stops before AgentLoop."""
-
-    emitter = EventEmitter(
-        run_id=run_id,
-        sink=sink,
-        sensitive_values=sensitive_values,
-    )
-    emitter.emit(EventType.TASK, step=0, payload={"task": task})
-    emitter.emit(
-        EventType.TERMINATION,
-        step=0,
-        payload={
-            "api_attempts": 0,
-            "api_retries": 0,
-            "changed_files": [],
-            "completion_status": "none",
-            "context_compactions": 0,
-            "elapsed_seconds": 0.0,
-            "event_count": emitter.event_count + 1,
-            "input_tokens": 0,
-            "model_calls": 0,
-            "output_tokens": 0,
-            "termination_reason": termination_reason.value,
-            "tool_calls": 0,
-            "tool_errors": 0,
-            "trace_complete": emitter.trace_complete,
-            "trace_path": trace_path,
-            "verification": None,
-            "warning_count": 0,
-        },
-    )
 
 
 def _run_trace(
@@ -485,6 +561,49 @@ def _run_trace(
         console.print(f"FAIL trace: {error.code} ({error})", markup=False)
         return 1
     return 2
+
+
+def _render_eval_progress(console: Console, progress: EvaluationProgress) -> None:
+    """Render compact evaluation-only progress without model or command bodies."""
+
+    if progress.kind is EvaluationProgressKind.STARTED:
+        console.print(f"EVAL {progress.eval_id}", markup=False)
+        return
+    if progress.kind is EvaluationProgressKind.ATTEMPT_STARTED:
+        console.print(
+            f"RUN {progress.fixture_id} attempt={progress.attempt_index}/{progress.repeat}",
+            markup=False,
+        )
+        return
+    if progress.kind is EvaluationProgressKind.ATTEMPT_FINISHED:
+        result = progress.result
+        if result is None:
+            return
+        completion = "none" if result.completion_status is None else result.completion_status.value
+        validation_exit = (
+            None if result.final_validation is None else result.final_validation.exit_code
+        )
+        reasons = ",".join(reason.value for reason in result.failure_reasons) or "none"
+        elapsed_seconds = f"{result.elapsed_seconds:.3f}".rstrip("0").rstrip(".")
+        console.print(
+            f"RESULT success={str(result.success).lower()} completion={completion} "
+            f"validation_exit={validation_exit} reasons={reasons} "
+            f"elapsed_seconds={elapsed_seconds}",
+            markup=False,
+        )
+        return
+    if progress.kind is EvaluationProgressKind.FINISHED:
+        aggregate = progress.aggregate
+        if aggregate is None:
+            return
+        status = "failed" if progress.status is None else progress.status.value
+        failure = "" if progress.failure_code is None else f" failure_code={progress.failure_code}"
+        console.print(
+            f"SUMMARY status={status} attempts={aggregate.overall.attempts} "
+            f"successes={aggregate.overall.successes}{failure}",
+            markup=False,
+        )
+        console.print(f"ARTIFACT {progress.evaluation_directory}", markup=False)
 
 
 def _run_exit_code(

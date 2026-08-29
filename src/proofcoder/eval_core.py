@@ -8,7 +8,7 @@ import stat
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from proofcoder.errors import ProofCoderError
 from proofcoder.eval_fixtures import (
@@ -23,7 +23,12 @@ from proofcoder.tools.command import create_run_command_tool
 
 DEFAULT_EVALUATION_TIMEOUT_SECONDS = 60
 _HASH_CHUNK_BYTES = 64 * 1024
-_IGNORED_ROOT_DIRECTORY = ".proofcoder"
+_RUNTIME_CACHE_DIRECTORIES = frozenset(
+    {"__pycache__", ".pytest_cache", ".ruff_cache", ".mypy_cache"}
+)
+_RUNTIME_BYTECODE_SUFFIXES = (".pyc", ".pyo")
+_RUNTIME_ROOT_DIRECTORY = ".proofcoder"
+_COVERAGE_HTML_ROOT_DIRECTORY = "htmlcov"
 _COMMAND_TIMEOUT_CODE = "COMMAND_TIMEOUT"
 _AUDIT_WRITE_FAILURE = "AUDIT_WRITE_FAILED"
 
@@ -40,6 +45,7 @@ class EvaluationFailureReason(StrEnum):
     INITIAL_OUTPUT_MISMATCH = "initial_output_mismatch"
     RUNNER_ERROR = "runner_error"
     SNAPSHOT_ERROR = "snapshot_error"
+    TRACE_INCOMPLETE = "trace_incomplete"
     COMPLETION_NOT_VERIFIED = "completion_not_verified"
     FINAL_VALIDATION_ERROR = "final_validation_error"
     FINAL_VALIDATION_TIMEOUT = "final_validation_timeout"
@@ -50,6 +56,14 @@ class EvaluationFailureReason(StrEnum):
 
 class WorkspaceSnapshotError(ProofCoderError):
     """A stable, non-sensitive workspace snapshot failure."""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+class EvaluationAttemptInfrastructureError(ProofCoderError):
+    """An attempt setup failure that makes continuing the evaluation unsafe."""
 
     def __init__(self, code: str, message: str) -> None:
         super().__init__(message)
@@ -69,6 +83,7 @@ class WorkspaceSnapshot:
     """Deterministically ordered hashes for regular workspace files."""
 
     files: tuple[FileDigest, ...]
+    ignored_runtime_files: tuple[FileDigest, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,6 +93,7 @@ class WorkspaceChanges:
     added_files: tuple[str, ...] = ()
     modified_files: tuple[str, ...] = ()
     deleted_files: tuple[str, ...] = ()
+    ignored_runtime_files: tuple[str, ...] = ()
 
     @property
     def changed_files(self) -> tuple[str, ...]:
@@ -117,6 +133,7 @@ class EvaluationAttemptResult:
     modified_files: tuple[str, ...] = ()
     deleted_files: tuple[str, ...] = ()
     changed_files: tuple[str, ...] = ()
+    ignored_runtime_files: tuple[str, ...] = ()
     unexpected_files: tuple[str, ...] = ()
     missing_required_files: tuple[str, ...] = ()
     initial_validation: ValidationEvidence | None = None
@@ -151,6 +168,7 @@ class AggregateMetrics:
     input_tokens: int
     output_tokens: int
     elapsed_seconds: float
+    failure_reason_counts: tuple[tuple[EvaluationFailureReason, int], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -176,7 +194,7 @@ class EvaluationAggregate:
 
 
 def snapshot_workspace(workspace: Path) -> WorkspaceSnapshot:
-    """Hash regular files without following links or retaining file bodies."""
+    """Hash scored and runtime files without following links or retaining bodies."""
 
     if workspace.is_symlink():
         raise WorkspaceSnapshotError("SNAPSHOT_SYMLINK", "workspace must not be a symlink")
@@ -192,6 +210,7 @@ def snapshot_workspace(workspace: Path) -> WorkspaceSnapshot:
         )
 
     files: list[FileDigest] = []
+    ignored_runtime_files: list[FileDigest] = []
 
     def visit(directory: Path, prefix: str) -> None:
         try:
@@ -204,8 +223,6 @@ def snapshot_workspace(workspace: Path) -> WorkspaceSnapshot:
             ) from None
         for entry in entries:
             relative = entry.name if not prefix else f"{prefix}/{entry.name}"
-            if not prefix and entry.name.casefold() == _IGNORED_ROOT_DIRECTORY:
-                continue
             if entry.is_symlink():
                 raise WorkspaceSnapshotError(
                     "SNAPSHOT_SYMLINK", "workspace snapshots reject symbolic links"
@@ -222,23 +239,38 @@ def snapshot_workspace(workspace: Path) -> WorkspaceSnapshot:
             if stat.S_ISDIR(metadata.st_mode):
                 visit(entry, relative)
             elif stat.S_ISREG(metadata.st_mode):
-                files.append(FileDigest(relative, _sha256_file(entry)))
+                digest = FileDigest(relative, _sha256_file(entry))
+                try:
+                    ignored_runtime = is_runtime_artifact_path(relative)
+                except ValueError:
+                    raise WorkspaceSnapshotError(
+                        "SNAPSHOT_PATH_INVALID",
+                        "workspace entry path was not a normalized relative POSIX path",
+                    ) from None
+                if ignored_runtime:
+                    ignored_runtime_files.append(digest)
+                else:
+                    files.append(digest)
             else:
                 raise WorkspaceSnapshotError(
                     "SNAPSHOT_SPECIAL_FILE", "workspace snapshots accept only files and directories"
                 )
 
     visit(root, "")
-    return WorkspaceSnapshot(tuple(files))
+    return WorkspaceSnapshot(tuple(files), tuple(ignored_runtime_files))
 
 
 def compare_snapshots(before: WorkspaceSnapshot, after: WorkspaceSnapshot) -> WorkspaceChanges:
     """Compare two immutable snapshots without reading the workspace again."""
 
-    before_files = _snapshot_mapping(before)
-    after_files = _snapshot_mapping(after)
+    before_files = _digest_mapping(before.files)
+    after_files = _digest_mapping(after.files)
     before_paths = set(before_files)
     after_paths = set(after_files)
+    ignored_runtime = _changed_paths(
+        _digest_mapping(before.ignored_runtime_files),
+        _digest_mapping(after.ignored_runtime_files),
+    )
     return WorkspaceChanges(
         added_files=tuple(sorted(after_paths - before_paths)),
         modified_files=tuple(
@@ -249,7 +281,25 @@ def compare_snapshots(before: WorkspaceSnapshot, after: WorkspaceSnapshot) -> Wo
             )
         ),
         deleted_files=tuple(sorted(before_paths - after_paths)),
+        ignored_runtime_files=ignored_runtime,
     )
+
+
+def is_runtime_artifact_path(relative_path: str) -> bool:
+    """Classify one normalized relative POSIX file path using exact runtime rules."""
+
+    parts = _normalized_relative_posix_parts(relative_path)
+    parents = parts[:-1]
+    filename = parts[-1]
+    if parts[0] == _RUNTIME_ROOT_DIRECTORY and len(parts) > 1:
+        return True
+    if parts[0] == _COVERAGE_HTML_ROOT_DIRECTORY and len(parts) > 1:
+        return True
+    if any(part in _RUNTIME_CACHE_DIRECTORIES for part in parents):
+        return True
+    if filename.endswith(_RUNTIME_BYTECODE_SUFFIXES):
+        return True
+    return len(parts) == 1 and (filename == ".coverage" or filename.startswith(".coverage."))
 
 
 def run_evaluation_attempt(
@@ -317,6 +367,8 @@ def run_evaluation_attempt(
             runner_failed = True
         else:
             run_result = candidate
+    except EvaluationAttemptInfrastructureError:
+        raise
     except Exception:
         runner_failed = True
 
@@ -352,6 +404,22 @@ def run_evaluation_attempt(
         )
 
     assert run_result is not None
+    if run_result.termination_reason is TerminationReason.INTERRUPTED:
+        reasons = [EvaluationFailureReason.COMPLETION_NOT_VERIFIED]
+        if not run_result.trace_complete or run_result.trace_path is None:
+            reasons.append(EvaluationFailureReason.TRACE_INCOMPLETE)
+        _append_scope_reasons(reasons, missing_required, unexpected)
+        return _attempt_result(
+            fixture,
+            attempt_index,
+            reasons=tuple(reasons),
+            changes=changes,
+            initial_validation=initial_validation,
+            run_result=run_result,
+            missing_required=missing_required,
+            unexpected=unexpected,
+        )
+
     final_validation, _ = _run_validation(
         fixture,
         command.execute(
@@ -366,6 +434,8 @@ def run_evaluation_attempt(
     reasons: list[EvaluationFailureReason] = []
     if run_result.completion_status is not CompletionStatus.COMPLETED_VERIFIED:
         reasons.append(EvaluationFailureReason.COMPLETION_NOT_VERIFIED)
+    if not run_result.trace_complete or run_result.trace_path is None:
+        reasons.append(EvaluationFailureReason.TRACE_INCOMPLETE)
     reasons.extend(_final_validation_reasons(fixture, final_validation))
     _append_scope_reasons(reasons, missing_required, unexpected)
     return _attempt_result(
@@ -439,11 +509,36 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _snapshot_mapping(snapshot: WorkspaceSnapshot) -> dict[str, str]:
-    mapping = {item.path: item.sha256 for item in snapshot.files}
-    if len(mapping) != len(snapshot.files):
+def _normalized_relative_posix_parts(relative_path: str) -> tuple[str, ...]:
+    candidate = PurePosixPath(relative_path)
+    if (
+        not relative_path
+        or "\\" in relative_path
+        or candidate.is_absolute()
+        or PureWindowsPath(relative_path).drive
+        or candidate.as_posix() != relative_path
+        or any(part in {"", ".", ".."} for part in candidate.parts)
+    ):
+        raise ValueError("runtime artifact paths must be normalized relative POSIX paths")
+    return candidate.parts
+
+
+def _digest_mapping(items: tuple[FileDigest, ...]) -> dict[str, str]:
+    mapping = {item.path: item.sha256 for item in items}
+    if len(mapping) != len(items):
         raise ValueError("workspace snapshots must not contain duplicate paths")
     return mapping
+
+
+def _changed_paths(before: Mapping[str, str], after: Mapping[str, str]) -> tuple[str, ...]:
+    before_paths = set(before)
+    after_paths = set(after)
+    return tuple(
+        sorted(
+            (before_paths ^ after_paths)
+            | {path for path in before_paths & after_paths if before[path] != after[path]}
+        )
+    )
 
 
 def _run_validation(
@@ -607,6 +702,7 @@ def _attempt_result(
         modified_files=observed_changes.modified_files,
         deleted_files=observed_changes.deleted_files,
         changed_files=observed_changes.changed_files,
+        ignored_runtime_files=observed_changes.ignored_runtime_files,
         unexpected_files=unexpected,
         missing_required_files=missing_required,
         initial_validation=initial_validation,
@@ -630,6 +726,12 @@ def _aggregate_metrics(results: Iterable[EvaluationAttemptResult]) -> AggregateM
     items = tuple(results)
     attempts = len(items)
     successes = sum(result.success for result in items)
+    failure_reason_counts: dict[EvaluationFailureReason, int] = {}
+    for result in items:
+        if result.success:
+            continue
+        for reason in set(result.failure_reasons):
+            failure_reason_counts[reason] = failure_reason_counts.get(reason, 0) + 1
     return AggregateMetrics(
         attempts=attempts,
         successes=successes,
@@ -643,4 +745,7 @@ def _aggregate_metrics(results: Iterable[EvaluationAttemptResult]) -> AggregateM
         input_tokens=sum(result.input_token_count for result in items),
         output_tokens=sum(result.output_token_count for result in items),
         elapsed_seconds=math.fsum(sorted(result.elapsed_seconds for result in items)),
+        failure_reason_counts=tuple(
+            sorted(failure_reason_counts.items(), key=lambda item: item[0].value)
+        ),
     )
