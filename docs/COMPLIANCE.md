@@ -2,11 +2,13 @@
 
 ## 1. Purpose and Scope
 
-This document records the compliance evidence for ProofCoder at commit `f0dd69e`
-(`fix: harden ripgrep search execution`) on branch `main`. The initial review state
-was clean. This document is the only intended working-tree addition made by the
-review, so the implementation conclusion is bound to that commit and the inspected
-state rather than to future revisions.
+This document preserves the original compliance review evidence for ProofCoder at
+commit `f0dd69e` (`fix: harden ripgrep search execution`) on branch `main`. The
+initial review state was clean, and this document was the only intended working-tree
+addition made by that review, so its implementation conclusion remains bound to that
+commit and inspected state. Section 10 separately records later GitHub-hosted
+cross-platform CI evidence for commit `56addb3`; historical results remain tied to
+their named commit or run rather than being merged across validation points.
 
 The review compares the repository with the architecture, security boundaries, and
 acceptance criteria in `docs/DEVELOPMENT_SPEC.md`. It covers dependency manifests,
@@ -116,7 +118,7 @@ history value recorded in Section 9.
 | `python.hosted_tool.dynamic_request` | `proofcoder.llm.deepseek.DeepSeekClient.complete` calls `chat.completions.create(**request)` | A locally constructed top-level mapping; messages come from `ContextManager`; tools come from `ToolRegistry.schemas()` | The request has a fixed set of top-level fields. Tools are native `type: function` schemas produced by `ToolDefinition.to_openai_schema`. No hosted file, search, or execution field is added. The OpenAI client is configured with `max_retries=0`; `AgentLoop._request_model` owns bounded local retry. | `test_openai_client_is_constructed_with_retries_disabled`, `test_request_contract_and_response_normalization`, `test_tools_request_and_multiple_tool_calls_are_preserved`, transient/permanent retry tests in `tests/unit/test_agent_d2.py` | REVIEW | reviewed and acceptable | Correctness still depends on the configured provider endpoint honoring the ordinary Chat Completions/native function-tool contract. |
 | `python.subprocess.dynamic` | Main `subprocess.Popen` in `proofcoder.tools.command.create_run_command_tool` | Model-provided `argv`, optional relative `cwd`, and timeout enter through the tool schema and `ToolRegistry`; `AgentLoop` preflights the entire batch | `prepare_command` enforces argv-only input, workspace cwd and path rules, executable resolution, command/module/script allowlists, secret checks, a minimal noninteractive environment, and bounded timeout. Execution uses a list argv, resolved executable, `shell=False`, workspace cwd, no stdin, separate pipes, output caps, and process-group cleanup. | `test_tool_protocol_is_argv_only_and_describes_residual_risk`, command-policy rejection tests, `test_popen_receives_argv_shell_false_no_stdin_and_filtered_environment`, timeout/output/redaction/audit tests, and agent batch-preflight tests | REVIEW | reviewed and acceptable | Allowlisted workspace Python scripts can execute arbitrary code with the user's OS permissions. The policy is an application boundary, not an OS sandbox. |
 | `python.subprocess.dynamic` | Windows cleanup `subprocess.run` in `proofcoder.tools.command._terminate_windows_process_tree` | The executable is constructed from local `SYSTEMROOT`/`WINDIR`; the PID is `Popen.pid` from the already-started child | Cleanup is reached only for timeout, interruption, or exceptional cleanup. It requires a regular local `System32/taskkill.exe` and uses fixed arguments `taskkill.exe /PID <pid> /T /F`, `shell=False`, no stdin, discarded output, minimal environment, and a short timeout. POSIX uses process-group signals instead. Failure falls back to direct child termination and reap. | `test_timeout_returns_output_and_terminates_direct_process_without_raw_temporary_files`, `test_timeout_best_effort_cleans_child_process_tree`, and `test_base_exceptions_propagate_after_cleanup`; command policy separately rejects model-requested `taskkill` | REVIEW | reviewed and acceptable | There is no standalone unit test asserting the exact Windows cleanup argv. The exact argv and PID provenance were manually inspected; integration tests cover best-effort timeout/tree cleanup. |
-| `python.subprocess.dynamic` | Ripgrep `subprocess.Popen` in `proofcoder.tools.search._search_with_ripgrep` | Candidate resolution starts from operator-supplied `PATH`; the search query, path, glob, mode, and result limit come from the validated local tool call | Only non-empty absolute external `PATH` directories are considered. Relative, dot, workspace, non-file, missing, and invalid final targets are rejected. Windows accepts only `rg.exe`, not script wrappers; POSIX requires an executable regular file. The final canonical target must remain external. Execution uses canonical absolute argv, `shell=False`, workspace cwd, no config, minimal environment, a five-second total deadline, concurrent bounded stdout/stderr capture (2 MiB / 64 KiB), cleanup and reap, no raw backend detail, and safe Python fallback. | `test_ripgrep_uses_argv_no_shell_no_config_and_filtered_environment`, malicious workspace/PATH and injected-resolver tests, symlink tests, Windows case test, POSIX execute-bit test, timeout/reap tests, independent stream-limit tests, failure sanitization, fallback, and semantic-parity tests in `tests/unit/test_search_text.py` | REVIEW | reviewed and acceptable | External ripgrep is trusted through operator `PATH`; no signature or package provenance verification is performed. The reviewed acceptance run exercises Windows behavior, while the POSIX-only execute-bit test is skipped on Windows. |
+| `python.subprocess.dynamic` | Ripgrep `subprocess.Popen` in `proofcoder.tools.search._search_with_ripgrep` | Candidate resolution starts from operator-supplied `PATH`; the search query, path, glob, mode, and result limit come from the validated local tool call | Only non-empty absolute external `PATH` directories are considered. Relative, dot, workspace, non-file, missing, and invalid final targets are rejected. Windows accepts only `rg.exe`, not script wrappers; POSIX requires an executable regular file. The final canonical target must remain external. Execution uses canonical absolute argv, `shell=False`, workspace cwd, no config, minimal environment, a five-second total deadline, concurrent bounded stdout/stderr capture (2 MiB / 64 KiB), cleanup and reap, no raw backend detail, and safe Python fallback. | `test_ripgrep_uses_argv_no_shell_no_config_and_filtered_environment`, malicious workspace/PATH and injected-resolver tests, symlink tests, Windows case test, POSIX execute-bit test, timeout/reap tests, independent stream-limit tests, failure sanitization, fallback, and semantic-parity tests in `tests/unit/test_search_text.py` | REVIEW | reviewed and acceptable | External ripgrep is trusted through operator `PATH`; no signature or package provenance verification is performed. The original Windows remediation run skipped the POSIX-only execute-bit test; GitHub-hosted `ubuntu-latest` subsequently exercised it successfully in Offline CI run `33290516188` at commit `56addb3`. |
 
 ### Provider request call chain
 
@@ -203,7 +205,29 @@ items. The secret scan was complete with zero findings and zero errors. These re
 are tied to the remediation commit and its inspected environment, not to later source
 or dependency changes.
 
-## 10. Security Boundaries and Limitations
+## 10. Cross-Platform CI Evidence
+
+The user confirmed the following facts from the first successful GitHub-hosted run of
+`.github/workflows/ci.yml`. They are recorded as run-specific execution evidence and
+were not obtained by making a network request during this documentation update.
+
+| Field | Recorded evidence |
+| --- | --- |
+| Workflow | `Offline CI` from `.github/workflows/ci.yml` |
+| Source revision | Commit `56addb3`, triggered by a push to `main` |
+| Run | [GitHub Actions run `33290516188`](https://github.com/mingbochen/proofcoder/actions/runs/33290516188): overall `Success`, total duration 1 minute 58 seconds |
+| Ubuntu matrix job | `ubuntu-latest / Python 3.11.9`: `Success` |
+| Windows matrix job | `windows-latest / Python 3.11.9`: `Success` |
+| POSIX-specific evidence | The Ubuntu job included and passed `test_posix_resolver_rejects_non_executable_regular_file`, exercising the POSIX execute-bit rejection branch on the GitHub-hosted Linux runner. |
+| Permissions and checkout | Workflow permissions are limited to `contents: read`; checkout uses full history and disables credential persistence. |
+| Network and offline boundary | Dependency installation may obtain lockfile-selected packages during `uv sync --locked --extra dev`. After synchronization, format, lint, tests, doctor, compliance, and secret scan run with `uv run --offline`. |
+| Provider and artifact boundary | The workflow configures no project/provider API key, makes no model/provider API call, runs no real evaluation, and uploads no artifact. |
+
+This run closes the earlier execution-evidence gap for the POSIX execute-bit branch at
+commit `56addb3`. It does not convert the four mechanically reported `REVIEW` items
+into automatic passes; their manual dispositions and limitations remain distinct.
+
+## 11. Security Boundaries and Limitations
 
 - ProofCoder's command policy constrains model-selected commands but does not provide
   kernel isolation. Allowed workspace Python scripts execute with the current user's
@@ -213,9 +237,10 @@ or dependency changes.
 - External ripgrep provenance is delegated to the operator-controlled absolute
   `PATH`. The resolver validates location, type, platform name, and workspace
   exclusion but does not verify signatures or package-manager provenance.
-- The hardened search acceptance evidence is Windows-targeted. The POSIX-only
-  executable-bit branch remains covered by a platform-gated test that is skipped on
-  Windows and should be run on a POSIX CI host.
+- Cross-platform CI evidence covers the GitHub-hosted `ubuntu-latest` and
+  `windows-latest` environments in run `33290516188`. Although the POSIX execute-bit
+  test passed on that Ubuntu runner, this does not cover every Linux distribution,
+  filesystem, or self-hosted runner configuration.
 - Windows process-tree cleanup has integration coverage, but no dedicated test
   asserts the exact local `taskkill.exe` argv.
 - Static dependency/import/subprocess checks are pattern- and AST-based. Dynamic
@@ -226,8 +251,10 @@ or dependency changes.
 - The conclusion assumes the reviewed source, lock file, selected workspace, Git
   object database, environment configuration, and external executables have not been
   replaced after validation.
+- A successful CI run is execution evidence for the configured checks, not a formal
+  proof of security or the absence of all defects and risks.
 
-## 11. Reproduction Commands
+## 12. Reproduction Commands
 
 Run from the repository root in PowerShell. These commands do not actively send a
 request to a provider or model API. In an environment whose dependencies are already
