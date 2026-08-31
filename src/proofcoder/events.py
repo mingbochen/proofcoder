@@ -294,11 +294,17 @@ class EventEmitter:
 
 
 class TerminalSink:
-    """Render safe structured events as deterministic terminal lines."""
+    """Render safe structured events as deterministic terminal lines.
+
+    Rendering is presentation only: it reads the already sanitized payload and never
+    mutates it, so terminal changes cannot alter what ``TraceRecorder`` persists.
+    """
 
     def __init__(self, write: Callable[[str], None]) -> None:
         self._write = write
         self._seen: set[tuple[str, int]] = set()
+        self._last_step: int | None = None
+        self._written = False
 
     def emit(self, event: RunEvent) -> None:
         """Render one event once without accessing message history."""
@@ -308,45 +314,55 @@ class TerminalSink:
             return
         self._seen.add(key)
         line = render_terminal_event(event)
-        if line is not None:
-            self._write(line)
+        if line is None:
+            return
+        for separator in self._separators(event):
+            self._write(separator)
+        self._write(line)
+        self._written = True
+
+    def _separators(self, event: RunEvent) -> tuple[str, ...]:
+        """Return blank-line and step-header separators owed before one event."""
+
+        if event.event_type is EventType.TERMINATION:
+            return ("",) if self._written else ()
+        if event.event_type is EventType.TASK or event.step < 1:
+            return ()
+        if event.step == self._last_step:
+            return ()
+        self._last_step = event.step
+        header = f"-- step {event.step} --"
+        return ("", header) if self._written else (header,)
 
 
 def render_terminal_event(event: RunEvent) -> str | None:
-    """Return the deterministic single-event terminal rendering."""
+    """Return the deterministic single-event terminal rendering, or None to skip."""
 
     payload = event.payload
     if event.event_type is EventType.TASK:
         return f"TASK: {payload.get('task', '')}"
     if event.event_type is EventType.MODEL:
-        return f"MODEL: {payload.get('text') or '<no visible text>'}"
+        text = payload.get("text")
+        if not isinstance(text, str) or not text.strip():
+            return None
+        return f"MODEL: {text.strip()}"
     if event.event_type is EventType.TOOL_CALL:
-        arguments = json.dumps(
-            payload.get("arguments", {}), ensure_ascii=False, separators=(",", ":"), sort_keys=True
-        )
-        return (
-            f"TOOL: {payload.get('tool_name', 'unknown')} "
-            f"(id={payload.get('tool_call_id', 'unknown')}) args={arguments}"
-        )
+        name = payload.get("tool_name", "unknown")
+        rendered = _render_tool_arguments(payload.get("arguments"))
+        detail = f" {rendered}" if rendered else ""
+        return f"TOOL: {name} id={payload.get('tool_call_id', 'unknown')}{detail}"
     if event.event_type is EventType.TOOL_RESULT:
-        return (
-            f"RESULT: id={payload.get('tool_call_id', 'unknown')} "
-            f"success={str(bool(payload.get('success'))).lower()} "
-            f"error_code={payload.get('error_code')} duration_ms={payload.get('duration_ms', 0)} "
-            f"exit_code={payload.get('exit_code')} "
-            f"truncated={str(bool(payload.get('truncated'))).lower()}"
-        )
+        return _render_tool_result(payload)
     if event.event_type is EventType.DIFF:
-        stats = json.dumps(
-            payload.get("stats", {}), ensure_ascii=False, separators=(",", ":"), sort_keys=True
-        )
+        stats = payload.get("stats")
         preview = payload.get("preview", "")
-        return f"DIFF: path={payload.get('path')} stats={stats}\n{preview}".rstrip()
+        header = f"DIFF: path={payload.get('path')} {_render_diff_stats(stats)}".rstrip()
+        return f"{header}\n{preview}".rstrip()
     if event.event_type is EventType.VERIFICATION:
         argv = json.dumps(payload.get("argv", []), ensure_ascii=False, separators=(",", ":"))
         return (
-            f"VERIFY: argv={argv} cwd={payload.get('cwd')} "
-            f"exit_code={payload.get('exit_code')} "
+            f"VERIFY: argv={argv} cwd={_token(payload.get('cwd'))} "
+            f"exit_code={_token(payload.get('exit_code'))} "
             f"accepted={str(bool(payload.get('accepted'))).lower()}"
         )
     if event.event_type is EventType.WARNING:
@@ -356,40 +372,197 @@ def render_terminal_event(event: RunEvent) -> str | None:
     if event.event_type is EventType.COMPLETION:
         return None
     if event.event_type is EventType.TERMINATION:
-        changed_files = json.dumps(
-            payload.get("changed_files", []), ensure_ascii=False, separators=(",", ":")
-        )
-        verification = payload.get("verification")
-        verification_argv = None
-        verification_cwd = None
-        verification_exit_code = None
-        if isinstance(verification, Mapping):
-            verification_argv = verification.get("argv")
-            verification_cwd = verification.get("cwd")
-            verification_exit_code = verification.get("exit_code")
-        rendered_argv = (
-            "null"
-            if verification_argv is None
-            else json.dumps(verification_argv, ensure_ascii=False, separators=(",", ":"))
-        )
-        return (
-            f"DONE: termination={payload.get('termination_reason')} "
-            f"completion={payload.get('completion_status')} changed_files={changed_files} "
-            f"verification_argv={rendered_argv} verification_cwd={verification_cwd} "
-            f"verification_exit_code={verification_exit_code} "
-            f"model_calls={payload.get('model_calls', 0)} "
-            f"tool_calls={payload.get('tool_calls', 0)} "
-            f"tool_errors={payload.get('tool_errors', 0)} "
-            f"elapsed_seconds={float(payload.get('elapsed_seconds', 0.0)):.3f} "
-            f"api_attempts={payload.get('api_attempts', 0)} "
-            f"api_retries={payload.get('api_retries', 0)} "
-            f"context_compactions={payload.get('context_compactions', 0)} "
-            f"input_tokens={payload.get('input_tokens', 0)} "
-            f"output_tokens={payload.get('output_tokens', 0)} "
-            f"run_id={event.run_id} trace_path={payload.get('trace_path')} "
-            f"trace_complete={str(bool(payload.get('trace_complete'))).lower()}"
-        )
+        return _render_termination(event)
     return None
+
+
+def _token(value: object) -> str:
+    """Render one scalar using JSON literals rather than Python repr."""
+
+    if value is None:
+        return "none"
+    if value is True:
+        return "true"
+    if value is False:
+        return "false"
+    if isinstance(value, str):
+        return value
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
+def _clip(value: str, limit: int = 60) -> str:
+    """Shorten one long display string; the full value stays in the trace."""
+
+    collapsed = " ".join(value.split())
+    if len(collapsed) <= limit:
+        return collapsed
+    return f"{collapsed[:limit]}..."
+
+
+_ARGUMENT_BYTE_LABELS = {
+    "content_bytes": "content",
+    "new_text_bytes": "new",
+    "old_text_bytes": "old",
+}
+_ARGUMENT_LEADING_KEYS = ("path", "argv", "query")
+
+
+def _render_tool_arguments(arguments: object) -> str:
+    """Render call arguments with the identifying keys first and no digests."""
+
+    if not isinstance(arguments, Mapping):
+        return ""
+    remaining = {
+        str(key): value for key, value in arguments.items() if not str(key).endswith("_sha256")
+    }
+    ordered: list[tuple[str, object]] = []
+    for key in _ARGUMENT_LEADING_KEYS:
+        if key in remaining:
+            ordered.append((key, remaining.pop(key)))
+    ordered.extend(sorted(remaining.items()))
+
+    parts: list[str] = []
+    for key, value in ordered:
+        label = _ARGUMENT_BYTE_LABELS.get(key)
+        if label is not None and type(value) is int:
+            parts.append(f"{label}={value}B")
+            continue
+        rendered = _token(value)
+        parts.append(f"{key}={_clip(rendered) if isinstance(value, str) else rendered}")
+    return " ".join(parts)
+
+
+def _render_diff_stats(stats: object) -> str:
+    """Render added/removed line counts compactly."""
+
+    if not isinstance(stats, Mapping):
+        return ""
+    added = stats.get("added_lines", 0)
+    removed = stats.get("removed_lines", 0)
+    return f"+{added}/-{removed}"
+
+
+def _render_tool_result(payload: Mapping[str, object]) -> str:
+    """Render one result using the per-tool facts already present in the payload."""
+
+    name = str(payload.get("tool_name") or "unknown")
+    success = bool(payload.get("success"))
+    parts = [
+        f"RESULT: {name}",
+        "ok" if success else "FAIL",
+        f"id={payload.get('tool_call_id', 'unknown')}",
+    ]
+    if not success:
+        parts.append(f"error={payload.get('error_code') or 'UNKNOWN'}")
+        if payload.get("retryable") is not None:
+            parts.append(f"retryable={_token(payload.get('retryable'))}")
+    parts.extend(_tool_result_details(name, payload))
+    duration = payload.get("duration_ms")
+    if type(duration) is int and duration > 0:
+        parts.append(f"duration_ms={duration}")
+    if payload.get("truncated"):
+        parts.append("truncated=true")
+    line = " ".join(parts)
+    message = payload.get("error_message")
+    if not success and isinstance(message, str) and message:
+        line = f"{line} ({_clip(message, 90)})"
+    return line
+
+
+def _tool_result_details(name: str, payload: Mapping[str, object]) -> list[str]:
+    """Return the tool-specific result facts worth showing on one terminal line."""
+
+    parts: list[str] = []
+    if name == "list_files":
+        parts.append(f"path={_token(payload.get('queried_path'))}")
+        parts.append(
+            f"entries={payload.get('returned_count', 0)}/{payload.get('total_matched_count', 0)}"
+        )
+        truncated_count = payload.get("truncated_count")
+        if type(truncated_count) is int and truncated_count > 0:
+            parts.append(f"omitted={truncated_count}")
+        return parts
+    if name == "search_text":
+        parts.append(f"query={_clip(str(payload.get('query', '')), 40)}")
+        parts.append(f"path={_token(payload.get('queried_path'))}")
+        parts.append(f"matches={payload.get('returned_count', 0)}")
+        if payload.get("more_matches_available"):
+            parts.append("more=true")
+        return parts
+    if name == "read_file":
+        parts.append(f"path={_token(payload.get('path'))}")
+        parts.append(
+            f"lines={payload.get('actual_start_line', 0)}-{payload.get('actual_end_line', 0)}"
+            f"/{payload.get('total_lines', 0)}"
+        )
+        parts.append(f"bytes={payload.get('returned_bytes', 0)}")
+        return parts
+    if name in {"create_file", "replace_in_file"}:
+        parts.append(f"path={_token(payload.get('path'))}")
+        stats = _render_diff_stats(payload.get("diff_stats"))
+        if stats:
+            parts.append(stats)
+        parts.append(f"bytes={payload.get('bytes_written', 0)}")
+        replacements = payload.get("replacements")
+        if type(replacements) is int and replacements > 1:
+            parts.append(f"replacements={replacements}")
+        return parts
+    if name == "run_command":
+        parts.append(f"exit_code={_token(payload.get('exit_code'))}")
+        parts.append(f"kind={_token(payload.get('command_kind'))}")
+        parts.append(f"cwd={_token(payload.get('cwd'))}")
+        parts.append(f"out={payload.get('stdout_bytes', 0)}B err={payload.get('stderr_bytes', 0)}B")
+        if payload.get("timed_out"):
+            parts.append("timed_out=true")
+        if payload.get("stdout_truncated") or payload.get("stderr_truncated"):
+            parts.append("output_truncated=true")
+        return parts
+    if name == "finish_task":
+        parts.append(f"completion={_token(payload.get('completion_status'))}")
+        parts.append(f"changed_files={len(_item_list(payload.get('changed_files')))}")
+        limitations = _item_list(payload.get("limitations"))
+        if limitations:
+            parts.append(f"limitations={len(limitations)}")
+        return parts
+    return parts
+
+
+def _item_list(value: object) -> list[object]:
+    """Return payload list items, treating a bare string as not a list."""
+
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return list(value)
+    return []
+
+
+def _render_termination(event: RunEvent) -> str:
+    """Render the closing status block; per-run counters belong to the final report."""
+
+    payload = event.payload
+    changed_files = _item_list(payload.get("changed_files"))
+    rendered_files = ", ".join(str(item) for item in changed_files) if changed_files else "none"
+
+    verification = payload.get("verification")
+    if isinstance(verification, Mapping):
+        argv = json.dumps(verification.get("argv", []), ensure_ascii=False, separators=(",", ":"))
+        rendered_verification = (
+            f"exit_code={_token(verification.get('exit_code'))} "
+            f"cwd={_token(verification.get('cwd'))} argv={argv}"
+        )
+    else:
+        rendered_verification = "none"
+
+    integrity = "complete" if payload.get("trace_complete") else "INCOMPLETE"
+    return "\n".join(
+        [
+            f"DONE: termination={_token(payload.get('termination_reason'))} "
+            f"completion={_token(payload.get('completion_status'))}",
+            f"  changed_files: {rendered_files}",
+            f"  verification: {rendered_verification}",
+            f"  run_id: {event.run_id}",
+            f"  trace: {_token(payload.get('trace_path'))} ({integrity})",
+        ]
+    )
 
 
 def summarize_tool_arguments(

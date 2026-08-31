@@ -296,10 +296,10 @@ def test_run_cli_displays_bounded_write_result_without_reasoning(tmp_path: Path)
 
     assert code == 1
     assert (tmp_path / "created.txt").read_text(encoding="utf-8") == "hello\n"
-    assert "RESULT: id=create-1 success=true" in output
-    assert "DIFF: path=created.txt" in output
+    assert "RESULT: create_file ok id=create-1 path=created.txt" in output
+    assert "DIFF: path=created.txt +1/-0" in output
     assert "--- /dev/null" in output
-    assert "truncated=false" in output
+    assert "truncated=true" not in output
     assert REASONING_SENTINEL not in output
 
 
@@ -342,7 +342,7 @@ def test_run_cli_displays_command_observation_without_reasoning_or_secret(tmp_pa
 
     assert code == 1
     assert "TOOL: run_command" in output
-    assert "RESULT: id=command-1 success=true" in output
+    assert "RESULT: run_command ok id=command-1" in output
     assert "exit_code=0" in output
     assert 'VERIFY: argv=["python","cli_check.py"]' in output
     assert "accepted=false" in output
@@ -619,8 +619,7 @@ def test_run_cli_verified_completion_has_evidence_and_exit_zero(tmp_path: Path) 
     assert "termination=finish_task" in output
     assert "completion=completed_verified" in output
     assert 'changed_files=["subject.py"]' in output
-    assert 'verification_argv=["python","-m","unittest","-q"]' in output
-    assert "verification_exit_code=0" in output
+    assert '  verification: exit_code=0 cwd=. argv=["python","-m","unittest","-q"]' in output
     assert REASONING_SENTINEL not in output
     assert SENSITIVE_SENTINEL not in output
 

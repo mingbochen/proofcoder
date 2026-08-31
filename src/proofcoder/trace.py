@@ -271,7 +271,11 @@ def list_traces(workspace: Path) -> tuple[TraceSummary, ...]:
 
 
 def final_trace_report(result: TraceReadResult) -> str:
-    """Build a compact local summary from the stored termination payload."""
+    """Build the run-statistics summary that complements the rendered DONE block.
+
+    Status, changed files, verification, and trace identity are already shown by the
+    terminal termination rendering, so this line carries only the per-run counters.
+    """
 
     termination = next(
         (event for event in reversed(result.events) if event.event_type is EventType.TERMINATION),
@@ -284,19 +288,30 @@ def final_trace_report(result: TraceReadResult) -> str:
         )
     payload = termination.payload
     return (
-        f"run_id={result.run_id} termination={payload.get('termination_reason')} "
-        f"completion={payload.get('completion_status')} "
-        f"changed_files={json.dumps(payload.get('changed_files', []), ensure_ascii=False)} "
-        f"model_calls={payload.get('model_calls', 0)} tool_calls={payload.get('tool_calls', 0)} "
+        f"events={len(result.events)} model_calls={payload.get('model_calls', 0)} "
+        f"tool_calls={payload.get('tool_calls', 0)} "
         f"tool_errors={payload.get('tool_errors', 0)} "
         f"api_attempts={payload.get('api_attempts', 0)} "
         f"api_retries={payload.get('api_retries', 0)} "
         f"context_compactions={payload.get('context_compactions', 0)} "
         f"input_tokens={payload.get('input_tokens', 0)} "
         f"output_tokens={payload.get('output_tokens', 0)} "
-        f"elapsed_seconds={payload.get('elapsed_seconds', 0.0)} "
+        f"elapsed_seconds={_format_elapsed_seconds(payload.get('elapsed_seconds'))} "
         f"trace_complete={str(result.trace_complete).lower()}"
     )
+
+
+def _format_elapsed_seconds(value: object) -> str:
+    """Format elapsed seconds from an untrusted payload without raising.
+
+    A trace file is external input: ``read_trace`` preserves whatever JSON each
+    payload carried, so a missing or non-numeric value must degrade to a safe
+    token rather than crash ``trace show``.
+    """
+
+    if type(value) in {int, float}:
+        return f"{value:.3f}"
+    return "unknown"
 
 
 def _trace_summary(result: TraceReadResult) -> TraceSummary:

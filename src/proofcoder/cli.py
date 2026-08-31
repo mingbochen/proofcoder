@@ -234,7 +234,7 @@ def main(
                 client_factory=run_client_factory,
             )
         except KeyboardInterrupt:
-            output.print("DONE: termination=interrupted", markup=False)
+            _print(output, "DONE: termination=interrupted completion=none")
             return 130
     if args.command == "eval":
         limits = AgentRunLimits(
@@ -274,13 +274,13 @@ def main(
                 on_progress=lambda progress: _render_eval_progress(output, progress),
             )
         except ConfigurationError:
-            output.print("FAIL eval: CONFIGURATION_ERROR (check model environment)", markup=False)
+            _print(output, "FAIL eval: CONFIGURATION_ERROR (check model environment)")
             return 2
         except EvaluationInfrastructureError as error:
-            output.print(f"FAIL eval: {error.code} ({error})", markup=False)
+            _print(output, f"FAIL eval: {error.code} ({error})")
             return 2
         except KeyboardInterrupt:
-            output.print("SUMMARY status=interrupted attempts=0 successes=0", markup=False)
+            _print(output, "SUMMARY status=interrupted attempts=0 successes=0")
             return 130
         return session.exit_code
     if args.command == "trace":
@@ -373,7 +373,7 @@ def _run_doctor(
     try:
         config = ProofCoderConfig.from_env(offline=offline, environ=environ)
     except ConfigurationError as error:
-        console.print(f"FAIL Configuration: {error}", markup=False)
+        _print(console, f"FAIL Configuration: {error}")
         return 1
 
     secret = config.api_key
@@ -393,19 +393,19 @@ def _run_doctor(
     if not all(check.ok for check in checks):
         return 1
     if offline:
-        console.print("PASS API connectivity: skipped in offline mode", markup=False)
+        _print(console, "PASS API connectivity: skipped in offline mode")
         return 0
 
     try:
         client_factory(config).check_connection()
     except Exception:
-        console.print(
+        _print(
+            console,
             "FAIL API connectivity: DeepSeek request failed; check configuration and network.",
-            markup=False,
         )
         return 1
 
-    console.print("PASS API connectivity: DeepSeek connection succeeded", markup=False)
+    _print(console, "PASS API connectivity: DeepSeek connection succeeded")
     return 0
 
 
@@ -430,9 +430,10 @@ def _run_agent(
         else (cwd / workspace_input).resolve(strict=False)
     )
     if not workspace.exists() or not workspace.is_dir():
-        console.print(
-            "DONE: termination=invalid_workspace (workspace must be an existing directory)",
-            markup=False,
+        _print(
+            console,
+            "DONE: termination=invalid_workspace completion=none\n"
+            "  workspace must be an existing directory",
         )
         return 2
 
@@ -445,9 +446,9 @@ def _run_agent(
             sensitive_values=sensitive_values,
         )
     except TracePathError as error:
-        console.print(
-            f"DONE: termination=trace_error error_code={error.code}",
-            markup=False,
+        _print(
+            console,
+            f"DONE: termination=trace_error completion=none\n  error_code={error.code}",
         )
         return 1
     terminal = TerminalSink(lambda line: _safe_print(console, line, secret))
@@ -509,7 +510,9 @@ def _run_agent(
         resources.close()
 
     if result.final_report is not None:
-        _safe_print(console, f"REPORT: {result.final_report}", secret)
+        _safe_print(console, "REPORT:", secret)
+        for report_line in result.final_report.splitlines():
+            _safe_print(console, f"  {report_line}", secret)
     return _run_exit_code(result.termination_reason, result.completion_status)
 
 
@@ -528,37 +531,37 @@ def _run_trace(
         else (cwd / workspace_input).resolve(strict=False)
     )
     if not workspace.exists() or not workspace.is_dir():
-        console.print(
+        _print(
+            console,
             "FAIL trace: workspace must be an existing directory",
-            markup=False,
         )
         return 2
     try:
         if trace_command == "list":
             summaries = list_traces(workspace)
-            console.print("run_id started_at status events trace_complete", markup=False)
+            _print(console, "run_id started_at status events trace_complete")
             for summary in summaries:
-                console.print(
+                _print(
+                    console,
                     f"{summary.run_id} {summary.started_at} {summary.status} "
                     f"{summary.event_count} {str(summary.trace_complete).lower()}",
-                    markup=False,
                 )
             return 0
         if trace_command == "show" and run_id is not None:
             trace = read_trace(workspace, run_id)
-            terminal = TerminalSink(lambda line: console.print(line, markup=False))
+            terminal = TerminalSink(lambda line: _print(console, line))
             for event in trace.events:
                 terminal.emit(event)
             for issue in trace.issues:
                 location = "" if issue.line_number is None else f" line={issue.line_number}"
-                console.print(
+                _print(
+                    console,
                     f"WARN: {issue.code}{location} ({issue.message})",
-                    markup=False,
                 )
-            console.print(f"REPORT: {final_trace_report(trace)}", markup=False)
+            _print(console, f"REPORT: {final_trace_report(trace)}")
             return 0 if trace.trace_complete else 1
     except TracePathError as error:
-        console.print(f"FAIL trace: {error.code} ({error})", markup=False)
+        _print(console, f"FAIL trace: {error.code} ({error})")
         return 1
     return 2
 
@@ -567,12 +570,12 @@ def _render_eval_progress(console: Console, progress: EvaluationProgress) -> Non
     """Render compact evaluation-only progress without model or command bodies."""
 
     if progress.kind is EvaluationProgressKind.STARTED:
-        console.print(f"EVAL {progress.eval_id}", markup=False)
+        _print(console, f"EVAL {progress.eval_id}")
         return
     if progress.kind is EvaluationProgressKind.ATTEMPT_STARTED:
-        console.print(
+        _print(
+            console,
             f"RUN {progress.fixture_id} attempt={progress.attempt_index}/{progress.repeat}",
-            markup=False,
         )
         return
     if progress.kind is EvaluationProgressKind.ATTEMPT_FINISHED:
@@ -585,11 +588,11 @@ def _render_eval_progress(console: Console, progress: EvaluationProgress) -> Non
         )
         reasons = ",".join(reason.value for reason in result.failure_reasons) or "none"
         elapsed_seconds = f"{result.elapsed_seconds:.3f}".rstrip("0").rstrip(".")
-        console.print(
+        _print(
+            console,
             f"RESULT success={str(result.success).lower()} completion={completion} "
             f"validation_exit={validation_exit} reasons={reasons} "
             f"elapsed_seconds={elapsed_seconds}",
-            markup=False,
         )
         return
     if progress.kind is EvaluationProgressKind.FINISHED:
@@ -598,12 +601,12 @@ def _render_eval_progress(console: Console, progress: EvaluationProgress) -> Non
             return
         status = "failed" if progress.status is None else progress.status.value
         failure = "" if progress.failure_code is None else f" failure_code={progress.failure_code}"
-        console.print(
+        _print(
+            console,
             f"SUMMARY status={status} attempts={aggregate.overall.attempts} "
             f"successes={aggregate.overall.successes}{failure}",
-            markup=False,
         )
-        console.print(f"ARTIFACT {progress.evaluation_directory}", markup=False)
+        _print(console, f"ARTIFACT {progress.evaluation_directory}")
 
 
 def _run_exit_code(
@@ -649,4 +652,15 @@ def _local_checks(cwd: Path) -> tuple[_CheckResult, ...]:
 def _safe_print(console: Console, message: str, secret: str | None) -> None:
     if secret:
         message = message.replace(secret, "[redacted]")
-    console.print(message, markup=False)
+    _print(console, message)
+
+
+def _print(console: Console, message: str) -> None:
+    """Write one line without Rich's width-based wrapping.
+
+    Rich inserts real newlines when a line exceeds the console width, which splits
+    run IDs, trace paths, and argv mid-token and makes them impossible to copy.
+    Soft wrapping leaves that to the terminal instead.
+    """
+
+    console.print(message, markup=False, soft_wrap=True)

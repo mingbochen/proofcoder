@@ -510,8 +510,9 @@ def test_trace_cli_list_and_show_are_read_only_and_need_no_configuration(tmp_pat
     assert "TASK: task [redacted]" in show_stream.getvalue()
     assert "DONE: termination=max_steps" in show_stream.getvalue()
     assert "REPORT:" in show_stream.getvalue()
-    assert show_stream.getvalue().count("input_tokens=23916") == 2
-    assert show_stream.getvalue().count("output_tokens=896") == 2
+    # DONE carries status and identity; REPORT carries the counters exactly once.
+    assert show_stream.getvalue().count("input_tokens=23916") == 1
+    assert show_stream.getvalue().count("output_tokens=896") == 1
     assert SECRET not in show_stream.getvalue()
 
 
@@ -547,3 +548,92 @@ def test_trace_cli_reports_missing_invalid_and_incomplete_runs(tmp_path: Path) -
     assert "MISSING_TERMINATION" in output
     assert "TRACE_NOT_FOUND" in output
     assert "INVALID_RUN_ID" in output
+
+
+def _write_raw_trace(workspace: Path, run_id: str, payloads: list[tuple[str, dict]]) -> Path:
+    """Write a structurally valid trace whose payload contents are arbitrary."""
+
+    directory = workspace / ".proofcoder" / "runs" / run_id
+    directory.mkdir(parents=True)
+    path = directory / TRACE_FILENAME
+    lines = [
+        json.dumps(
+            {
+                "schema_version": 1,
+                "run_id": run_id,
+                "sequence": index + 1,
+                "step": 0,
+                "timestamp": "2026-08-31T04:05:06.789012Z",
+                "event_type": event_type,
+                "payload": payload,
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        for index, (event_type, payload) in enumerate(payloads)
+    ]
+    path.write_bytes(("\n".join(lines) + "\n").encode("utf-8"))
+    return path
+
+
+def test_trace_show_degrades_on_non_numeric_and_missing_payload_fields(tmp_path: Path) -> None:
+    # read_trace preserves arbitrary JSON payloads, so rendering must never assume
+    # a field is numeric or even present.
+    _write_raw_trace(
+        tmp_path,
+        RUN_ID,
+        [
+            ("task", {"task": "malformed payload probe"}),
+            (
+                "termination",
+                {
+                    "termination_reason": "max_steps",
+                    "completion_status": "none",
+                    "elapsed_seconds": "not-a-number",
+                    "trace_complete": True,
+                },
+            ),
+        ],
+    )
+    stream = io.StringIO()
+
+    code = cli.main(
+        ["trace", "show", "--workspace", str(tmp_path), RUN_ID],
+        environ={},
+        cwd=tmp_path,
+        console=Console(file=stream, force_terminal=False, color_system=None),
+    )
+
+    output = stream.getvalue()
+    assert code == 0
+    assert "elapsed_seconds=unknown" in output
+    # trace_path is absent from this payload and must not render as a Python repr.
+    assert "  trace: none (complete)" in output
+    assert "None" not in output
+
+
+def test_trace_show_degrades_when_termination_payload_is_empty(tmp_path: Path) -> None:
+    _write_raw_trace(
+        tmp_path,
+        SECOND_RUN_ID,
+        [("task", {"task": "empty termination payload"}), ("termination", {})],
+    )
+    stream = io.StringIO()
+
+    code = cli.main(
+        ["trace", "show", "--workspace", str(tmp_path), SECOND_RUN_ID],
+        environ={},
+        cwd=tmp_path,
+        console=Console(file=stream, force_terminal=False, color_system=None),
+    )
+
+    output = stream.getvalue()
+    # An absent trace_complete key defaults to complete in read_trace, so this
+    # degraded render still reports success; only the payload fields are missing.
+    assert code == 0
+    assert "DONE: termination=none completion=none" in output
+    assert "  changed_files: none" in output
+    assert "  verification: none" in output
+    assert "elapsed_seconds=unknown" in output
+    assert "None" not in output
