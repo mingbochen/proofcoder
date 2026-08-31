@@ -1,4 +1,4 @@
-"""Offline execution tests for run_command using only temporary workspace scripts."""
+"""Offline execution tests for run_command using temporary workspace inputs."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import ctypes
 import io
 import json
 import os
+import shutil
 import signal
 import sys
 import time
@@ -17,10 +18,13 @@ import pytest
 import proofcoder.tools.command as command_tool
 from proofcoder.protocol import FunctionCall, ToolCall
 from proofcoder.safety.commands import prepare_command
+from proofcoder.state import RunState
 from proofcoder.tools.base import ToolResult
 from proofcoder.tools.command import create_run_command_tool
+from proofcoder.tools.edit import create_create_file_tool
 from proofcoder.tools.files import create_list_files_tool, create_read_file_tool
 from proofcoder.tools.registry import ToolRegistry
+from proofcoder.verification import VerificationTracker
 
 FAKE_SECRET = "obviously-fake-output-secret-for-tests"
 
@@ -42,6 +46,7 @@ def _dispatch(
     workspace: Path,
     argv: list[str],
     *,
+    cwd: str = ".",
     timeout_seconds: int = 10,
     environ: dict[str, str] | None = None,
 ) -> ToolResult:
@@ -57,13 +62,33 @@ def _dispatch(
                 arguments=json.dumps(
                     {
                         "argv": argv,
-                        "cwd": ".",
+                        "cwd": cwd,
                         "timeout_seconds": timeout_seconds,
                     }
                 ),
             ),
         )
     )
+
+
+def _create_file(workspace: Path, path: str, content: str) -> ToolResult:
+    registry = ToolRegistry()
+    registry.register(create_create_file_tool(workspace))
+    return registry.dispatch(
+        ToolCall(
+            id="create-1",
+            function=FunctionCall(
+                name="create_file",
+                arguments=json.dumps({"path": path, "content": content}),
+            ),
+        )
+    )
+
+
+def _require_gxx() -> str:
+    if shutil.which("g++") is None:
+        pytest.skip("g++ is not installed on PATH")
+    return "g++"
 
 
 def _write_script(workspace: Path, name: str, source: str) -> Path:
@@ -191,6 +216,272 @@ def test_nonzero_exit_is_a_successful_recoverable_observation(tmp_path: Path) ->
     assert result.error is None
     assert _data(result)["exit_code"] == 7
     assert _data(result)["stderr"] == "assertion failed\n"
+
+
+def test_real_gxx_compiles_created_cxx17_source_and_records_build_verification(
+    tmp_path: Path,
+) -> None:
+    compiler = _require_gxx()
+    created = _create_file(
+        tmp_path,
+        "success.cpp",
+        "#include <array>\n"
+        "int main() {\n"
+        "    auto [first, second] = std::array<int, 2>{1, 2};\n"
+        "    return first + second == 3 ? 0 : 1;\n"
+        "}\n",
+    )
+    assert created.ok is True
+    tracker = VerificationTracker(RunState(original_task="compile one C++17 source"))
+    tracker.record_execution("create_file", created)
+
+    result = _dispatch(
+        tmp_path,
+        [compiler, "-std=c++17", "-O2", "-o", "success.exe", "success.cpp"],
+        timeout_seconds=120,
+    )
+
+    assert result.ok is True
+    assert result.error is None
+    data = _data(result)
+    assert data["exit_code"] == 0
+    assert data["timed_out"] is False
+    assert data["command_kind"] == "build"
+    output = tmp_path / "success.exe"
+    assert output.is_file()
+    assert not output.is_symlink()
+    assert output.stat().st_size > 0
+    tracker.record_execution("run_command", result)
+    assert tracker.valid_verification is not None
+    assert tracker.valid_verification.command_kind == "build"
+
+    later_change = _create_file(tmp_path, "after-build.txt", "later change\n")
+    assert later_change.ok is True
+    tracker.record_execution("create_file", later_change)
+    assert tracker.valid_verification is None
+
+
+def test_real_gxx_syntax_error_is_structured_nonzero_observation_not_verification(
+    tmp_path: Path,
+) -> None:
+    compiler = _require_gxx()
+    created = _create_file(
+        tmp_path,
+        "syntax-error.cpp",
+        "int main( { return 0; }\n",
+    )
+    assert created.ok is True
+    tracker = VerificationTracker(RunState(original_task="observe a compiler diagnostic"))
+    tracker.record_execution("create_file", created)
+
+    result = _dispatch(
+        tmp_path,
+        [compiler, "syntax-error.cpp", "-std=c++17", "-o", "syntax-error.exe"],
+        timeout_seconds=120,
+    )
+
+    assert result.ok is True
+    assert result.error is None
+    data = _data(result)
+    assert isinstance(data["exit_code"], int)
+    assert data["exit_code"] != 0
+    assert data["timed_out"] is False
+    assert data["command_kind"] == "build"
+    assert isinstance(data["stderr"], str)
+    assert data["stderr"]
+    assert isinstance(data["audit_path"], str)
+    assert not (tmp_path / "syntax-error.exe").exists()
+    tracker.record_execution("run_command", result)
+    assert tracker.valid_verification is None
+
+
+def test_real_gxx_popen_uses_checked_paths_timeout_and_filtered_environment(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    compiler = _require_gxx()
+    nested = tmp_path / "nested"
+    nested.mkdir()
+    created = _create_file(
+        tmp_path,
+        "nested/observed.cpp",
+        "int main() { return 0; }\n",
+    )
+    assert created.ok is True
+    original_popen = command_tool.subprocess.Popen
+    observed: dict[str, object] = {}
+
+    class ObservedProcess:
+        def __init__(self, process: command_tool.subprocess.Popen[bytes]) -> None:
+            self._process = process
+            self.stdout = process.stdout
+            self.stderr = process.stderr
+
+        @property
+        def pid(self) -> int:
+            return self._process.pid
+
+        @property
+        def returncode(self) -> int | None:
+            return self._process.returncode
+
+        def wait(self, timeout: float | None = None) -> int:
+            observed["wait_timeout"] = timeout
+            return self._process.wait(timeout=timeout)
+
+        def poll(self) -> int | None:
+            return self._process.poll()
+
+        def send_signal(self, signal_number: int) -> None:
+            self._process.send_signal(signal_number)
+
+        def kill(self) -> None:
+            self._process.kill()
+
+    def observing_popen(*args: object, **kwargs: object) -> ObservedProcess:
+        observed["args"] = args
+        observed.update(kwargs)
+        return ObservedProcess(original_popen(*args, **kwargs))
+
+    monkeypatch.setattr(command_tool.subprocess, "Popen", observing_popen)
+    environment = _environment(
+        tmp_path,
+        DEEPSEEK_API_KEY=FAKE_SECRET,
+        SERVICE_TOKEN="fake-token",
+        CPATH="fake-cpath",
+        CPLUS_INCLUDE_PATH="fake-cplus-include-path",
+        COMPILER_PATH="fake-compiler-path",
+        LIBRARY_PATH="fake-library-path",
+        GCC_EXEC_PREFIX="fake-gcc-exec-prefix",
+        ORDINARY_PARENT_VALUE="not-required",
+    )
+
+    result = _dispatch(
+        tmp_path,
+        [compiler, "observed.cpp", "-std=c++17", "-O2", "-o", "observed.exe"],
+        cwd="nested",
+        timeout_seconds=120,
+        environ=environment,
+    )
+
+    assert result.ok is True
+    assert _data(result)["exit_code"] == 0
+    assert observed["shell"] is False
+    assert observed["stdin"] is command_tool.subprocess.DEVNULL
+    assert observed["cwd"] == nested.resolve()
+    assert observed["wait_timeout"] == 120
+    assert isinstance(observed["args"], tuple)
+    process_argv = observed["args"][0]
+    assert isinstance(process_argv, list)
+    compiler_path = shutil.which("g++")
+    assert compiler_path is not None
+    assert Path(process_argv[0]).resolve() == Path(compiler_path).resolve()
+    assert str((nested / "observed.cpp").resolve()) in process_argv
+    assert str((nested / "observed.exe").resolve()) in process_argv
+    child_environment = observed["env"]
+    assert isinstance(child_environment, dict)
+    for excluded in (
+        "DEEPSEEK_API_KEY",
+        "SERVICE_TOKEN",
+        "CPATH",
+        "CPLUS_INCLUDE_PATH",
+        "COMPILER_PATH",
+        "LIBRARY_PATH",
+        "GCC_EXEC_PREFIX",
+        "ORDINARY_PARENT_VALUE",
+    ):
+        assert excluded not in child_environment
+    assert (nested / "observed.exe").is_file()
+
+
+def test_gxx_timeout_uses_controlled_process_double_and_is_not_verification(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    compiler = _require_gxx()
+    created = _create_file(
+        tmp_path,
+        "timeout.cpp",
+        "int main() { return 0; }\n",
+    )
+    assert created.ok is True
+    tracker = VerificationTracker(RunState(original_task="controlled compiler timeout"))
+    tracker.record_execution("create_file", created)
+
+    class ControlledTimeoutProcess:
+        stdout = io.BytesIO()
+        stderr = io.BytesIO(b"controlled compiler timeout\n")
+        returncode: int | None = None
+
+        def wait(self, timeout: float | None = None) -> int:
+            if self.returncode is None:
+                raise command_tool.subprocess.TimeoutExpired(cmd="g++", timeout=timeout)
+            return self.returncode
+
+        def poll(self) -> int | None:
+            return self.returncode
+
+    process = ControlledTimeoutProcess()
+
+    def fake_popen(*args: object, **kwargs: object) -> ControlledTimeoutProcess:
+        return process
+
+    def fake_terminate(
+        target: ControlledTimeoutProcess,
+        environment: dict[str, str],
+    ) -> None:
+        target.returncode = -9
+
+    monkeypatch.setattr(command_tool.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(command_tool, "_terminate_process_tree", fake_terminate)
+
+    result = _dispatch(
+        tmp_path,
+        [compiler, "timeout.cpp", "-std=c++17", "-o", "timeout.exe"],
+        timeout_seconds=1,
+    )
+
+    assert result.ok is False
+    assert result.error is not None
+    assert result.error.code == "COMMAND_TIMEOUT"
+    data = _data(result)
+    assert data["command_kind"] == "build"
+    assert data["timed_out"] is True
+    assert data["exit_code"] == -9
+    assert data["stderr"] == "controlled compiler timeout\n"
+    assert not (tmp_path / "timeout.exe").exists()
+    tracker.record_execution("run_command", result)
+    assert tracker.valid_verification is None
+
+
+def test_rejected_gxx_command_is_blocked_before_popen_without_overwrite(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    compiler = _require_gxx()
+    created = _create_file(tmp_path, "main.cpp", "int main() { return 0; }\n")
+    assert created.ok is True
+    output = tmp_path / "main.exe"
+    output.write_bytes(b"existing-output")
+    started = False
+
+    def unexpected_popen(*args: object, **kwargs: object) -> None:
+        nonlocal started
+        started = True
+        raise AssertionError("rejected compiler command reached Popen")
+
+    monkeypatch.setattr(command_tool.subprocess, "Popen", unexpected_popen)
+
+    result = _dispatch(
+        tmp_path,
+        [compiler, "main.cpp", "-std=c++17", "-Iinclude", "-o", "main.exe"],
+    )
+
+    assert result.ok is False
+    assert result.error is not None
+    assert result.error.code == "COMMAND_BLOCKED"
+    assert started is False
+    assert output.read_bytes() == b"existing-output"
 
 
 def test_popen_receives_argv_shell_false_no_stdin_and_filtered_environment(

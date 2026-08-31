@@ -29,6 +29,7 @@ MAX_COMMAND_TIMEOUT_SECONDS = 300
 
 _PYTHON_NAME = re.compile(r"python(?:3(?:\.\d+)?)?(?:\.exe)?\Z", re.IGNORECASE)
 _PYTHON_ALIASES = frozenset({"py", "py.exe"})
+_GXX_EXECUTABLE_NAMES = frozenset({"g++", "g++.exe"})
 _KNOWN_EXECUTABLES = frozenset({"git", "pytest", "ruff"})
 _FORBIDDEN_EXECUTABLE_SUFFIXES = frozenset({".bat", ".cmd", ".ps1", ".sh"})
 _BLOCKED_EXECUTABLES = frozenset(
@@ -246,6 +247,9 @@ def prepare_command(
         command_kind = "git_read"
         execution_tail = tail
         display_tail = tail
+    elif canonical_name == "g++":
+        execution_tail, display_tail = _validate_gxx(workspace_root, cwd, tail)
+        command_kind = "build"
     else:
         raise CommandPolicyError("COMMAND_BLOCKED", "executable is not in the command allowlist")
 
@@ -341,6 +345,12 @@ def _resolve_executable(
         )
 
     explicit_path = "/" in requested or "\\" in requested or bool(PureWindowsPath(requested).drive)
+    requested_name = requested_path.name.casefold()
+    if explicit_path and requested_name in _GXX_EXECUTABLE_NAMES:
+        raise CommandPolicyError(
+            "COMMAND_BLOCKED",
+            "explicit compiler paths are blocked; use g++ from the sanitized PATH",
+        )
     resolved_explicit: Path | None = None
     if explicit_path:
         resolved_explicit, _ = resolve_workspace_file(workspace, requested)
@@ -353,6 +363,8 @@ def _resolve_executable(
         return sys.executable, "python"
     if name_without_exe in _BLOCKED_EXECUTABLES:
         raise CommandPolicyError("COMMAND_BLOCKED", "executable category is blocked by policy")
+    if executable_name in _GXX_EXECUTABLE_NAMES:
+        return _resolve_gxx_executable(workspace, requested, environment), "g++"
     if name_without_exe not in _KNOWN_EXECUTABLES:
         raise CommandPolicyError("COMMAND_BLOCKED", "executable is not in the command allowlist")
 
@@ -372,6 +384,210 @@ def _resolve_executable(
             "allowed executable did not resolve to an absolute PATH entry",
         )
     return str(resolved), name_without_exe
+
+
+def _resolve_gxx_executable(
+    workspace: Path,
+    requested: str,
+    environment: Mapping[str, str],
+) -> str:
+    safe_path = environment.get("PATH", "")
+    found = shutil.which(requested, path=safe_path) if safe_path else None
+    if found is None:
+        raise CommandPolicyError(
+            "COMMAND_NOT_FOUND",
+            "allowed executable 'g++' was not found on the sanitized PATH",
+        )
+
+    candidate = Path(found)
+    if not candidate.is_absolute():
+        raise CommandPolicyError(
+            "COMMAND_NOT_FOUND",
+            "allowed compiler did not resolve to an absolute PATH entry",
+        )
+    if (
+        candidate.name.casefold() not in _GXX_EXECUTABLE_NAMES
+        or candidate.suffix.casefold() in _FORBIDDEN_EXECUTABLE_SUFFIXES
+        or (os.name == "nt" and candidate.suffix.casefold() != ".exe")
+    ):
+        raise CommandPolicyError(
+            "COMMAND_BLOCKED",
+            "compiler shell and batch wrappers are blocked",
+        )
+
+    lexical_candidate = Path(os.path.abspath(candidate))
+    try:
+        resolved = candidate.resolve(strict=True)
+    except OSError:
+        raise CommandPolicyError(
+            "COMMAND_NOT_FOUND",
+            "allowed compiler could not be resolved from the sanitized PATH",
+        ) from None
+    if (
+        _is_within_workspace(workspace, lexical_candidate)
+        or _is_within_workspace(workspace, resolved)
+        or not resolved.is_file()
+    ):
+        raise CommandPolicyError(
+            "COMMAND_BLOCKED",
+            "compiler must be a regular executable installed outside the workspace",
+        )
+    if resolved.suffix.casefold() in _FORBIDDEN_EXECUTABLE_SUFFIXES:
+        raise CommandPolicyError(
+            "COMMAND_BLOCKED",
+            "compiler shell and batch wrappers are blocked",
+        )
+    try:
+        with resolved.open("rb") as stream:
+            if stream.read(2) == b"#!":
+                raise CommandPolicyError(
+                    "COMMAND_BLOCKED",
+                    "compiler script wrappers are blocked",
+                )
+    except CommandPolicyError:
+        raise
+    except OSError:
+        raise CommandPolicyError(
+            "COMMAND_NOT_FOUND",
+            "allowed compiler could not be inspected before execution",
+        ) from None
+    return str(resolved)
+
+
+def _is_within_workspace(workspace: Path, candidate: Path) -> bool:
+    try:
+        candidate.relative_to(workspace)
+    except ValueError:
+        return False
+    return True
+
+
+def _validate_gxx(
+    workspace: Path,
+    cwd: Path,
+    arguments: list[str],
+) -> tuple[list[str], list[str]]:
+    standard_index: int | None = None
+    optimization_index: int | None = None
+    output_index: int | None = None
+    source_index: int | None = None
+    index = 0
+    while index < len(arguments):
+        argument = arguments[index]
+        if argument == "-std=c++17":
+            if standard_index is not None:
+                raise CommandPolicyError("INVALID_ARGUMENTS", "-std=c++17 may appear only once")
+            standard_index = index
+        elif argument == "-O2":
+            if optimization_index is not None:
+                raise CommandPolicyError("INVALID_ARGUMENTS", "-O2 may appear only once")
+            optimization_index = index
+        elif argument == "-o":
+            if output_index is not None:
+                raise CommandPolicyError("INVALID_ARGUMENTS", "-o may appear only once")
+            index += 1
+            if index >= len(arguments):
+                raise CommandPolicyError(
+                    "INVALID_ARGUMENTS",
+                    "-o requires one separate workspace-relative output path",
+                )
+            output_index = index
+        elif argument.startswith(("-", "@")):
+            raise CommandPolicyError(
+                "COMMAND_BLOCKED",
+                "g++ option is outside the restricted single-file C++17 build policy",
+            )
+        elif source_index is not None:
+            raise CommandPolicyError(
+                "INVALID_ARGUMENTS",
+                "g++ accepts exactly one C++ source file",
+            )
+        else:
+            source_index = index
+        index += 1
+
+    if standard_index is None or output_index is None or source_index is None:
+        raise CommandPolicyError(
+            "INVALID_ARGUMENTS",
+            "g++ requires -std=c++17, one .cpp source, and one separate -o output",
+        )
+
+    source, relative_source = _validate_gxx_source(
+        workspace,
+        cwd,
+        arguments[source_index],
+    )
+    output, relative_output = _validate_gxx_output(
+        workspace,
+        cwd,
+        arguments[output_index],
+        source=source,
+    )
+    execution_arguments = list(arguments)
+    display_arguments = list(arguments)
+    execution_arguments[source_index] = str(source)
+    execution_arguments[output_index] = str(output)
+    display_arguments[source_index] = relative_source
+    display_arguments[output_index] = relative_output
+    return execution_arguments, display_arguments
+
+
+def _validate_gxx_source(workspace: Path, cwd: Path, value: str) -> tuple[Path, str]:
+    if value.startswith(("-", "@")) or Path(value.replace("\\", "/")).suffix.casefold() != ".cpp":
+        raise CommandPolicyError(
+            "COMMAND_BLOCKED",
+            "g++ input must be one workspace-relative .cpp source file",
+        )
+    try:
+        source, relative_source = resolve_workspace_argument_path(workspace, cwd, value)
+    except WorkspacePathError as error:
+        raise CommandPolicyError(error.code, str(error)) from None
+    if not source.exists():
+        raise CommandPolicyError("COMMAND_NOT_FOUND", "g++ source file does not exist")
+    if not source.is_file():
+        raise CommandPolicyError("COMMAND_BLOCKED", "g++ source must be a regular file")
+    return source, relative_source
+
+
+def _validate_gxx_output(
+    workspace: Path,
+    cwd: Path,
+    value: str,
+    *,
+    source: Path,
+) -> tuple[Path, str]:
+    if value.startswith(("-", "@")):
+        raise CommandPolicyError(
+            "COMMAND_BLOCKED",
+            "g++ output must be one workspace-relative file path",
+        )
+    if os.name == "nt" and Path(value).suffix.casefold() != ".exe":
+        raise CommandPolicyError(
+            "COMMAND_BLOCKED",
+            "g++ output must use an explicit .exe suffix on Windows",
+        )
+    try:
+        output, relative_output = resolve_workspace_argument_path(workspace, cwd, value)
+    except WorkspacePathError as error:
+        raise CommandPolicyError(error.code, str(error)) from None
+
+    lexical_output = cwd / Path(value.replace("\\", "/"))
+    if os.path.lexists(lexical_output):
+        raise CommandPolicyError(
+            "COMMAND_BLOCKED",
+            "g++ output already exists and will not be overwritten",
+        )
+    if not output.parent.exists() or not output.parent.is_dir():
+        raise CommandPolicyError(
+            "COMMAND_BLOCKED",
+            "g++ output parent directory must already exist",
+        )
+    if output == source:
+        raise CommandPolicyError(
+            "COMMAND_BLOCKED",
+            "g++ output cannot be the source file",
+        )
+    return output, relative_output
 
 
 def _validate_python(

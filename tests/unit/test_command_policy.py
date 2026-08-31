@@ -19,12 +19,25 @@ FAKE_SECRET = "obviously-fake-command-secret-for-tests"
 
 
 @pytest.fixture(autouse=True)
-def _stable_executable_lookup(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        command_policy.shutil,
-        "which",
-        lambda executable, *, path: str(Path(sys.executable).resolve()),
-    )
+def _stable_executable_lookup(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    toolchain = tmp_path.parent / f"{tmp_path.name}-toolchain"
+    toolchain.mkdir()
+    compiler_header = b"MZ" if os.name == "nt" else b"\x7fELF"
+    compilers: dict[str, Path] = {}
+    for name in ("g++", "g++.exe"):
+        compiler = toolchain / name
+        compiler.write_bytes(compiler_header)
+        compiler.chmod(0o755)
+        compilers[name] = compiler
+
+    def lookup(executable: str, *, path: str) -> str:
+        compiler_name = executable.casefold()
+        if os.name == "nt" and compiler_name == "g++":
+            compiler_name = "g++.exe"
+        compiler = compilers.get(compiler_name)
+        return str(compiler if compiler is not None else Path(sys.executable).resolve())
+
+    monkeypatch.setattr(command_policy.shutil, "which", lookup)
 
 
 def _environment(**extra: str) -> dict[str, str]:
@@ -236,6 +249,345 @@ def test_allowlisted_commands_prepare_with_expected_kind(
     assert command.command_kind == kind
 
 
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["g++", "-std=c++17", "-O2", "-o", "main.exe", "main.cpp"],
+        ["g++.exe", "main.cpp", "-o", "main.exe", "-std=c++17"],
+        ["g++", "-o", "main.exe", "main.cpp", "-std=c++17", "-O2"],
+    ],
+)
+def test_gxx_accepts_only_bounded_single_file_cxx17_build_forms(
+    tmp_path: Path,
+    argv: list[str],
+) -> None:
+    source = tmp_path / "main.cpp"
+    source.write_text("int main() { return 0; }\n", encoding="utf-8")
+
+    command = command_policy.prepare_command(
+        tmp_path,
+        {"argv": argv},
+        environ=_environment(),
+    )
+
+    assert command.execution_argv[0] != argv[0]
+    assert str(source.resolve()) in command.execution_argv
+    assert str((tmp_path / "main.exe").resolve()) in command.execution_argv
+    assert command.display_argv[0] == "g++"
+    assert "main.cpp" in command.display_argv
+    assert "main.exe" in command.display_argv
+    assert command.command_kind == "build"
+
+
+def test_gxx_paths_are_resolved_from_non_root_cwd(tmp_path: Path) -> None:
+    nested = tmp_path / "nested"
+    nested.mkdir()
+    source = nested / "main.cpp"
+    source.write_text("int main() { return 0; }\n", encoding="utf-8")
+
+    command = command_policy.prepare_command(
+        tmp_path,
+        {
+            "argv": ["g++", "main.cpp", "-std=c++17", "-o", "main.exe"],
+            "cwd": "nested",
+        },
+        environ=_environment(),
+    )
+
+    assert command.execution_argv[-1] == str((nested / "main.exe").resolve())
+    assert command.display_argv == (
+        "g++",
+        "nested/main.cpp",
+        "-std=c++17",
+        "-o",
+        "nested/main.exe",
+    )
+    assert command.relative_cwd == "nested"
+
+
+@pytest.mark.parametrize(
+    "option",
+    [
+        "@arguments.rsp",
+        "-fplugin=plugin.so",
+        "-specs=specs.txt",
+        "-wrapper",
+        "-Btoolchain",
+        "-Iinclude",
+        "-include",
+        "-Llib",
+        "-Wl,-rpath,lib",
+        "-Wa,--fatal-warnings",
+        "-Wp,-DVALUE=1",
+        "-Xlinker",
+        "-x",
+        "-",
+        "--version",
+        "-E",
+        "-S",
+        "-c",
+        "-fsyntax-only",
+    ],
+)
+def test_gxx_dangerous_unknown_and_non_build_options_are_blocked(
+    tmp_path: Path,
+    option: str,
+) -> None:
+    (tmp_path / "main.cpp").write_text("int main() { return 0; }\n", encoding="utf-8")
+
+    _assert_error(
+        _prepare(
+            tmp_path,
+            {
+                "argv": [
+                    "g++",
+                    option,
+                    "-std=c++17",
+                    "-o",
+                    "main.exe",
+                    "main.cpp",
+                ]
+            },
+        ),
+        "COMMAND_BLOCKED",
+    )
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["g++", "main.cpp", "-o", "main.exe"],
+        ["g++", "main.cpp", "-std=c++17"],
+        ["g++", "-std=c++17", "-o", "main.exe"],
+        ["g++", "main.cpp", "-std=c++17", "-o"],
+        ["g++", "main.cpp", "-std=c++17", "-o", "one.exe", "-o", "two.exe"],
+        ["g++", "main.cpp", "-std=c++17", "-std=c++17", "-o", "main.exe"],
+        ["g++", "main.cpp", "-O2", "-O2", "-std=c++17", "-o", "main.exe"],
+        ["g++", "main.cpp", "other.cpp", "-std=c++17", "-o", "main.exe"],
+        ["g++", "main.cpp", "-std=c++17", "-omain.exe"],
+    ],
+)
+def test_gxx_missing_duplicate_and_extra_arguments_are_rejected(
+    tmp_path: Path,
+    argv: list[str],
+) -> None:
+    for name in ("main.cpp", "other.cpp"):
+        (tmp_path / name).write_text("int main() { return 0; }\n", encoding="utf-8")
+
+    result = _prepare(tmp_path, {"argv": argv})
+
+    assert isinstance(result, ToolResult)
+    assert result.ok is False
+    assert result.error is not None
+    assert result.error.code in {"COMMAND_BLOCKED", "INVALID_ARGUMENTS"}
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows-only explicit executable suffix rule")
+def test_gxx_windows_output_requires_explicit_exe_suffix(tmp_path: Path) -> None:
+    (tmp_path / "main.cpp").write_text("int main() { return 0; }\n", encoding="utf-8")
+
+    _assert_error(
+        _prepare(
+            tmp_path,
+            {"argv": ["g++", "main.cpp", "-std=c++17", "-o", "main"]},
+        ),
+        "COMMAND_BLOCKED",
+    )
+
+
+@pytest.mark.parametrize(
+    "source,output",
+    [
+        ("../outside.cpp", "main.exe"),
+        ("main.cpp", "../outside.exe"),
+        (".env.cpp", "main.exe"),
+        ("main.cpp", ".proofcoder/main.exe"),
+        ("missing.cpp", "main.exe"),
+        ("main.cpp", "missing/main.exe"),
+        ("main.cpp", "main.cpp"),
+    ],
+)
+def test_gxx_source_and_output_paths_enforce_workspace_and_file_rules(
+    tmp_path: Path,
+    source: str,
+    output: str,
+) -> None:
+    (tmp_path / "main.cpp").write_text("int main() { return 0; }\n", encoding="utf-8")
+    (tmp_path / ".env.cpp").write_text("sensitive\n", encoding="utf-8")
+
+    result = _prepare(
+        tmp_path,
+        {"argv": ["g++", source, "-std=c++17", "-o", output]},
+    )
+
+    assert isinstance(result, ToolResult)
+    assert result.ok is False
+    assert result.error is not None
+    assert result.error.code in {
+        "COMMAND_BLOCKED",
+        "COMMAND_NOT_FOUND",
+        "PATH_OUTSIDE_WORKSPACE",
+        "SENSITIVE_PATH",
+    }
+
+
+def test_gxx_rejects_absolute_source_and_output_paths(tmp_path: Path) -> None:
+    source = tmp_path / "main.cpp"
+    source.write_text("int main() { return 0; }\n", encoding="utf-8")
+
+    for argv in (
+        ["g++", str(source.resolve()), "-std=c++17", "-o", "main.exe"],
+        ["g++", "main.cpp", "-std=c++17", "-o", str((tmp_path / "main.exe").resolve())],
+    ):
+        _assert_error(_prepare(tmp_path, {"argv": argv}), "PATH_OUTSIDE_WORKSPACE")
+
+
+def test_gxx_rejects_non_file_source_and_existing_output(tmp_path: Path) -> None:
+    (tmp_path / "directory.cpp").mkdir()
+    (tmp_path / "main.cpp").write_text("int main() { return 0; }\n", encoding="utf-8")
+    (tmp_path / "main.exe").write_bytes(b"existing")
+
+    _assert_error(
+        _prepare(
+            tmp_path,
+            {"argv": ["g++", "directory.cpp", "-std=c++17", "-o", "new.exe"]},
+        ),
+        "COMMAND_BLOCKED",
+    )
+    _assert_error(
+        _prepare(
+            tmp_path,
+            {"argv": ["g++", "main.cpp", "-std=c++17", "-o", "main.exe"]},
+        ),
+        "COMMAND_BLOCKED",
+    )
+    assert (tmp_path / "main.exe").read_bytes() == b"existing"
+
+
+def test_gxx_rejects_external_source_and_output_parent_symlinks(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    outside = tmp_path / "outside"
+    workspace.mkdir()
+    outside.mkdir()
+    (outside / "main.cpp").write_text("int main() { return 0; }\n", encoding="utf-8")
+    (workspace / "local.cpp").write_text("int main() { return 0; }\n", encoding="utf-8")
+    try:
+        (workspace / "linked.cpp").symlink_to(outside / "main.cpp")
+        (workspace / "out").symlink_to(outside, target_is_directory=True)
+    except OSError as error:
+        pytest.skip(f"symlinks unavailable: {error}")
+
+    _assert_error(
+        _prepare(
+            workspace,
+            {"argv": ["g++", "linked.cpp", "-std=c++17", "-o", "main.exe"]},
+        ),
+        "PATH_OUTSIDE_WORKSPACE",
+    )
+    _assert_error(
+        _prepare(
+            workspace,
+            {"argv": ["g++", "local.cpp", "-std=c++17", "-o", "out/main.exe"]},
+        ),
+        "PATH_OUTSIDE_WORKSPACE",
+    )
+
+
+def test_gxx_rejects_existing_output_symlink(tmp_path: Path) -> None:
+    (tmp_path / "main.cpp").write_text("int main() { return 0; }\n", encoding="utf-8")
+    target = tmp_path / "target.exe"
+    target.write_bytes(b"existing")
+    try:
+        (tmp_path / "main.exe").symlink_to(target)
+    except OSError as error:
+        pytest.skip(f"file symlinks unavailable: {error}")
+
+    _assert_error(
+        _prepare(
+            tmp_path,
+            {"argv": ["g++", "main.cpp", "-std=c++17", "-o", "main.exe"]},
+        ),
+        "COMMAND_BLOCKED",
+    )
+    assert target.read_bytes() == b"existing"
+
+
+def test_gxx_rejects_explicit_and_workspace_resolved_compilers(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    compiler_name = "g++.exe" if os.name == "nt" else "g++"
+    compiler = tmp_path / compiler_name
+    compiler.write_bytes(b"MZ" if os.name == "nt" else b"\x7fELF")
+    compiler.chmod(0o755)
+    (tmp_path / "main.cpp").write_text("int main() { return 0; }\n", encoding="utf-8")
+    tail = ["main.cpp", "-std=c++17", "-o", "main.exe"]
+
+    _assert_error(_prepare(tmp_path, {"argv": [f"./{compiler_name}", *tail]}), "COMMAND_BLOCKED")
+    monkeypatch.setattr(command_policy.shutil, "which", lambda executable, *, path: str(compiler))
+    _assert_error(_prepare(tmp_path, {"argv": ["g++", *tail]}), "COMMAND_BLOCKED")
+
+
+def test_gxx_rejects_external_link_resolving_to_workspace_compiler(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    compiler_name = "g++.exe" if os.name == "nt" else "g++"
+    compiler = tmp_path / "workspace-compiler"
+    compiler.write_bytes(b"MZ" if os.name == "nt" else b"\x7fELF")
+    compiler.chmod(0o755)
+    toolchain = tmp_path.parent / f"{tmp_path.name}-linked-toolchain"
+    toolchain.mkdir()
+    link = toolchain / compiler_name
+    try:
+        link.symlink_to(compiler)
+    except OSError as error:
+        pytest.skip(f"file symlinks unavailable: {error}")
+    (tmp_path / "main.cpp").write_text("int main() { return 0; }\n", encoding="utf-8")
+    monkeypatch.setattr(command_policy.shutil, "which", lambda executable, *, path: str(link))
+
+    _assert_error(
+        _prepare(
+            tmp_path,
+            {"argv": ["g++", "main.cpp", "-std=c++17", "-o", "main.exe"]},
+        ),
+        "COMMAND_BLOCKED",
+    )
+
+
+def test_gxx_rejects_script_and_batch_wrappers(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    wrapper_name = "g++.cmd" if os.name == "nt" else "g++"
+    wrapper_directory = tmp_path.parent / f"{tmp_path.name}-wrapper-toolchain"
+    wrapper_directory.mkdir()
+    wrapper = wrapper_directory / wrapper_name
+    if os.name == "nt":
+        wrapper.write_text("@echo off\r\n", encoding="utf-8")
+    else:
+        wrapper.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        wrapper.chmod(0o755)
+    (tmp_path / "main.cpp").write_text("int main() { return 0; }\n", encoding="utf-8")
+    monkeypatch.setattr(command_policy.shutil, "which", lambda executable, *, path: str(wrapper))
+
+    _assert_error(
+        _prepare(
+            tmp_path,
+            {"argv": ["g++", "main.cpp", "-std=c++17", "-o", "main.exe"]},
+        ),
+        "COMMAND_BLOCKED",
+    )
+
+
+@pytest.mark.parametrize("executable", ["c++", "gcc", "clang++", "main.exe"])
+def test_other_compilers_and_generated_programs_remain_blocked(
+    tmp_path: Path,
+    executable: str,
+) -> None:
+    _assert_error(_prepare(tmp_path, {"argv": [executable]}), "COMMAND_BLOCKED")
+
+
 def test_workspace_python_script_is_resolved_but_display_path_stays_relative(
     tmp_path: Path,
 ) -> None:
@@ -378,6 +730,11 @@ def test_command_environment_is_minimal_noninteractive_and_secret_free(tmp_path:
         SERVICE_TOKEN="fake-token",
         DATABASE_PASSWORD="fake-password",
         CLIENT_CREDENTIAL="fake-credential",
+        CPATH="fake-cpath",
+        CPLUS_INCLUDE_PATH="fake-cplus-include-path",
+        COMPILER_PATH="fake-compiler-path",
+        LIBRARY_PATH="fake-library-path",
+        GCC_EXEC_PREFIX="fake-gcc-exec-prefix",
         ORDINARY_PARENT_VALUE="must-not-pass",
         LC_ALL="C",
     )
@@ -402,6 +759,11 @@ def test_command_environment_is_minimal_noninteractive_and_secret_free(tmp_path:
     assert "SERVICE_TOKEN" not in command.environment
     assert "DATABASE_PASSWORD" not in command.environment
     assert "CLIENT_CREDENTIAL" not in command.environment
+    assert "CPATH" not in command.environment
+    assert "CPLUS_INCLUDE_PATH" not in command.environment
+    assert "COMPILER_PATH" not in command.environment
+    assert "LIBRARY_PATH" not in command.environment
+    assert "GCC_EXEC_PREFIX" not in command.environment
     assert "ORDINARY_PARENT_VALUE" not in command.environment
     assert FAKE_SECRET in command.sensitive_values
 
