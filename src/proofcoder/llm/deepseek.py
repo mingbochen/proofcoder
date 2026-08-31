@@ -31,6 +31,16 @@ class _OpenAIClient(Protocol):
 _ClientFactory = Callable[..., _OpenAIClient]
 _DEFAULT_CLIENT_FACTORY = cast(_ClientFactory, OpenAI)
 
+# deepseek-v4-flash documents a 384K maximum output length, so this ceiling is a
+# project choice rather than a provider limit: large enough for a whole-file write,
+# small enough that one runaway generation cannot consume the whole time budget.
+MAX_TOOL_OUTPUT_TOKENS = 8192
+MAX_CONNECTIVITY_OUTPUT_TOKENS = 16
+# openai-python defaults to 600s, which equals AgentLoop's default max_seconds. Because
+# the loop only checks elapsed time between requests, a single hung call would otherwise
+# outlive the wall-clock guard entirely.
+REQUEST_TIMEOUT_SECONDS = 120.0
+
 
 class DeepSeekClient:
     """Send one synchronous, non-streaming request to DeepSeek."""
@@ -53,6 +63,7 @@ class DeepSeekClient:
                     api_key=config.api_key,
                     base_url=config.base_url,
                     max_retries=0,
+                    timeout=REQUEST_TIMEOUT_SECONDS,
                 )
             except Exception:
                 raise DeepSeekAPIError(
@@ -73,7 +84,7 @@ class DeepSeekClient:
             "stream": False,
             "reasoning_effort": self._config.reasoning_effort,
             "extra_body": {"thinking": {"type": "enabled"}},
-            "max_tokens": 1024 if tools else 16,
+            "max_tokens": MAX_TOOL_OUTPUT_TOKENS if tools else MAX_CONNECTIVITY_OUTPUT_TOKENS,
         }
         if tools:
             request["tools"] = list(tools)

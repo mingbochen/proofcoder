@@ -10,7 +10,11 @@ from openai import APIConnectionError, APIStatusError, APITimeoutError
 
 from proofcoder.config import ProofCoderConfig
 from proofcoder.errors import ConfigurationError, DeepSeekAPIError, LLMErrorCategory
-from proofcoder.llm.deepseek import DeepSeekClient
+from proofcoder.llm.deepseek import (
+    MAX_TOOL_OUTPUT_TOKENS,
+    REQUEST_TIMEOUT_SECONDS,
+    DeepSeekClient,
+)
 
 SENSITIVE_SENTINEL = "never-print-this-value"
 REASONING_SENTINEL = "internal-reasoning-must-stay-private"
@@ -112,7 +116,11 @@ def test_openai_client_is_constructed_with_retries_disabled() -> None:
         "api_key": SENSITIVE_SENTINEL,
         "base_url": "https://api.deepseek.com",
         "max_retries": 0,
+        "timeout": REQUEST_TIMEOUT_SECONDS,
     }
+    # A request must not be able to outlive AgentLoop's wall-clock guard, which is
+    # only re-checked between requests.
+    assert REQUEST_TIMEOUT_SECONDS < 600.0
 
 
 def test_request_contract_and_response_normalization() -> None:
@@ -200,7 +208,7 @@ def test_tools_request_and_multiple_tool_calls_are_preserved() -> None:
 
     assert completions.request is not None
     assert completions.request["tools"] == tools
-    assert completions.request["max_tokens"] == 1024
+    assert completions.request["max_tokens"] == MAX_TOOL_OUTPUT_TOKENS
     assert "strict" not in completions.request["tools"][0]["function"]
     assert [call.id for call in result.tool_calls] == ["call-1", "call-2"]
     assert result.tool_calls[0].function.name == "list_files"

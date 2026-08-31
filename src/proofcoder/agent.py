@@ -64,6 +64,12 @@ NO_PROGRESS_MESSAGE = (
     "PROGRAM_NO_PROGRESS: The last two completed tool batches had identical semantic "
     "actions and results. Choose a materially different next action."
 )
+OUTPUT_TRUNCATED_MESSAGE = (
+    "PROGRAM_OUTPUT_TRUNCATED: The previous response stopped at the model output token "
+    "limit, so any tool arguments it carried may be incomplete. Do not repeat the same "
+    "oversized call. Create a large file as a short skeleton with create_file, then add "
+    "the remaining sections with successive replace_in_file calls."
+)
 
 
 class AgentLoop:
@@ -230,6 +236,19 @@ class AgentLoop:
                     },
                 )
 
+            # A truncated response cannot be diagnosed from its parse errors alone: the
+            # model would only observe INVALID_JSON on arguments it believes it completed.
+            truncated_output = response.finish_reason == "length"
+            if truncated_output:
+                state.warn("OUTPUT_TRUNCATED")
+                self._emit(
+                    EventType.WARNING,
+                    state,
+                    {
+                        "code": "OUTPUT_TRUNCATED",
+                        "tool_call_count": len(response.tool_calls),
+                    },
+                )
             if not response.tool_calls:
                 if state.protocol_repair_count == 0:
                     state.protocol_repair_count = 1
@@ -239,7 +258,11 @@ class AgentLoop:
                         state,
                         {"code": "PROTOCOL_REPAIR", "repair_count": 1},
                     )
-                    history.add_user(PROTOCOL_REPAIR_MESSAGE)
+                    # Truncation already explains the missing tool calls, so it replaces
+                    # the generic repair prompt: consecutive user messages are rejected.
+                    history.add_user(
+                        OUTPUT_TRUNCATED_MESSAGE if truncated_output else PROTOCOL_REPAIR_MESSAGE
+                    )
                     continue
                 state.termination_reason = TerminationReason.MODEL_STOPPED
                 return self._result(state=state, history=history, final_text=final_text)
@@ -327,6 +350,10 @@ class AgentLoop:
             if observation.terminate:
                 state.termination_reason = TerminationReason.NO_PROGRESS
                 return self._result(state=state, history=history, final_text=final_text)
+            # Deferred until every tool_call_id has its matching result, so the
+            # assistant/tool group stays atomic, and combined into one user message
+            # because the history rejects consecutive user turns.
+            notes: list[str] = []
             if observation.warn:
                 state.warn("NO_PROGRESS")
                 self._emit(
@@ -334,7 +361,11 @@ class AgentLoop:
                     state,
                     {"code": "NO_PROGRESS", "repeat_count": observation.repeat_count},
                 )
-                history.add_user(NO_PROGRESS_MESSAGE)
+                notes.append(NO_PROGRESS_MESSAGE)
+            if truncated_output:
+                notes.append(OUTPUT_TRUNCATED_MESSAGE)
+            if notes:
+                history.add_user("\n\n".join(notes))
 
         self._observe_time(state)
         state.termination_reason = TerminationReason.MAX_STEPS

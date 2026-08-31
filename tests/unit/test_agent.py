@@ -6,6 +6,7 @@ import json
 import os
 import sys
 from collections.abc import Mapping
+from itertools import pairwise
 from pathlib import Path
 
 from proofcoder.agent import AgentLoop
@@ -823,3 +824,133 @@ def test_finish_blocked_stops_without_requesting_another_model_response(tmp_path
     assert result.termination_reason is TerminationReason.FINISH_TASK
     assert result.completion_status is CompletionStatus.BLOCKED
     assert len(client.requests) == 1
+
+
+def _truncated_response(*calls: ToolCall, content: str | None = None) -> ModelResponse:
+    """Build a response the provider cut off at the output token ceiling."""
+
+    return ModelResponse(
+        content=content,
+        reasoning_content=REASONING_SENTINEL,
+        finish_reason="length",
+        usage=None,
+        tool_calls=tuple(calls),
+    )
+
+
+def _user_contents(result) -> list[str]:
+    return [
+        str(message["content"])
+        for message in result.history.to_api_messages()
+        if message.get("role") == "user"
+    ]
+
+
+def test_truncated_tool_arguments_produce_program_guidance_not_only_a_parse_error(
+    tmp_path: Path,
+) -> None:
+    # A create_file call cut off mid-argument: the JSON never closes.
+    truncated = _call(
+        "cut-off",
+        '{"path":"big.py","content":"line one\nline two',
+        name="create_file",
+    )
+    client = ScriptedClient(
+        [
+            _truncated_response(truncated),
+            _response(content="understood"),
+            _response(content="understood"),
+        ]
+    )
+
+    result = _loop(tmp_path, client, registry=_editable_registry(tmp_path)).run("write a big file")
+
+    payloads = _tool_payloads(result)
+    # The protocol invariant still holds: the truncated call gets its matching result.
+    assert len(payloads) == 1
+    assert payloads[0]["error"]["code"] == "INVALID_JSON"
+    assert "OUTPUT_TRUNCATED" in result.warnings
+    guidance = [text for text in _user_contents(result) if "PROGRAM_OUTPUT_TRUNCATED" in text]
+    assert len(guidance) == 1
+    assert "replace_in_file" in guidance[0]
+    assert not (tmp_path / "big.py").exists()
+
+
+def test_truncated_guidance_follows_the_tool_results_and_keeps_groups_atomic(
+    tmp_path: Path,
+) -> None:
+    client = ScriptedClient(
+        [
+            _truncated_response(_call("listing")),
+            _response(content="understood"),
+            _response(content="understood"),
+        ]
+    )
+
+    result = _loop(tmp_path, client).run("list the workspace")
+
+    roles = [str(message.get("role")) for message in result.history.to_api_messages()]
+    assistant_index = roles.index("assistant")
+    tool_index = roles.index("tool")
+    guidance_index = max(
+        index
+        for index, message in enumerate(result.history.to_api_messages())
+        if message.get("role") == "user" and "PROGRAM_OUTPUT_TRUNCATED" in str(message["content"])
+    )
+    # An assistant tool_calls message must be followed by its results before any
+    # user message is allowed to interrupt the group.
+    assert assistant_index < tool_index < guidance_index
+
+
+def test_truncated_response_without_tool_calls_explains_the_ceiling(tmp_path: Path) -> None:
+    client = ScriptedClient(
+        [
+            _truncated_response(content="a very long answer that ran out of room"),
+            _response(content="done"),
+        ]
+    )
+
+    result = _loop(tmp_path, client).run("explain at length")
+
+    guidance = [text for text in _user_contents(result) if "PROGRAM_OUTPUT_TRUNCATED" in text]
+    assert len(guidance) == 1
+    assert "OUTPUT_TRUNCATED" in result.warnings
+    assert result.termination_reason is TerminationReason.MODEL_STOPPED
+
+
+def test_untruncated_responses_never_add_the_guidance(tmp_path: Path) -> None:
+    client = ScriptedClient([_response(calls=(_call("only"),)), _response(content="done")])
+
+    result = _loop(tmp_path, client).run("ordinary run")
+
+    assert not any("PROGRAM_OUTPUT_TRUNCATED" in text for text in _user_contents(result))
+    assert "OUTPUT_TRUNCATED" not in result.warnings
+
+
+def test_no_progress_and_truncation_notes_combine_into_one_user_turn(tmp_path: Path) -> None:
+    # Two identical truncated batches: the repeat trips no-progress on the second,
+    # while truncation guidance is also owed. The history rejects consecutive user
+    # turns, so both must arrive as a single message.
+    client = ScriptedClient(
+        [
+            _truncated_response(_call("first")),
+            _truncated_response(_call("second")),
+            _response(content="understood"),
+            _response(content="understood"),
+        ]
+    )
+
+    result = _loop(tmp_path, client).run("repeat the same listing")
+
+    messages = result.history.to_api_messages()
+    roles = [str(message.get("role")) for message in messages]
+    combined = [
+        str(message["content"])
+        for message in messages
+        if message.get("role") == "user" and "PROGRAM_OUTPUT_TRUNCATED" in str(message["content"])
+    ]
+    assert len(combined) == 2
+    assert "PROGRAM_NO_PROGRESS" in combined[-1]
+    assert "PROGRAM_OUTPUT_TRUNCATED" in combined[-1]
+    # No two user turns may ever be adjacent.
+    assert not any(first == second == "user" for first, second in pairwise(roles))

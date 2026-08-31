@@ -43,7 +43,10 @@ def create_create_file_tool(workspace: Path) -> ToolDefinition:
         description=(
             "Create one new, non-sensitive UTF-8 workspace file. The parent directory must "
             "already exist. Existing files, directories, and symlinks are never overwritten. "
-            "Content is limited to 1 MiB and the returned unified diff may be truncated."
+            "Content is limited to 1 MiB and the returned unified diff may be truncated. "
+            "For a file beyond roughly 300 lines, create a short skeleton first and add the "
+            "remaining sections with successive replace_in_file calls; a single oversized "
+            "response can reach the model output token limit and arrive truncated."
         ),
         parameters={
             "type": "object",
