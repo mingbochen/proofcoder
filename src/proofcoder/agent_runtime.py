@@ -17,7 +17,7 @@ from proofcoder.events import (
 )
 from proofcoder.llm.base import LLMClient
 from proofcoder.prompt import STAGE_B_SYSTEM_PROMPT
-from proofcoder.protocol import RunResult, TerminationReason
+from proofcoder.protocol import CompletionStatus, RunResult, TerminationReason
 from proofcoder.retry import DEFAULT_MAX_API_ATTEMPTS
 from proofcoder.tools.command import create_run_command_tool
 from proofcoder.tools.edit import create_create_file_tool, create_replace_in_file_tool
@@ -98,6 +98,7 @@ def build_agent_loop(
     limits: AgentRunLimits,
     additional_sinks: Sequence[EventSink] = (),
     sensitive_values: tuple[str, ...] = (),
+    cancel_requested: Callable[[], bool] | None = None,
 ) -> AgentLoop:
     """Build a new AgentLoop over resources that are not shared with another run."""
 
@@ -115,6 +116,7 @@ def build_agent_loop(
         run_id_factory=lambda: resources.run_id,
         sensitive_values=sensitive_values,
         trace_path=resources.recorder.trace_path,
+        cancel_requested=cancel_requested,
     )
 
 
@@ -181,3 +183,26 @@ def setup_failure_result(
         trace_path=resources.recorder.trace_path,
         trace_complete=resources.recorder.trace_complete,
     )
+
+
+def run_exit_code(
+    termination_reason: TerminationReason,
+    completion_status: CompletionStatus | None,
+) -> int:
+    """Map one terminated run onto the documented process exit code.
+
+    Shared so the command line and the local web server report the same outcome for
+    the same evidence rather than maintaining two drifting tables.
+    """
+
+    if termination_reason is TerminationReason.INTERRUPTED:
+        return 130
+    if termination_reason is not TerminationReason.FINISH_TASK:
+        return 1
+    return {
+        CompletionStatus.COMPLETED_VERIFIED: 0,
+        CompletionStatus.COMPLETED_NO_CHANGES: 0,
+        CompletionStatus.COMPLETED_UNVERIFIED: 3,
+        CompletionStatus.BLOCKED: 4,
+        None: 1,
+    }[completion_status]
