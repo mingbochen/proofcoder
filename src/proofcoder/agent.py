@@ -95,6 +95,7 @@ class AgentLoop:
         event_clock: Callable[[], datetime] = lambda: datetime.now(UTC),
         sensitive_values: tuple[str, ...] = (),
         trace_path: str | None = None,
+        cancel_requested: Callable[[], bool] | None = None,
     ) -> None:
         workspace_root = workspace.resolve(strict=True)
         if not workspace_root.is_dir():
@@ -124,6 +125,10 @@ class AgentLoop:
         self._event_clock = event_clock
         self._sensitive_values = sensitive_values
         self._trace_path = trace_path
+        # Cooperative cancellation for non-main-thread callers, which cannot receive
+        # KeyboardInterrupt. It is polled between bounded units of work, so an in-flight
+        # model request or tool command still finishes before the loop stops.
+        self._cancel_requested = cancel_requested
         self._events: EventEmitter | None = None
 
     @property
@@ -171,6 +176,10 @@ class AgentLoop:
         schemas = self._registry.schemas()
 
         while state.model_call_count < self._max_steps:
+            if self._cancelled():
+                self._observe_time(state)
+                state.termination_reason = TerminationReason.INTERRUPTED
+                return self._result(state=state, history=history, final_text=final_text)
             if self._time_exhausted(state):
                 state.termination_reason = TerminationReason.MAX_TIME
                 return self._result(state=state, history=history, final_text=final_text)
@@ -267,7 +276,8 @@ class AgentLoop:
                 state.termination_reason = TerminationReason.MODEL_STOPPED
                 return self._result(state=state, history=history, final_text=final_text)
 
-            if self._time_exhausted(state):
+            cancelled = self._cancelled()
+            if cancelled or self._time_exhausted(state):
                 state.tool_call_count += len(response.tool_calls)
                 for call in response.tool_calls:
                     result = _not_started_result()
@@ -277,7 +287,11 @@ class AgentLoop:
                         history=history,
                         state=state,
                     )
-                state.termination_reason = TerminationReason.MAX_TIME
+                if cancelled:
+                    self._observe_time(state)
+                state.termination_reason = (
+                    TerminationReason.INTERRUPTED if cancelled else TerminationReason.MAX_TIME
+                )
                 return self._result(state=state, history=history, final_text=final_text)
 
             state.tool_call_count += len(response.tool_calls)
@@ -494,6 +508,18 @@ class AgentLoop:
         for index, item in enumerate(prepared):
             if not isinstance(item, PreparedToolCall):
                 continue
+            if self._cancelled():
+                for remaining in prepared[index:]:
+                    if not isinstance(remaining, PreparedToolCall):
+                        continue
+                    skipped_result = _interrupted_result(False)
+                    results.append(skipped_result)
+                    on_result(remaining.call, skipped_result)
+                return _BatchOutcome(
+                    results=tuple(results),
+                    modified_workspace=modified_workspace,
+                    interrupted=True,
+                )
             try:
                 if item.definition.name == FINISH_TASK_NAME:
                     tracker.state.next_event()
@@ -639,6 +665,11 @@ class AgentLoop:
 
     def _time_exhausted(self, state: RunState) -> bool:
         return self._remaining_seconds(state) <= 0
+
+    def _cancelled(self) -> bool:
+        """Return whether an external caller asked this run to stop."""
+
+        return self._cancel_requested is not None and self._cancel_requested()
 
     def _observe_time(self, state: RunState) -> None:
         state.elapsed_seconds = max(0.0, self._clock() - state.started_at)
