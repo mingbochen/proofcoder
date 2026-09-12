@@ -7,6 +7,7 @@ import importlib
 import os
 import sys
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, cast
@@ -18,6 +19,7 @@ from proofcoder.agent_runtime import (
     build_agent_loop,
     create_agent_runtime_resources,
     emit_setup_termination,
+    run_exit_code,
 )
 from proofcoder.config import ProofCoderConfig
 from proofcoder.context import DEFAULT_CONTEXT_BUDGET_BYTES
@@ -39,7 +41,7 @@ from proofcoder.eval_runner import (
 from proofcoder.events import TerminalSink
 from proofcoder.llm.base import LLMClient
 from proofcoder.llm.deepseek import DeepSeekClient
-from proofcoder.protocol import CompletionStatus, ModelResponse, TerminationReason
+from proofcoder.protocol import ModelResponse, TerminationReason
 from proofcoder.retry import DEFAULT_MAX_API_ATTEMPTS
 from proofcoder.safety.secrets import redact_text, sensitive_environment_values
 from proofcoder.trace import (
@@ -47,6 +49,13 @@ from proofcoder.trace import (
     final_trace_report,
     list_traces,
     read_trace,
+)
+from proofcoder.web.server import (
+    DEFAULT_HOST,
+    DEFAULT_PORT,
+    ServerAddressError,
+    WebServer,
+    create_server,
 )
 
 _MINIMUM_PYTHON = (3, 11)
@@ -65,6 +74,7 @@ _MAX_AGENT_SECONDS = 3600.0
 _MIN_CONTEXT_BUDGET_BYTES = 4096
 _MAX_CONTEXT_BUDGET_BYTES = 2 * 1024 * 1024
 _MAX_CONSECUTIVE_FAILURES = 32
+_LOOPBACK_BIND_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -184,6 +194,40 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_MAX_API_ATTEMPTS,
         help=f"API attempts per model response, 1-{DEFAULT_MAX_API_ATTEMPTS}",
     )
+    serve = commands.add_parser(
+        "serve",
+        help="serve the local browser interface for the agent loop",
+        description=(
+            "Start a loopback HTTP server that runs the same bounded agent loop as "
+            "`proofcoder run` and renders its sanitized events in a browser page."
+        ),
+    )
+    serve.add_argument(
+        "--host",
+        default=DEFAULT_HOST,
+        help=f"interface to bind (default: {DEFAULT_HOST}; loopback only unless overridden)",
+    )
+    serve.add_argument(
+        "--port",
+        type=_bounded_port,
+        default=DEFAULT_PORT,
+        help=f"TCP port, 0 for an ephemeral port (default: {DEFAULT_PORT})",
+    )
+    serve.add_argument(
+        "--workspace",
+        default=None,
+        help="directory offered as the initial workspace (default: current directory)",
+    )
+    serve.add_argument(
+        "--no-browse",
+        action="store_true",
+        help="disable the directory picker so only typed workspace paths are accepted",
+    )
+    serve.add_argument(
+        "--open",
+        action="store_true",
+        help="open the interface in the default browser after binding",
+    )
     trace = commands.add_parser("trace", help="inspect safe workspace JSONL traces")
     trace_commands = trace.add_subparsers(dest="trace_command", required=True)
     trace_list = trace_commands.add_parser("list", help="list workspace run traces")
@@ -204,6 +248,7 @@ def main(
     run_client_factory: _RunClientFactory = _DEFAULT_RUN_CLIENT_FACTORY,
     eval_client_factory: _RunClientFactory = _DEFAULT_RUN_CLIENT_FACTORY,
     eval_agent_runner: AgentRunner | None = None,
+    serve_forever: Callable[[WebServer], None] | None = None,
 ) -> int:
     """Run the ProofCoder CLI and return a process exit code."""
 
@@ -283,6 +328,22 @@ def main(
             _print(output, "SUMMARY status=interrupted attempts=0 successes=0")
             return 130
         return session.exit_code
+    if args.command == "serve":
+        try:
+            return _run_server(
+                host=str(args.host),
+                port=int(args.port),
+                workspace_argument=None if args.workspace is None else str(args.workspace),
+                allow_browse=not bool(args.no_browse),
+                open_browser=bool(args.open),
+                environ=environ,
+                cwd=base_cwd,
+                console=output,
+                serve_forever=serve_forever,
+            )
+        except KeyboardInterrupt:
+            _print(output, "SERVE stopped")
+            return 130
     if args.command == "trace":
         return _run_trace(
             trace_command=str(args.trace_command),
@@ -350,6 +411,10 @@ def _bounded_api_attempts(value: str) -> int:
         minimum=1,
         maximum=DEFAULT_MAX_API_ATTEMPTS,
     )
+
+
+def _bounded_port(value: str) -> int:
+    return _bounded_integer(value, label="port", minimum=0, maximum=65535)
 
 
 def _bounded_integer(value: str, *, label: str, minimum: int, maximum: int) -> int:
@@ -513,7 +578,83 @@ def _run_agent(
         _safe_print(console, "REPORT:", secret)
         for report_line in result.final_report.splitlines():
             _safe_print(console, f"  {report_line}", secret)
-    return _run_exit_code(result.termination_reason, result.completion_status)
+    return run_exit_code(result.termination_reason, result.completion_status)
+
+
+def _run_server(
+    *,
+    host: str,
+    port: int,
+    workspace_argument: str | None,
+    allow_browse: bool,
+    open_browser: bool,
+    environ: Mapping[str, str] | None,
+    cwd: Path,
+    console: Console,
+    server_factory: Callable[..., WebServer] = create_server,
+    serve_forever: Callable[[WebServer], None] | None = None,
+) -> int:
+    """Bind the local interface, report its address, and serve until interrupted."""
+
+    workspace = cwd
+    if workspace_argument is not None:
+        candidate = Path(workspace_argument)
+        workspace = (
+            candidate.resolve(strict=False)
+            if candidate.is_absolute()
+            else (cwd / candidate).resolve(strict=False)
+        )
+        if not workspace.is_dir():
+            _print(console, "FAIL serve: workspace must be an existing directory")
+            return 2
+
+    try:
+        server = server_factory(
+            host=host,
+            port=port,
+            environ=environ,
+            cwd=cwd,
+            workspace=workspace,
+            allow_browse=allow_browse,
+        )
+    except ServerAddressError as error:
+        _print(console, f"FAIL serve: {error.code} ({error})")
+        return 2
+
+    if host not in _LOOPBACK_BIND_HOSTS:
+        _print(
+            console,
+            "WARN serve: a non-loopback bind exposes local file and command authority "
+            "to this network; stop the server unless the interface is trusted.",
+        )
+    _print(console, f"SERVE {server.url}")
+    _print(console, f"  workspace={workspace}")
+    _print(console, "  the page's session token is never printed; open the URL above")
+    if open_browser:
+        _open_browser(server.url)
+    runner = serve_forever if serve_forever is not None else _serve_forever
+    runner(server)
+    return 0
+
+
+def _serve_forever(server: WebServer) -> None:
+    """Serve until interrupted, then stop every run the browser started."""
+
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.shutdown()
+
+
+def _open_browser(url: str) -> None:
+    """Open the default browser without failing the server when none exists."""
+
+    import webbrowser
+
+    with suppress(Exception):
+        webbrowser.open(url)
 
 
 def _run_trace(
@@ -607,23 +748,6 @@ def _render_eval_progress(console: Console, progress: EvaluationProgress) -> Non
             f"successes={aggregate.overall.successes}{failure}",
         )
         _print(console, f"ARTIFACT {progress.evaluation_directory}")
-
-
-def _run_exit_code(
-    termination_reason: TerminationReason,
-    completion_status: CompletionStatus | None,
-) -> int:
-    if termination_reason is TerminationReason.INTERRUPTED:
-        return 130
-    if termination_reason is not TerminationReason.FINISH_TASK:
-        return 1
-    return {
-        CompletionStatus.COMPLETED_VERIFIED: 0,
-        CompletionStatus.COMPLETED_NO_CHANGES: 0,
-        CompletionStatus.COMPLETED_UNVERIFIED: 3,
-        CompletionStatus.BLOCKED: 4,
-        None: 1,
-    }[completion_status]
 
 
 def _local_checks(cwd: Path) -> tuple[_CheckResult, ...]:

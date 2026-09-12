@@ -24,7 +24,7 @@ ProofCoder does **not** use an agent framework or agent SDK. It does not use a p
 
 ```mermaid
 flowchart TD
-    U[User / CLI] --> A[Repository-owned AgentLoop]
+    U[User / CLI or local browser page] --> A[Repository-owned AgentLoop]
     A -->|messages and local tool schemas| D[DeepSeek]
     D -->|assistant response and tool calls| A
     A --> T[Local ToolRegistry]
@@ -116,6 +116,59 @@ uv run --locked --env-file .env proofcoder run --workspace ../proofcoder-demo "C
 
 `run` defaults to 8 assistant responses, 600 seconds, a 262144-byte context budget, 5 consecutive failed batches, and up to 3 API attempts per model response. Use `proofcoder run --help` for their bounded overrides. Exit code `0` represents verified completion or a locally observed no-change completion, `3` unverified changes, and `4` an explicit blocked result. Other failures are nonzero; interruption returns `130`.
 
+## Browser Interface
+
+`proofcoder serve` presents the same bounded run in a local web page, so a task can be
+started, watched, stopped, and replayed without remembering command-line flags:
+
+```text
+uv run --locked --env-file .env proofcoder serve --workspace ../proofcoder-demo --open
+```
+
+The command prints the loopback URL it bound. The page offers a workspace picker, an
+example-task composer, live rendering of model messages, tool calls, diffs, verification
+results and the final completion badge, a per-workspace run history that replays stored
+traces, an environment self-check, and the same bounded run overrides `run` accepts. It
+is bilingual (Chinese and English) and follows the browser's light or dark theme.
+
+The interface is presentation only. It adds no agent behaviour, no new runtime
+dependency, and no second completion rule: it starts `AgentLoop` exactly as `run` does,
+streams the same sanitized events the JSONL trace receives, and shows the completion
+status the local run reported.
+
+| Option | Purpose |
+| --- | --- |
+| `--host` | Interface to bind; defaults to `127.0.0.1` |
+| `--port` | TCP port, `0` for an ephemeral port; defaults to `8765` |
+| `--workspace` | Directory offered as the initial workspace; defaults to the current directory |
+| `--no-browse` | Disable the directory picker so only typed workspace paths are accepted |
+| `--open` | Open the URL in the default browser after binding |
+
+Serving the agent to a browser exposes local file and command authority to whatever can
+reach that page, so the server applies four local controls:
+
+- It binds loopback by default, and prints a warning when asked to bind anything else.
+- Every `/api` request must carry a per-process session token that is written only into
+  the page served from this origin; it is never printed, logged, or placed in a URL.
+- `Host` and `Origin` must match the bound address, which rejects DNS-rebinding and
+  cross-site requests from other pages the browser has open.
+- The page loads no external script, style, font, or image, and is served under a strict
+  content-security policy.
+
+These are local access controls, not an operating-system sandbox. Do not bind a
+non-loopback interface on an untrusted network, and keep using a disposable workspace.
+
+Stopping a run from the page is cooperative: the loop checks for the request between
+model calls and between tool calls, so an in-flight provider request or local command
+finishes first and the run then terminates as `interrupted`.
+
+This interface is a deliberate departure from the graphical-interface non-goal in
+[section 3.2 of the Development Specification](docs/DEVELOPMENT_SPEC.md), which records
+non-goals as bounds on the current version rather than permanent prohibitions. It
+touches none of the project redlines in section 2: no agent framework or SDK, no
+provider-hosted execution or file access, no new runtime dependency, and no agent logic
+outside the existing repository-owned loop.
+
 ## Local Tools
 
 | Tool | Purpose | Core boundary |
@@ -188,6 +241,7 @@ The lock check and dependency synchronization are separate from offline validati
 ## Security Boundaries
 
 - ProofCoder enforces an application policy, not an OS or kernel sandbox.
+- The optional browser interface adds a local HTTP surface. Its loopback bind, session token, and Host/Origin checks are access controls on that surface, not isolation of the underlying file and command authority.
 - An allowed workspace Python script runs with the current user's authority and can act outside file-tool policy.
 - Optional accelerated search trusts an operator-provided external `ripgrep` selected through `PATH`; executable provenance remains the operator's responsibility.
 - Filesystem checks reduce but cannot eliminate time-of-check/time-of-use races.

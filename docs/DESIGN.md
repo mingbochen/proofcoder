@@ -23,6 +23,8 @@ ProofCoder is deliberately not a general agent framework, multi-agent coordinato
 ```mermaid
 flowchart LR
     U[User and CLI] --> CLI[Local CLI and runtime assembly]
+    B[Local browser page] --> WS[Loopback web server and session manager]
+    WS --> CLI
     CLI --> L[AgentLoop]
     L --> C[Message history, context view, and RunState]
     L <--> API[DeepSeek Chat Completions API]
@@ -32,6 +34,7 @@ flowchart LR
     L --> E[Sanitized events and JSONL trace]
     V --> L
     E --> U
+    E --> WS
 ```
 
 The model decides which declared tool to request and supplies arguments. It never directly opens a file, launches a process, determines whether a path is safe, records a verified completion, or writes the trace. Those operations belong to local code. Provider libraries are restricted to API transport and native tool-call objects; the repository owns conversation history, validation, execution, retry policy, progress detection, completion status, and error handling.
@@ -44,7 +47,8 @@ The user-selected workspace is the file authority boundary. Internal runtime art
 | --- | --- | --- | --- |
 | [AgentLoop](../src/proofcoder/agent.py) | synchronous turn loop, model/tool protocol, whole-batch preflight, retries, progress limits, termination, final report | provider transport details, path policy, or independent evaluation | MessageHistory, ContextManager, ToolRegistry, RunState |
 | [runtime assembly](../src/proofcoder/agent_runtime.py) | fresh registry with the seven tools, trace resources, common run/eval loop construction, setup-failure trace | CLI parsing or tool policy implementation | CLI, eval runner, AgentLoop |
-| [CLI](../src/proofcoder/cli.py) | doctor, run, eval, and trace boundaries; workspace checks; exit-code mapping; terminal rendering | deciding completion from model prose | configuration, runtime assembly, eval and trace readers |
+| [CLI](../src/proofcoder/cli.py) | doctor, run, eval, serve, and trace boundaries; workspace checks; exit-code mapping; terminal rendering | deciding completion from model prose | configuration, runtime assembly, eval and trace readers |
+| [web sessions](../src/proofcoder/web/sessions.py), [API](../src/proofcoder/web/api.py), and [server](../src/proofcoder/web/server.py) | one worker thread per browser-started run, bounded event buffering, cooperative cancellation, JSON routing, loopback bind, session token, Host/Origin checks, static page delivery | agent behavior, tool policy, or a second completion rule | runtime assembly, trace reader, the local browser page |
 | [configuration](../src/proofcoder/config.py) and [DeepSeek client](../src/proofcoder/llm/deepseek.py) | environment-derived provider settings, synchronous Chat Completions transport, response normalization, API error classification | local retries in the SDK, tool execution, history ownership | AgentLoop and the provider |
 | [protocol models](../src/proofcoder/protocol.py) and [history](../src/proofcoder/context.py) | typed messages/results, pairing each tool call with a result, preserving full history | context eviction policy or local facts | ContextManager and AgentLoop |
 | [ContextManager](../src/proofcoder/context.py) | deterministic byte accounting, atomic interaction grouping, bounded API view, program-generated state summary | mutating the full history or summarizing with another model | MessageHistory and RunState |
@@ -59,6 +63,8 @@ The user-selected workspace is the file authority boundary. Internal runtime art
 The production entry point is the console command defined in [pyproject.toml](../pyproject.toml), which reaches [cli.main](../src/proofcoder/cli.py). The run command resolves and validates the workspace, creates run and trace resources, loads online configuration, constructs the DeepSeek client, and calls the shared builder in [agent_runtime.py](../src/proofcoder/agent_runtime.py). Evaluation uses the same registry and loop builder so that benchmark execution does not quietly acquire a second runtime design.
 
 The registry is new for each run and is assembled in a fixed order. A TraceRecorder is also run-scoped. If provider configuration or client construction fails after trace resources exist, runtime assembly can emit a minimal task/termination trace. If the trace path itself cannot be created, the CLI reports that setup failure without pretending a trace exists.
+
+The serve command reuses that same assembly. A browser-started run is one AgentLoop on one worker thread whose sanitized events fan out to the JSONL trace and to a bounded in-memory buffer the page long-polls. Because KeyboardInterrupt reaches only the main thread, the loop accepts an optional cancellation callback and polls it between model calls and between tool calls; the resulting termination is the existing interrupted reason rather than a new outcome. The web layer adds no runtime dependency: it is standard-library HTTP plus one static page. Its loopback default, per-process session token, and Host/Origin checks bound who may reach that surface; they do not change the file and command authority behind it.
 
 The doctor command has distinct online and offline modes. Offline doctor validates local configuration and capabilities without requiring an API key or making a provider request. Online doctor performs the provider check. Trace list/show are local readers and do not load provider credentials. Run and real evaluation obtain credentials from process environment variables only when an online client is needed. Configuration representations hide the API key; events, errors, subprocess environments, and terminal output pass through additional sanitization. The necessary in-process credential is not described as nonexistent—only as excluded from inappropriate surfaces.
 
@@ -183,6 +189,7 @@ Success is conjunctive: local agent status must be completed_verified, the norma
 | provider normalization and retry classification | [test_deepseek.py](../tests/unit/test_deepseek.py), [test_retry.py](../tests/unit/test_retry.py) |
 | sanitization, event sequence, trace integrity | [test_events.py](../tests/unit/test_events.py), [test_trace.py](../tests/unit/test_trace.py) |
 | isolated fixtures, strict success, persistence | [test_eval_fixtures.py](../tests/unit/test_eval_fixtures.py), [test_eval_core.py](../tests/unit/test_eval_core.py), [test_eval_runner.py](../tests/unit/test_eval_runner.py) |
+| browser session buffering, cancellation, local access control, and serve wiring | [test_web_sessions.py](../tests/unit/test_web_sessions.py), [test_web_api.py](../tests/unit/test_web_api.py), [test_web_server.py](../tests/unit/test_web_server.py), [test_cli_serve.py](../tests/unit/test_cli_serve.py), [test_agent_cancellation.py](../tests/unit/test_agent_cancellation.py) |
 | architectural redlines and repository secret surfaces | [test_compliance.py](../tests/unit/test_compliance.py), [test_secret_scan.py](../tests/unit/test_secret_scan.py), [compliance checker](../scripts/compliance_check.py), [secret scanner](../scripts/secret_scan.py) |
 
 The ordinary suite uses ScriptedClient and local fixtures, so it remains offline and deterministic. Compliance and secret checks provide repeatable evidence over their declared static, working-tree, index, and history surfaces; they are not formal proofs. Cross-platform CI evidence and known manual-review limits are maintained in [COMPLIANCE.md](COMPLIANCE.md).
