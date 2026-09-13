@@ -27,6 +27,41 @@ _DISTRIBUTION_SEPARATOR = re.compile(r"[-_.]+")
 _REQUIREMENT_NAME = re.compile(r"\s*([A-Za-z0-9][A-Za-z0-9._-]*)")
 _SAFE_CHECK_ID_COMPONENT = re.compile(r"[^a-z0-9]+")
 
+_SPECIFICATION_PATH = "docs/DEVELOPMENT_SPEC.md"
+_README_PATH = "README.md"
+_ROADMAP_PATH = "docs/ROADMAP.md"
+_ADR_DIRECTORY = "docs/adr"
+_ADR_INDEX_PATH = "docs/adr/README.md"
+_ADR_TEMPLATE_NAME = "0000-template.md"
+_TOOL_REGISTRATION_PATH = "src/proofcoder/agent_runtime.py"
+_TOOL_DEFINITION_NAMES = frozenset({"ToolDefinition", "base.ToolDefinition"})
+_IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_SPECIFICATION_TOOL_HEADING = re.compile(r"### 7\.\d+ `([^`]+)`\s*")
+_README_TOOL_SECTION = "## Local Tools"
+_README_TOOL_ROW = re.compile(r"\|\s*`([^`]+)`\s*\|.*")
+_ADR_CANDIDATE_NAME = re.compile(r"\d{4}-.*\.md")
+_ADR_FILE_NAME = re.compile(r"(\d{4})-[a-z0-9]+(?:-[a-z0-9]+)*\.md")
+# Chinese headers use a full-width colon (U+FF1A). It is written as an escape because
+# ruff flags the literal character as confusable with an ASCII colon.
+_ADR_TITLE = re.compile(r"# ADR-(\d{4})\uff1a.+")
+_ADR_STATUS_PREFIX = "- 状态\uff1a"
+_ADR_STATUSES = frozenset({"提议", "已接受", "已拒绝"})
+_ADR_SUPERSEDED_STATUS = re.compile(r"已被 ADR-\d{4} 取代")
+_ADR_INDEX_HEADER = "编号"
+_ADR_INDEX_LINK = re.compile(r"\[(\d{4})\]\(([^()\s]+)\)")
+_ADR_HEADER_SCAN_LINES = 20
+_ROADMAP_STATUS_HEADER = "状态"
+_ROADMAP_PR_HEADER = "PR"
+_ROADMAP_STATUSES = frozenset({"已完成", "进行中", "未开始", "暂缓"})
+_ROADMAP_BLOCKED_STATUS_PREFIX = "阻塞"
+_ROADMAP_COMPLETED_STATUS = "已完成"
+_EMPTY_TABLE_CELLS = frozenset({"", "—", "-"})
+_TABLE_SEPARATOR = re.compile(r"\|(?:\s*:?-+:?\s*\|)+\s*")
+_LAYOUT_HEADING_PREFIX = "### 5.1"
+# Tree lines are built from U+2502, U+251C, U+2514, and U+2500 box-drawing characters.
+_LAYOUT_ENTRY = re.compile(r"((?:│   |    )*)(?:├── |└── )(.+?)\s*")
+_LAYOUT_NAME = re.compile(r"[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*/?")
+
 
 class CheckStatus(StrEnum):
     """Stable status values used by every compliance record."""
@@ -340,6 +375,7 @@ def run_compliance(root: Path) -> ComplianceReport:
         *check_dependencies(repository),
         *check_python_sources(parsed_files),
         *check_capability_evidence(repository),
+        *check_documentation_consistency(repository),
     ]
     return ComplianceReport(checks=tuple(sorted(checks, key=_check_sort_key)))
 
@@ -517,6 +553,22 @@ def check_capability_evidence(root: Path) -> tuple[ComplianceCheck, ...]:
                 )
             )
     return tuple(checks)
+
+
+def check_documentation_consistency(root: Path) -> tuple[ComplianceCheck, ...]:
+    """Check structural agreement between code, the specification, and project documents.
+
+    These checks compare names, paths, and status values only. They cannot judge whether
+    prose is accurate, so a pass means the documents agree in structure, not in meaning.
+    """
+
+    repository = _resolve_repository_root(root)
+    return (
+        *_check_documented_tools(repository),
+        *_check_adr_records(repository),
+        *_check_roadmap_statuses(repository),
+        *_check_specification_layout(repository),
+    )
 
 
 def format_json(report: ComplianceReport) -> str:
@@ -1100,6 +1152,608 @@ def _has_shell_false_call(tree: ast.Module) -> bool:
             ):
                 return True
     return False
+
+
+def _optional_text(root: Path, relative: str) -> str | None:
+    try:
+        return _read_text_file(root, relative)
+    except ComplianceInfrastructureError:
+        return None
+
+
+def _missing_document(check_id: str, relative: str) -> ComplianceCheck:
+    return ComplianceCheck(
+        check_id,
+        CheckStatus.FAIL,
+        f"required document is missing, not a regular file, or unreadable: {relative}",
+        relative,
+    )
+
+
+def _check_documented_tools(root: Path) -> tuple[ComplianceCheck, ...]:
+    check_id = "documentation.tools"
+    registered, problems = _registered_tool_names(root, check_id)
+    if problems:
+        return problems
+
+    failures: list[ComplianceCheck] = []
+    specification = _optional_text(root, _SPECIFICATION_PATH)
+    if specification is None:
+        failures.append(_missing_document(check_id, _SPECIFICATION_PATH))
+    else:
+        failures.extend(
+            _compare_documented_tools(
+                check_id,
+                registered,
+                _specification_tool_names(specification),
+                _SPECIFICATION_PATH,
+                "specification section 7",
+            )
+        )
+
+    readme = _optional_text(root, _README_PATH)
+    if readme is None:
+        failures.append(_missing_document(check_id, _README_PATH))
+    else:
+        readme_tools = _readme_tool_names(readme)
+        if readme_tools is None:
+            failures.append(
+                ComplianceCheck(
+                    check_id,
+                    CheckStatus.FAIL,
+                    f"README has no '{_README_TOOL_SECTION}' section",
+                    _README_PATH,
+                )
+            )
+        else:
+            failures.extend(
+                _compare_documented_tools(
+                    check_id, registered, readme_tools, _README_PATH, "the README tool table"
+                )
+            )
+
+    if failures:
+        return tuple(failures)
+    return (
+        ComplianceCheck(
+            check_id,
+            CheckStatus.PASS,
+            (
+                f"{len(registered)} registered tools match specification section 7 "
+                "and the README tool table"
+            ),
+            _TOOL_REGISTRATION_PATH,
+        ),
+    )
+
+
+def _registered_tool_names(
+    root: Path, check_id: str
+) -> tuple[tuple[str, ...], tuple[ComplianceCheck, ...]]:
+    """Resolve registered tool names from source, without importing project code."""
+
+    source = _optional_text(root, _TOOL_REGISTRATION_PATH)
+    if source is None:
+        return (), (_missing_document(check_id, _TOOL_REGISTRATION_PATH),)
+    try:
+        tree = ast.parse(source, filename=_TOOL_REGISTRATION_PATH)
+    except SyntaxError:
+        return (), (_tool_failure(check_id, "tool registration module is not valid Python"),)
+
+    imports: dict[str, tuple[str, str]] = {}
+    for node in tree.body:
+        if isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
+            for alias in node.names:
+                imports[alias.asname or alias.name] = (node.module, alias.name)
+
+    factories: list[tuple[str, int]] = []
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "register"
+            and len(node.args) == 1
+            and isinstance(node.args[0], ast.Call)
+            and isinstance(node.args[0].func, ast.Name)
+        ):
+            factories.append((node.args[0].func.id, node.lineno))
+    if not factories:
+        return (), (_tool_failure(check_id, "no tool registrations were found"),)
+
+    names: list[str] = []
+    problems: list[ComplianceCheck] = []
+    for factory, line in sorted(factories, key=lambda item: item[1]):
+        imported = imports.get(factory)
+        if imported is None or not imported[0].startswith("proofcoder."):
+            problems.append(
+                _tool_failure(
+                    check_id,
+                    f"tool factory is not imported from a proofcoder module: {factory}",
+                    line,
+                )
+            )
+            continue
+        name = _tool_definition_name(root, imported[0], imported[1])
+        if name is None:
+            message = f"tool name cannot be resolved statically for factory: {factory}"
+        elif _IDENTIFIER.fullmatch(name) is None:
+            message = f"tool name is not a plain identifier for factory: {factory}"
+        elif name in names:
+            message = f"tool name is registered more than once: {name}"
+        else:
+            names.append(name)
+            continue
+        problems.append(_tool_failure(check_id, message, line))
+    return tuple(names), tuple(problems)
+
+
+def _tool_failure(check_id: str, message: str, line: int | None = None) -> ComplianceCheck:
+    return ComplianceCheck(check_id, CheckStatus.FAIL, message, _TOOL_REGISTRATION_PATH, line)
+
+
+def _tool_definition_name(root: Path, module: str, factory: str) -> str | None:
+    relative = "src/" + module.replace(".", "/") + ".py"
+    source = _optional_text(root, relative)
+    if source is None:
+        return None
+    try:
+        tree = ast.parse(source, filename=relative)
+    except SyntaxError:
+        return None
+
+    constants: dict[str, str] = {}
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Constant):
+            value = node.value.value
+            if isinstance(value, str):
+                for target in node.targets:
+                    if isinstance(target, ast.Name):
+                        constants[target.id] = value
+
+    function = next(
+        (
+            node
+            for node in tree.body
+            if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and node.name == factory
+        ),
+        None,
+    )
+    if function is None:
+        return None
+
+    resolved: list[str] = []
+    for node in ast.walk(function):
+        if not isinstance(node, ast.Call) or _dotted_name(node.func) not in _TOOL_DEFINITION_NAMES:
+            continue
+        argument = _call_argument(node, "name")
+        if isinstance(argument, ast.Constant) and isinstance(argument.value, str):
+            resolved.append(argument.value)
+        elif isinstance(argument, ast.Name) and argument.id in constants:
+            resolved.append(constants[argument.id])
+        else:
+            return None
+    return resolved[0] if len(resolved) == 1 else None
+
+
+def _specification_tool_names(text: str) -> tuple[tuple[str, int], ...]:
+    names: list[tuple[str, int]] = []
+    for line_number, line in enumerate(text.splitlines(), start=1):
+        match = _SPECIFICATION_TOOL_HEADING.fullmatch(line)
+        if match is not None:
+            names.append((match.group(1), line_number))
+    return tuple(names)
+
+
+def _readme_tool_names(text: str) -> tuple[tuple[str, int], ...] | None:
+    names: list[tuple[str, int]] = []
+    found = False
+    in_section = False
+    for line_number, line in enumerate(text.splitlines(), start=1):
+        if line.startswith("## "):
+            if in_section:
+                break
+            in_section = line.strip() == _README_TOOL_SECTION
+            found = found or in_section
+            continue
+        if in_section:
+            match = _README_TOOL_ROW.fullmatch(line.strip())
+            if match is not None:
+                names.append((match.group(1), line_number))
+    return tuple(names) if found else None
+
+
+def _compare_documented_tools(
+    check_id: str,
+    registered: Sequence[str],
+    documented: Sequence[tuple[str, int]],
+    relative: str,
+    label: str,
+) -> list[ComplianceCheck]:
+    failures: list[ComplianceCheck] = []
+    seen: set[str] = set()
+    for name, line in documented:
+        if _IDENTIFIER.fullmatch(name) is None:
+            message = f"{label} lists a tool entry that is not a plain identifier"
+        elif name in seen:
+            message = f"{label} documents the same tool more than once: {name}"
+        elif name not in registered:
+            seen.add(name)
+            message = f"{label} documents a tool that is not registered: {name}"
+        else:
+            seen.add(name)
+            continue
+        failures.append(ComplianceCheck(check_id, CheckStatus.FAIL, message, relative, line))
+    for name in registered:
+        if name not in seen:
+            failures.append(
+                ComplianceCheck(
+                    check_id,
+                    CheckStatus.FAIL,
+                    f"registered tool is not documented in {label}: {name}",
+                    relative,
+                )
+            )
+    return failures
+
+
+def _check_adr_records(root: Path) -> tuple[ComplianceCheck, ...]:
+    status_id = "documentation.adr_status"
+    index_id = "documentation.adr_index"
+    directory = _repository_directory(root, _ADR_DIRECTORY)
+    entries: list[Path] | None = None
+    if directory is not None:
+        try:
+            entries = sorted(directory.iterdir(), key=lambda item: item.name)
+        except OSError:
+            entries = None
+    if entries is None:
+        message = f"ADR directory is missing or not an ordinary directory: {_ADR_DIRECTORY}"
+        return (
+            ComplianceCheck(status_id, CheckStatus.FAIL, message, _ADR_DIRECTORY),
+            ComplianceCheck(index_id, CheckStatus.FAIL, message, _ADR_DIRECTORY),
+        )
+
+    failures: list[ComplianceCheck] = []
+    statuses: dict[str, tuple[str, str]] = {}
+    numbers: set[str] = set()
+    for entry in entries:
+        name = entry.name
+        if name in {"README.md", _ADR_TEMPLATE_NAME}:
+            continue
+        relative = f"{_ADR_DIRECTORY}/{name}"
+        name_match = _ADR_FILE_NAME.fullmatch(name)
+        if name_match is None:
+            message = (
+                "ADR file name must be NNNN- followed by lowercase words joined by hyphens"
+                if _ADR_CANDIDATE_NAME.fullmatch(name) is not None
+                else "ADR directory contains a file that is not an NNNN-title.md record"
+            )
+            failures.append(ComplianceCheck(status_id, CheckStatus.FAIL, message, relative))
+            continue
+        text = _optional_text(root, relative)
+        if text is None:
+            failures.append(_missing_document(status_id, relative))
+            continue
+        number = name_match.group(1)
+        header_failures, status = _adr_header(status_id, relative, number, text)
+        failures.extend(header_failures)
+        if number in numbers:
+            failures.append(
+                ComplianceCheck(
+                    status_id,
+                    CheckStatus.FAIL,
+                    f"ADR number is used by more than one file: {number}",
+                    relative,
+                )
+            )
+            continue
+        numbers.add(number)
+        if status is not None:
+            statuses[number] = (name, status)
+
+    if failures:
+        status_checks = tuple(failures)
+    else:
+        status_checks = (
+            ComplianceCheck(
+                status_id,
+                CheckStatus.PASS,
+                f"{len(statuses)} ADRs have matching title numbers and allowed status values",
+                _ADR_DIRECTORY,
+            ),
+        )
+    return (*status_checks, *_check_adr_index(root, index_id, statuses))
+
+
+def _adr_header(
+    check_id: str, relative: str, number: str, text: str
+) -> tuple[list[ComplianceCheck], str | None]:
+    failures: list[ComplianceCheck] = []
+    lines = text.splitlines()
+    first = next(((index, line) for index, line in enumerate(lines, start=1) if line.strip()), None)
+    title = None if first is None else _ADR_TITLE.fullmatch(first[1].strip())
+    if title is None or title.group(1) != number:
+        failures.append(
+            ComplianceCheck(
+                check_id,
+                CheckStatus.FAIL,
+                "ADR title must start with '# ADR-NNNN' and use the number from its file name",
+                relative,
+                None if first is None else first[0],
+            )
+        )
+
+    for line_number, line in enumerate(lines[:_ADR_HEADER_SCAN_LINES], start=1):
+        if not line.startswith(_ADR_STATUS_PREFIX):
+            continue
+        status = line[len(_ADR_STATUS_PREFIX) :].strip()
+        if status in _ADR_STATUSES or _ADR_SUPERSEDED_STATUS.fullmatch(status) is not None:
+            return failures, status
+        failures.append(
+            ComplianceCheck(
+                check_id,
+                CheckStatus.FAIL,
+                "ADR status is not one of the allowed values",
+                relative,
+                line_number,
+            )
+        )
+        return failures, None
+
+    failures.append(
+        ComplianceCheck(
+            check_id,
+            CheckStatus.FAIL,
+            f"ADR has no '{_ADR_STATUS_PREFIX}' line in its header",
+            relative,
+        )
+    )
+    return failures, None
+
+
+def _check_adr_index(
+    root: Path, check_id: str, statuses: Mapping[str, tuple[str, str]]
+) -> tuple[ComplianceCheck, ...]:
+    text = _optional_text(root, _ADR_INDEX_PATH)
+    if text is None:
+        return (_missing_document(check_id, _ADR_INDEX_PATH),)
+
+    failures: list[ComplianceCheck] = []
+    indexed: set[str] = set()
+    for header, rows in _markdown_tables(text):
+        if not header or header[0] != _ADR_INDEX_HEADER:
+            continue
+        for line_number, cells in rows:
+            link = _ADR_INDEX_LINK.fullmatch(cells[0]) if len(cells) >= 3 else None
+            if link is None:
+                message = (
+                    "ADR index row must start with a [NNNN](file.md) link and include a status"
+                )
+            elif link.group(1) in indexed:
+                message = f"ADR index lists the same record more than once: {link.group(1)}"
+            else:
+                number = link.group(1)
+                indexed.add(number)
+                recorded = statuses.get(number)
+                if recorded is None or recorded[0] != link.group(2):
+                    message = f"ADR index row does not link to a valid record file: {number}"
+                elif cells[2] != recorded[1]:
+                    message = f"ADR index status differs from the record's status: {number}"
+                else:
+                    continue
+            failures.append(
+                ComplianceCheck(check_id, CheckStatus.FAIL, message, _ADR_INDEX_PATH, line_number)
+            )
+
+    for number in sorted(set(statuses) - indexed):
+        failures.append(
+            ComplianceCheck(
+                check_id,
+                CheckStatus.FAIL,
+                f"ADR is missing from the index: {number}",
+                _ADR_INDEX_PATH,
+            )
+        )
+    if failures:
+        return tuple(failures)
+    return (
+        ComplianceCheck(
+            check_id,
+            CheckStatus.PASS,
+            f"ADR index lists all {len(statuses)} ADRs with matching status values",
+            _ADR_INDEX_PATH,
+        ),
+    )
+
+
+def _check_roadmap_statuses(root: Path) -> tuple[ComplianceCheck, ...]:
+    check_id = "documentation.roadmap_status"
+    text = _optional_text(root, _ROADMAP_PATH)
+    if text is None:
+        return (_missing_document(check_id, _ROADMAP_PATH),)
+
+    failures: list[ComplianceCheck] = []
+    tables = 0
+    rows_checked = 0
+    for header, rows in _markdown_tables(text):
+        if _ROADMAP_STATUS_HEADER not in header:
+            continue
+        tables += 1
+        status_index = header.index(_ROADMAP_STATUS_HEADER)
+        pr_index = header.index(_ROADMAP_PR_HEADER) if _ROADMAP_PR_HEADER in header else None
+        for line_number, cells in rows:
+            if len(cells) != len(header):
+                message = "roadmap table row has a different number of cells than its header"
+            elif cells[status_index] not in _ROADMAP_STATUSES and not cells[
+                status_index
+            ].startswith(_ROADMAP_BLOCKED_STATUS_PREFIX):
+                message = "roadmap status is not one of the allowed values"
+            elif (
+                cells[status_index] == _ROADMAP_COMPLETED_STATUS
+                and pr_index is not None
+                and cells[pr_index] in _EMPTY_TABLE_CELLS
+            ):
+                message = "completed roadmap item has no pull request reference"
+            else:
+                rows_checked += 1
+                continue
+            failures.append(
+                ComplianceCheck(check_id, CheckStatus.FAIL, message, _ROADMAP_PATH, line_number)
+            )
+
+    if tables == 0:
+        failures.append(
+            ComplianceCheck(
+                check_id,
+                CheckStatus.FAIL,
+                "roadmap has no table with a status column",
+                _ROADMAP_PATH,
+            )
+        )
+    if failures:
+        return tuple(failures)
+    return (
+        ComplianceCheck(
+            check_id,
+            CheckStatus.PASS,
+            f"{rows_checked} roadmap status cells in {tables} tables use allowed values",
+            _ROADMAP_PATH,
+        ),
+    )
+
+
+def _markdown_tables(
+    text: str,
+) -> list[tuple[tuple[str, ...], list[tuple[int, tuple[str, ...]]]]]:
+    """Return each pipe table as its header cells plus numbered data rows."""
+
+    lines = text.splitlines()
+    tables: list[tuple[tuple[str, ...], list[tuple[int, tuple[str, ...]]]]] = []
+    index = 0
+    while index < len(lines) - 1:
+        line = lines[index].strip()
+        if not (line.startswith("|") and _TABLE_SEPARATOR.fullmatch(lines[index + 1].strip())):
+            index += 1
+            continue
+        header = _table_cells(line)
+        rows: list[tuple[int, tuple[str, ...]]] = []
+        index += 2
+        while index < len(lines) and lines[index].strip().startswith("|"):
+            rows.append((index + 1, _table_cells(lines[index])))
+            index += 1
+        tables.append((header, rows))
+    return tables
+
+
+def _table_cells(line: str) -> tuple[str, ...]:
+    inner = line.strip().removeprefix("|").removesuffix("|")
+    return tuple(cell.strip() for cell in inner.split("|"))
+
+
+def _check_specification_layout(root: Path) -> tuple[ComplianceCheck, ...]:
+    check_id = "documentation.spec_layout"
+    text = _optional_text(root, _SPECIFICATION_PATH)
+    if text is None:
+        return (_missing_document(check_id, _SPECIFICATION_PATH),)
+    entries = _layout_entries(text)
+    if entries is None:
+        return (
+            ComplianceCheck(
+                check_id,
+                CheckStatus.FAIL,
+                "specification section 5.1 has no text directory tree",
+                _SPECIFICATION_PATH,
+            ),
+        )
+
+    failures: list[ComplianceCheck] = []
+    directories: list[str] = []
+    checked = 0
+    for line_number, line in entries:
+        match = _LAYOUT_ENTRY.fullmatch(line)
+        if match is None:
+            if line.strip():
+                failures.append(
+                    _layout_failure(
+                        check_id, "specification layout line cannot be parsed", line_number
+                    )
+                )
+            continue
+        depth = len(match.group(1)) // 4
+        name = match.group(2)
+        if _LAYOUT_NAME.fullmatch(name) is None or ".." in name.split("/"):
+            message = "specification layout entry is not a plain relative path"
+        elif depth > len(directories):
+            message = "specification layout entry is nested under a file or skips a level"
+        else:
+            parents = directories[:depth]
+            relative = "".join(parents) + name
+            checked += 1
+            if name.endswith("/"):
+                directories = [*parents, name]
+                present = _repository_directory(root, relative.rstrip("/")) is not None
+            else:
+                directories = parents
+                present = _is_regular_repository_file(root, relative)
+            if present:
+                continue
+            message = f"specification section 5.1 lists a path that does not exist: {relative}"
+        failures.append(_layout_failure(check_id, message, line_number))
+
+    if failures:
+        return tuple(failures)
+    return (
+        ComplianceCheck(
+            check_id,
+            CheckStatus.PASS,
+            f"all {checked} paths in the specification section 5.1 layout exist",
+            _SPECIFICATION_PATH,
+        ),
+    )
+
+
+def _layout_entries(text: str) -> list[tuple[int, str]] | None:
+    """Return the numbered lines below the root of the first tree in section 5.1."""
+
+    lines = text.splitlines()
+    heading = next(
+        (index for index, line in enumerate(lines) if line.startswith(_LAYOUT_HEADING_PREFIX)),
+        None,
+    )
+    if heading is None:
+        return None
+    start: int | None = None
+    for index in range(heading + 1, len(lines)):
+        stripped = lines[index].strip()
+        if stripped.startswith("## ") or stripped.startswith("### "):
+            return None
+        if stripped == "```text":
+            start = index + 1
+            break
+    if start is None or start >= len(lines) or lines[start].strip() == "```":
+        return None
+    entries: list[tuple[int, str]] = []
+    for index in range(start + 1, len(lines)):
+        if lines[index].strip() == "```":
+            return entries
+        entries.append((index + 1, lines[index]))
+    return None
+
+
+def _layout_failure(check_id: str, message: str, line: int) -> ComplianceCheck:
+    return ComplianceCheck(check_id, CheckStatus.FAIL, message, _SPECIFICATION_PATH, line)
+
+
+def _repository_directory(root: Path, relative: str) -> Path | None:
+    try:
+        path = _repository_path(root, relative)
+        if path.is_symlink():
+            return None
+        metadata = path.stat(follow_symlinks=False)
+        path.resolve(strict=True).relative_to(root)
+    except (ComplianceInfrastructureError, OSError, ValueError):
+        return None
+    return path if stat.S_ISDIR(metadata.st_mode) else None
 
 
 def _id_component(value: str) -> str:

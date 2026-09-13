@@ -285,3 +285,35 @@ Expected acceptance: lock, format, lint, focused tests, full tests/coverage, and
 doctor all succeed; compliance remains 18 pass / 0 fail / 4 review; secret scanning is
 complete with zero findings and zero errors; the protected-file diff prints nothing;
 and final short status contains only `?? docs/COMPLIANCE.md`.
+
+## 13. Documentation Consistency Checks
+
+Roadmap item 0.3 (Development Specification section 18.3) added a `documentation.*`
+check family to `src/proofcoder/compliance.py`. `scripts/compliance_check.py` and CI run
+it with the dependency, source, and capability checks, and any failure makes the
+checker exit nonzero.
+
+| Check | What it compares |
+| --- | --- |
+| `documentation.tools` | Tool names resolved statically from the registrations in `src/proofcoder/agent_runtime.py`, against the `### 7.N` headings of the specification and the README "Local Tools" table, in both directions |
+| `documentation.adr_status` | Each `docs/adr/NNNN-title.md` file name, title number, and status value |
+| `documentation.adr_index` | The ADR index table in `docs/adr/README.md` against the ADR files: each record listed once, with a valid link and the same status |
+| `documentation.roadmap_status` | Status cells in `docs/ROADMAP.md` tables against the allowed values, and a pull request reference for each completed item |
+| `documentation.spec_layout` | Each path in the specification section 5.1 directory tree exists as the listed kind (file or directory), without following symlinks |
+
+The checks treat documents as untrusted text. A missing or unreadable document produces
+a `FAIL` record rather than an infrastructure error. Messages include tool identifiers,
+ADR numbers, and layout paths only after validating their form, so arbitrary document
+text is not echoed into reports.
+
+These checks compare structure: names, paths, links, and status values. They cannot
+determine whether prose is accurate or complete. Section 5.1 lists principal files
+rather than every file, so the layout check proves that listed paths exist, not that the
+tree is exhaustive.
+
+When the checks were introduced, the local run on the working tree of that change
+reported 23 passes, zero failures, and the four manual-review items described in
+Section 7. Sections 2, 6, 9, and 12 record 18 passes because they are bound to earlier
+commits that predate this check family; those counts are historical, not current
+expectations. The same local validation (Windows, Python 3.12.1) passed 895 tests with
+27 platform-gated skips and 91.34% total coverage, with clean ruff formatting and lint.

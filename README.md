@@ -40,6 +40,7 @@ DeepSeek proposes actions; the response first returns to `AgentLoop`, which vali
 
 - Python 3.11 or newer. The project and CI currently use Python 3.11.9.
 - [uv](https://docs.astral.sh/uv/) for locked dependency and environment management.
+- Git 2.44 or newer to run the secret scanner's `history` scope locally. With older Git that scope fails with `GIT_OUTPUT_ERROR`; use `--scope working-tree --scope index` instead. The GitHub-hosted CI runners scan all three scopes.
 - Windows or Linux. CI exercises `windows-latest` and `ubuntu-latest`; this is not a claim about every OS or distribution.
 - A DeepSeek credential for online doctor, `run`, and real `eval` only. Offline doctor and trace inspection do not require it.
 
@@ -239,7 +240,7 @@ uv run --offline python scripts/compliance_check.py --format json
 uv run --offline python scripts/secret_scan.py --format json
 ```
 
-The lock check and dependency synchronization are separate from offline validation: `uv sync` may access package sources, while each subsequent `uv run --offline` refuses network dependency resolution. The secret scanner covers Git-visible working-tree files, index blobs, and all reachable history within its declared bounds. Static scanning, offline tests, and CI success provide reviewable evidence; they are not formal proofs of security or correctness.
+The lock check and dependency synchronization are separate from offline validation: `uv sync` may access package sources, while each subsequent `uv run --offline` refuses network dependency resolution. The compliance checker also verifies that the registered tools match specification section 7 and the README tool table, that ADR records agree with the ADR index, that roadmap status values are valid, and that every path in the specification's directory layout exists. These checks compare names, paths, and status values, not the accuracy of prose. The secret scanner covers Git-visible working-tree files, index blobs, and all reachable history within its declared bounds. Static scanning, offline tests, and CI success provide reviewable evidence; they are not formal proofs of security or correctness.
 
 ## Security Boundaries
 

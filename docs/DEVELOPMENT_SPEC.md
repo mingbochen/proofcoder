@@ -1,4 +1,4 @@
-# ProofCoder 开发规范与验收标准 v3.0
+# ProofCoder 开发规范与验收标准 v3.0.1
 
 > ProofCoder 是一个轻量编程智能体：模型负责根据环境反馈决定下一步行动，本地程序负责对话管理、工具执行、安全约束、错误恢复和任务终止。
 
@@ -10,6 +10,7 @@
 |---|---|---|---|
 | v2.1 | — | 阶段 A–E 的规范基线 | — |
 | v3.0 | 2026-09-13 | 新增长期方向；修订范围与非目标；新增阶段 F–M；新增文档治理章节 | ADR-0001、ADR-0002、ADR-0003 |
+| v3.0.1 | 2026-09-13 | §5.1 目录树与仓库保持一致，并由合规检查 `documentation.spec_layout` 验证 | — |
 
 ---
 
@@ -298,12 +299,9 @@ proofcoder/
 │       └── static/
 ├── tests/
 │   ├── unit/
-│   ├── integration/
-│   └── protocol_fixtures/
+│   └── golden/
 ├── evals/
-│   ├── fixtures/
-│   ├── tasks.json
-│   └── run_evals.py
+│   └── fixtures/
 ├── docs/
 │   ├── DEVELOPMENT_SPEC.md
 │   ├── ROADMAP.md
@@ -316,6 +314,8 @@ proofcoder/
     ├── compliance_check.py
     └── secret_scan.py
 ```
+
+目录树列出主要文件，不要求列全；树中列出的每个路径都必须在仓库中存在，由合规检查 `documentation.spec_layout` 验证。
 
 目录按职责拆分，但不建设无实际需求的抽象层。阶段 J 之前，除测试用 `ScriptedClient` 外不实现多厂商客户端；阶段 J 的提供方抽象只负责通信和协议对象转换。
 
