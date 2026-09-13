@@ -130,6 +130,14 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_MAX_API_ATTEMPTS,
         help=f"attempts per model response, 1-{DEFAULT_MAX_API_ATTEMPTS} (default: 3)",
     )
+    run.add_argument(
+        "--no-checkpoint",
+        action="store_true",
+        help=(
+            "start without a rollback checkpoint; the run's writes, and any made by "
+            "workspace scripts it starts, cannot be undone afterwards"
+        ),
+    )
     run.add_argument("task", help="task for the local coding agent loop")
     evaluate = commands.add_parser(
         "eval",
@@ -277,6 +285,7 @@ def main(
                 cwd=base_cwd,
                 console=output,
                 client_factory=run_client_factory,
+                checkpoint_enabled=not bool(args.no_checkpoint),
             )
         except KeyboardInterrupt:
             _print(output, "DONE: termination=interrupted completion=none")
@@ -487,6 +496,7 @@ def _run_agent(
     cwd: Path,
     console: Console,
     client_factory: _RunClientFactory,
+    checkpoint_enabled: bool = True,
 ) -> int:
     workspace_input = Path(workspace_argument)
     workspace = (
@@ -509,6 +519,7 @@ def _run_agent(
             workspace,
             environ=environ,
             sensitive_values=sensitive_values,
+            checkpoint_enabled=checkpoint_enabled,
         )
     except TracePathError as error:
         _print(
@@ -517,6 +528,17 @@ def _run_agent(
         )
         return 1
     terminal = TerminalSink(lambda line: _safe_print(console, line, secret))
+    if resources.checkpoint_error is not None:
+        _print(console, f"WARN: {resources.checkpoint_error.code}")
+        emit_setup_termination(
+            task=task,
+            resources=resources,
+            termination_reason=TerminationReason.CHECKPOINT_ERROR,
+            additional_sinks=(terminal,),
+            sensitive_values=sensitive_values,
+        )
+        resources.close()
+        return 1
     try:
         config = ProofCoderConfig.from_env(environ=environ)
     except ConfigurationError:

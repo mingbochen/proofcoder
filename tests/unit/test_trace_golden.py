@@ -17,6 +17,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from proofcoder.agent import AgentLoop
+from proofcoder.checkpoint import CheckpointCapture, ScanSkips
 from proofcoder.events import EventType
 from proofcoder.llm.scripted import ScriptedClient
 from proofcoder.protocol import FunctionCall, ModelResponse, ToolCall
@@ -31,6 +32,21 @@ GOLDEN_PATH = Path(__file__).resolve().parents[1] / "golden" / "trace_golden.jso
 GOLDEN_RUN_ID = "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6"
 GOLDEN_TIME = datetime(2026, 8, 31, 4, 5, 6, 789012, tzinfo=UTC)
 GOLDEN_TASK = "Fix the addition helper and record a short note."
+# A literal capture keeps the golden bytes stable: a real capture would embed this
+# machine's timestamps and file counts.
+GOLDEN_CHECKPOINT = CheckpointCapture(
+    run_id=GOLDEN_RUN_ID,
+    created_at="2026-08-31T04:05:06.789012Z",
+    entry_count=4,
+    captured_count=2,
+    captured_bytes=256,
+    blob_count=2,
+    directory_count=1,
+    oversize_count=1,
+    sensitive_count=1,
+    unreadable_count=0,
+    skips=ScanSkips(ignored_directories=1, symlinks=1),
+)
 VERIFY_ARGV = ["python", "-m", "unittest", "discover", "-s", "tests"]
 
 CALC_SOURCE = (
@@ -192,6 +208,7 @@ def _run_golden_trajectory(workspace: Path) -> bytes:
             run_id_factory=lambda: GOLDEN_RUN_ID,
             event_clock=lambda: GOLDEN_TIME,
             trace_path=recorder.trace_path,
+            checkpoint=GOLDEN_CHECKPOINT,
         ).run(GOLDEN_TASK)
     finally:
         recorder.close()
@@ -236,8 +253,11 @@ def test_golden_trace_covers_every_event_type_and_hides_reasoning(tmp_path: Path
     assert raw.endswith(b"\n")
     trace = read_trace(tmp_path, GOLDEN_RUN_ID)
     observed = {event.event_type for event in trace.events}
-    assert observed == set(EventType), (
-        f"golden trajectory lost coverage of {set(EventType) - observed}"
+    # ROLLBACK is the one event the loop never emits: a rollback is a separate user
+    # action against a finished run, so it is recorded by the rollback entry point.
+    expected_types = set(EventType) - {EventType.ROLLBACK}
+    assert observed == expected_types, (
+        f"golden trajectory lost coverage of {expected_types - observed}"
     )
     assert trace.events[-1].payload["completion_status"] == "completed_verified"
     assert trace.events[-1].payload["changed_files"] == ["calc.py", "notes.md"]

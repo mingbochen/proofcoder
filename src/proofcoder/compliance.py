@@ -335,6 +335,17 @@ _CAPABILITIES = (
         ("tests/unit/test_verification.py", "tests/unit/test_finish_task.py"),
     ),
     _Capability(
+        "capability.checkpoint_rollback",
+        "run checkpoints and rollback",
+        (
+            (
+                "src/proofcoder/checkpoint.py",
+                ("create_checkpoint", "plan_rollback", "apply_rollback"),
+            ),
+        ),
+        ("tests/unit/test_checkpoint.py", "tests/unit/test_checkpoint_runtime.py"),
+    ),
+    _Capability(
         "capability.trace_replay",
         "events, trace, and replay",
         (

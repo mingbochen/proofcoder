@@ -91,6 +91,7 @@ class TerminationReason(StrEnum):
     INTERRUPTED = "interrupted"
     API_ERROR = "api_error"
     CONFIGURATION_ERROR = "configuration_error"
+    CHECKPOINT_ERROR = "checkpoint_error"
     CONTEXT_BUDGET_EXCEEDED = "context_budget_exceeded"
     INTERNAL_ERROR = "internal_error"
 

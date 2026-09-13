@@ -7,6 +7,14 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from proofcoder.agent import AgentLoop
+from proofcoder.checkpoint import (
+    DEFAULT_CHECKPOINT_LIMITS,
+    CheckpointCapture,
+    CheckpointError,
+    CheckpointLimits,
+    checkpoint_event_payload,
+    create_checkpoint,
+)
 from proofcoder.context import DEFAULT_CONTEXT_BUDGET_BYTES, MessageHistory
 from proofcoder.events import (
     CompositeSink,
@@ -47,6 +55,8 @@ class AgentRuntimeResources:
     run_id: str
     registry: ToolRegistry
     recorder: TraceRecorder
+    checkpoint: CheckpointCapture | None = None
+    checkpoint_error: CheckpointError | None = None
 
     def event_sink(self, additional_sinks: Sequence[EventSink] = ()) -> CompositeSink:
         """Combine optional presentation sinks with the mandatory local trace."""
@@ -65,8 +75,18 @@ def create_agent_runtime_resources(
     environ: Mapping[str, str] | None = None,
     sensitive_values: tuple[str, ...] = (),
     run_id_factory: Callable[[], str] = new_run_id,
+    checkpoint_enabled: bool = True,
+    checkpoint_limits: CheckpointLimits = DEFAULT_CHECKPOINT_LIMITS,
 ) -> AgentRuntimeResources:
-    """Create one fresh seven-tool registry and one fresh trace recorder."""
+    """Create one fresh seven-tool registry, trace recorder, and run checkpoint.
+
+    The checkpoint is captured here, before any tool exists to be called, so the
+    baseline predates every write the run can perform. A capture failure is returned
+    on the resources rather than raised: the caller still owns the trace and ends the
+    run through the same termination path as any other setup failure, because a run
+    that starts without a checkpoint is exactly what specification section 10.5.1
+    refuses.
+    """
 
     workspace_root = workspace.resolve(strict=True)
     registry = ToolRegistry()
@@ -83,11 +103,20 @@ def create_agent_runtime_resources(
         run_id,
         sensitive_values=sensitive_values,
     )
+    checkpoint: CheckpointCapture | None = None
+    checkpoint_error: CheckpointError | None = None
+    if checkpoint_enabled:
+        try:
+            checkpoint = create_checkpoint(workspace_root, run_id, limits=checkpoint_limits)
+        except CheckpointError as error:
+            checkpoint_error = error
     return AgentRuntimeResources(
         workspace=workspace_root,
         run_id=run_id,
         registry=registry,
         recorder=recorder,
+        checkpoint=checkpoint,
+        checkpoint_error=checkpoint_error,
     )
 
 
@@ -117,6 +146,7 @@ def build_agent_loop(
         sensitive_values=sensitive_values,
         trace_path=resources.recorder.trace_path,
         cancel_requested=cancel_requested,
+        checkpoint=resources.checkpoint,
     )
 
 
@@ -136,6 +166,14 @@ def emit_setup_termination(
         sensitive_values=sensitive_values,
     )
     emitter.emit(EventType.TASK, step=0, payload={"task": task})
+    if resources.checkpoint is not None:
+        # A run that stops during setup still has a baseline on disk. Saying so keeps
+        # the trace, not the filesystem, the place that answers whether one exists.
+        emitter.emit(
+            EventType.CHECKPOINT,
+            step=0,
+            payload=checkpoint_event_payload(resources.checkpoint),
+        )
     emitter.emit(
         EventType.TERMINATION,
         step=0,

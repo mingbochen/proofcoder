@@ -53,6 +53,7 @@ future dependency, environment, configuration, or source changes remain complian
 | --- | --- | --- | --- |
 | Agent loop | `proofcoder.agent.AgentLoop` | `tests/unit/test_agent.py`, `tests/unit/test_agent_d2.py` | Mechanical `PASS` |
 | API retry policy | `proofcoder.retry.retry_delay_seconds`; `proofcoder.agent.AgentLoop._request_model` | `tests/unit/test_retry.py`, `tests/unit/test_agent_d2.py` | Mechanical `PASS` |
+| Checkpoint and rollback | `proofcoder.checkpoint.create_checkpoint`, `proofcoder.checkpoint.plan_rollback`, `proofcoder.checkpoint.apply_rollback` | `tests/unit/test_checkpoint.py`, `tests/unit/test_checkpoint_runtime.py` | Mechanical `PASS` |
 | Command policy and execution | `proofcoder.safety.commands.prepare_command`; `proofcoder.tools.command.create_run_command_tool` | `tests/unit/test_command_policy.py`, `tests/unit/test_run_command.py` | Mechanical `PASS`; dynamic starts manually reviewed |
 | DeepSeek client | `proofcoder.llm.deepseek.DeepSeekClient` | `tests/unit/test_deepseek.py` | Mechanical `PASS`; dynamic request manually reviewed |
 | Evaluation pipeline | `proofcoder.eval_fixtures`, `proofcoder.eval_core`, `proofcoder.eval_runner` | `tests/unit/test_eval_fixtures.py`, `tests/unit/test_eval_core.py`, `tests/unit/test_eval_runner.py` | Mechanical `PASS` |
@@ -232,6 +233,12 @@ into automatic passes; their manual dispositions and limitations remain distinct
 - ProofCoder's command policy constrains model-selected commands but does not provide
   kernel isolation. Allowed workspace Python scripts execute with the current user's
   OS permissions.
+- A run checkpoint records the workspace baseline before the first model call and can
+  restore it afterwards, but only within its captured scope. Credential paths, files
+  above the file-tool size limit, ignored directories, symbolic links, and everything
+  outside the workspace are recorded as gaps or not at all, and `--no-checkpoint`
+  removes the protection. It is a recovery aid, not a backup, and the stored blobs
+  carry the same sensitivity as the workspace files they copy.
 - Real model use necessarily contacts the configured API endpoint. This review made
   no network request and performed no real-model evaluation.
 - External ripgrep provenance is delegated to the operator-controlled absolute
@@ -311,9 +318,13 @@ determine whether prose is accurate or complete. Section 5.1 lists principal fil
 rather than every file, so the layout check proves that listed paths exist, not that the
 tree is exhaustive.
 
-When the checks were introduced, the local run on the working tree of that change
-reported 23 passes, zero failures, and the four manual-review items described in
-Section 7. Sections 2, 6, 9, and 12 record 18 passes because they are bound to earlier
+Roadmap item F.2 added `capability.checkpoint_rollback`, which maps the checkpoint
+capture, planning, and application symbols to their deterministic test files, so the
+current expected count is 24 passes.
+
+When the documentation checks were introduced, the local run on the working tree of
+that change reported 23 passes, zero failures, and the four manual-review items
+described in Section 7. Sections 2, 6, 9, and 12 record 18 passes because they are bound to earlier
 commits that predate this check family; those counts are historical, not current
 expectations. The same local validation (Windows, Python 3.12.1) passed 895 tests with
 27 platform-gated skips and 91.34% total coverage, with clean ruff formatting and lint.

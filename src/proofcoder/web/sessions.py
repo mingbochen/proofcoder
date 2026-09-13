@@ -417,6 +417,17 @@ class SessionManager:
             )
             session.complete(termination_reason=TerminationReason.INTERNAL_ERROR)
             return
+        if resources.checkpoint_error is not None:
+            emit_setup_termination(
+                task=session.task,
+                resources=resources,
+                termination_reason=TerminationReason.CHECKPOINT_ERROR,
+                additional_sinks=(sink,),
+                sensitive_values=sensitive_values,
+            )
+            resources.close()
+            session.complete(termination_reason=TerminationReason.CHECKPOINT_ERROR)
+            return
 
         try:
             try:

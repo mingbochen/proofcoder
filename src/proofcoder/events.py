@@ -66,6 +66,8 @@ class EventType(StrEnum):
     TOOL_RESULT = "tool_result"
     DIFF = "diff"
     VERIFICATION = "verification"
+    CHECKPOINT = "checkpoint"
+    ROLLBACK = "rollback"
     WARNING = "warning"
     COMPLETION = "completion"
     TERMINATION = "termination"
@@ -365,6 +367,10 @@ def render_terminal_event(event: RunEvent) -> str | None:
             f"exit_code={_token(payload.get('exit_code'))} "
             f"accepted={str(bool(payload.get('accepted'))).lower()}"
         )
+    if event.event_type is EventType.CHECKPOINT:
+        return _render_checkpoint(payload)
+    if event.event_type is EventType.ROLLBACK:
+        return _render_rollback(payload)
     if event.event_type is EventType.WARNING:
         message = payload.get("message")
         detail = "" if not message else f" ({message})"
@@ -374,6 +380,42 @@ def render_terminal_event(event: RunEvent) -> str | None:
     if event.event_type is EventType.TERMINATION:
         return _render_termination(event)
     return None
+
+
+def _render_checkpoint(payload: Mapping[str, object]) -> str:
+    """Render the capture summary, naming what the checkpoint does not cover."""
+
+    if not payload.get("captured"):
+        return f"CHECKPOINT: none reason={_token(payload.get('reason', 'disabled'))}"
+    parts = [
+        f"CHECKPOINT: entries={payload.get('entry_count', 0)}",
+        f"captured={payload.get('captured_count', 0)}",
+        f"bytes={payload.get('captured_bytes', 0)}",
+    ]
+    uncovered = payload.get("uncovered")
+    if isinstance(uncovered, Mapping) and uncovered:
+        rendered = ",".join(f"{key}:{uncovered[key]}" for key in sorted(uncovered))
+        parts.append(f"uncovered={rendered}")
+    pruned = payload.get("pruned_checkpoints")
+    if type(pruned) is int and pruned > 0:
+        parts.append(f"pruned={pruned}")
+    return " ".join(parts)
+
+
+def _render_rollback(payload: Mapping[str, object]) -> str:
+    """Render the rollback outcome, including anything left unrestored."""
+
+    parts = [
+        f"ROLLBACK: run_id={_token(payload.get('target_run_id'))}",
+        f"restored={payload.get('restored_count', 0)}",
+        f"recreated={payload.get('recreated_count', 0)}",
+        f"deleted={payload.get('deleted_count', 0)}",
+        f"skipped={payload.get('skipped_count', 0)}",
+        f"failed={payload.get('failed_count', 0)}",
+    ]
+    if not payload.get("complete"):
+        parts.append("complete=false")
+    return " ".join(parts)
 
 
 def _token(value: object) -> str:
