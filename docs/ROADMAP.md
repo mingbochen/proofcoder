@@ -4,10 +4,10 @@
 
 ## 当前位置
 
-- 规范版本：v3.0
-- 当前阶段：阶段 0（治理基础）
-- 下一步：小项 0.3，文档一致性检查
-- 最近完成：小项 0.1 治理文档、小项 0.2 许可证（[#2](https://github.com/mingbochen/proofcoder/pull/2)）
+- 规范版本：v3.0.1
+- 当前阶段：阶段 F（检查点与回滚）
+- 下一步：小项 F.1，阶段 ADR 与规范补全（需要用户批准）
+- 最近完成：阶段 0 治理基础（[#2](https://github.com/mingbochen/proofcoder/pull/2)、[#3](https://github.com/mingbochen/proofcoder/pull/3)）
 
 状态取值：`已完成`、`进行中`、`未开始`、`阻塞`、`暂缓`。
 
@@ -17,7 +17,7 @@
 | --- | --- | --- | --- | --- |
 | A–E | 骨架、Agent 闭环、核心工具、鲁棒性、可观测性与评测 | — | 已完成 | 0.1.0 |
 | — | 本地浏览器界面（[ADR-0002](adr/0002-local-browser-interface.md)，PR #1） | A–E | 已完成 | 0.1.0 |
-| 0 | 治理基础 | — | 进行中 | — |
+| 0 | 治理基础 | — | 已完成 | — |
 | F | 检查点与回滚 | 0 | 未开始 | — |
 | G | 文件工具扩展 | F | 未开始 | — |
 | H | 命令策略配置与人工审批 | F | 未开始 | — |
@@ -41,7 +41,7 @@
 | --- | --- | --- | --- |
 | 0.1 | 开发规范 v3.0、本路线图、ADR-0001 至 0003、CHANGELOG、`AGENTS.md`、`CLAUDE.md`、PR 模板 | 已完成 | [#2](https://github.com/mingbochen/proofcoder/pull/2) |
 | 0.2 | 选择许可证（Apache-2.0），添加 `LICENSE`，更新 README 与 `pyproject.toml` 的许可说明 | 已完成 | [#2](https://github.com/mingbochen/proofcoder/pull/2) |
-| 0.3 | 在 `compliance.py` 中加入文档一致性检查（开发规范 §18.3） | 未开始 | — |
+| 0.3 | 在 `compliance.py` 中加入文档一致性检查（开发规范 §18.3），并修正规范 §5.1 目录树 | 已完成 | [#3](https://github.com/mingbochen/proofcoder/pull/3) |
 
 退出条件：0.1–0.3 全部合并，CI 通过。
 
@@ -70,11 +70,9 @@
 
 | 问题 | 影响 | 建议处理时机 |
 | --- | --- | --- |
-| 密钥扫描器的 history 范围需要 Git 2.44 或更高版本。旧版 Git 下会报 `GIT_OUTPUT_ERROR`，并使仓库扫描测试在检查扫描发现之前就失败，从而掩盖真实发现。README 没有说明这一要求。 | 本地检查结果不可信 | 0.3 或下一个小项 |
 | `serve` 的默认端口 8765 可能落入 Windows 的保留端口段（作者机器上为 TCP 8750–8849）。 | 首次启动失败，需要 `--port` | 任意小项 |
 | 配置只从进程环境变量读取，不自动加载 `.env`；README 依赖 `uv run --env-file`。 | 没有 uv 时配置步骤繁琐 | 阶段 M 之前 |
 | 浏览器界面：服务重启后丢失进行中的会话；模型文本不渲染 Markdown；切换语言不重绘进行中的运行。 | 使用体验 | 阶段 I |
-| 开发规范 §5.1 的建议目录包含 `tests/integration`、`tests/protocol_fixtures`、`evals/tasks.json`、`evals/run_evals.py`，仓库中不存在。 | 规范与实现不一致 | 0.3 |
 | 阶段性命名，如 `STAGE_B_SYSTEM_PROMPT`。 | 可读性 | 阶段 M |
 
 ## 维护规则

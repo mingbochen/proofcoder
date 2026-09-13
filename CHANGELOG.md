@@ -12,9 +12,11 @@ No version has been tagged yet. Planned versions and stages are tracked in the [
 - `proofcoder serve`: a local browser interface that runs the same bounded agent loop as `run`, with a workspace picker, live event rendering, run history replay, an environment self-check, and a stop button ([ADR-0002](docs/adr/0002-local-browser-interface.md)).
 - Cooperative cancellation for the agent loop, used by the browser stop button. A cancelled run ends as `interrupted`.
 - Project governance documents: development specification v3.0, the [roadmap](docs/ROADMAP.md), [architecture decision records](docs/adr/README.md), this changelog, `CLAUDE.md`, and a pull request template ([ADR-0001](docs/adr/0001-document-governance.md)).
+- Documentation consistency checks in `scripts/compliance_check.py`: registered tools must match specification section 7 and the README tool table, ADR records must agree with the ADR index, roadmap status values must be valid, and every path in the specification's directory layout must exist.
 
 ### Changed
 
+- The README states that the secret scanner's `history` scope requires Git 2.44 or newer.
 - The development specification's scope and non-goals were revised for the v3.0 roadmap ([ADR-0003](docs/adr/0003-v3-scope-revision.md)).
 
 ## Baseline before this changelog
