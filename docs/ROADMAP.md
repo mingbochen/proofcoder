@@ -6,8 +6,8 @@
 
 - 规范版本：v3.0
 - 当前阶段：阶段 0（治理基础）
-- 进行中：小项 0.1，治理文档（分支 `docs/governance-foundation`）
-- 等待决定：小项 0.2 的许可证类型
+- 下一步：小项 0.3，文档一致性检查
+- 最近完成：小项 0.1 治理文档、小项 0.2 许可证（[#2](https://github.com/mingbochen/proofcoder/pull/2)）
 
 状态取值：`已完成`、`进行中`、`未开始`、`阻塞`、`暂缓`。
 
@@ -39,8 +39,8 @@
 
 | 小项 | 内容 | 状态 | PR |
 | --- | --- | --- | --- |
-| 0.1 | 开发规范 v3.0、本路线图、ADR-0001 至 0003、CHANGELOG、`AGENTS.md`、`CLAUDE.md`、PR 模板 | 进行中 | — |
-| 0.2 | 选择许可证，添加 `LICENSE`，更新 README 的许可说明 | 阻塞：等待作者选择许可证 | — |
+| 0.1 | 开发规范 v3.0、本路线图、ADR-0001 至 0003、CHANGELOG、`AGENTS.md`、`CLAUDE.md`、PR 模板 | 已完成 | [#2](https://github.com/mingbochen/proofcoder/pull/2) |
+| 0.2 | 选择许可证（Apache-2.0），添加 `LICENSE`，更新 README 与 `pyproject.toml` 的许可说明 | 已完成 | [#2](https://github.com/mingbochen/proofcoder/pull/2) |
 | 0.3 | 在 `compliance.py` 中加入文档一致性检查（开发规范 §18.3） | 未开始 | — |
 
 退出条件：0.1–0.3 全部合并，CI 通过。

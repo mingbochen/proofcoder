@@ -269,4 +269,4 @@ Use a low-privilege, low-quota credential, review workspace scripts before execu
 
 ## Project Status and License
 
-ProofCoder is a bounded engineering project and should not be described as production-ready or fully secure. Planned work and its status are tracked in the [roadmap](docs/ROADMAP.md). No `LICENSE` file is currently included, so this README makes no license grant.
+ProofCoder is a bounded engineering project and should not be described as production-ready or fully secure. Planned work and its status are tracked in the [roadmap](docs/ROADMAP.md). ProofCoder is licensed under the [Apache License 2.0](LICENSE).

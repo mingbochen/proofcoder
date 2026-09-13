@@ -6,6 +6,8 @@ build-backend = "hatchling.build"
 name = "proofcoder"
 version = "0.1.0"
 description = "A lightweight local coding agent"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 requires-python = ">=3.11"
 dependencies = [
     "openai>=1.66,<3",
