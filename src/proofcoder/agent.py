@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+from proofcoder.checkpoint import CheckpointCapture, checkpoint_event_payload
 from proofcoder.context import (
     DEFAULT_CONTEXT_BUDGET_BYTES,
     ContextManager,
@@ -96,6 +97,7 @@ class AgentLoop:
         sensitive_values: tuple[str, ...] = (),
         trace_path: str | None = None,
         cancel_requested: Callable[[], bool] | None = None,
+        checkpoint: CheckpointCapture | None = None,
     ) -> None:
         workspace_root = workspace.resolve(strict=True)
         if not workspace_root.is_dir():
@@ -129,6 +131,9 @@ class AgentLoop:
         # KeyboardInterrupt. It is polled between bounded units of work, so an in-flight
         # model request or tool command still finishes before the loop stops.
         self._cancel_requested = cancel_requested
+        # Captured before this loop was built, so the baseline predates every tool
+        # call. The loop only reports it; it never captures or rolls back itself.
+        self._checkpoint = checkpoint
         self._events: EventEmitter | None = None
 
     @property
@@ -153,6 +158,12 @@ class AgentLoop:
         state = RunState(original_task=task, run_id=run_id, started_at=self._clock())
         tracker = VerificationTracker(state)
         self._emit(EventType.TASK, state, {"task": task})
+        if self._checkpoint is not None:
+            self._emit(
+                EventType.CHECKPOINT,
+                state,
+                checkpoint_event_payload(self._checkpoint),
+            )
         try:
             return self._run(history, state, tracker)
         except KeyboardInterrupt:

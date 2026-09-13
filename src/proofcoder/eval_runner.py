@@ -250,39 +250,52 @@ def create_evaluation_agent_runner(
 
         result: RunResult
         try:
-            try:
-                client = client_factory(config)
-            except KeyboardInterrupt:
+            if resources.checkpoint_error is not None:
                 emit_setup_termination(
                     task=fixture.task,
                     resources=resources,
-                    termination_reason=TerminationReason.INTERRUPTED,
+                    termination_reason=TerminationReason.CHECKPOINT_ERROR,
                     sensitive_values=sensitive_values,
                 )
                 result = setup_failure_result(
                     task=fixture.task,
                     resources=resources,
-                    termination_reason=TerminationReason.INTERRUPTED,
-                )
-            except ProofCoderError:
-                emit_setup_termination(
-                    task=fixture.task,
-                    resources=resources,
-                    termination_reason=TerminationReason.API_ERROR,
-                    sensitive_values=sensitive_values,
-                )
-                result = setup_failure_result(
-                    task=fixture.task,
-                    resources=resources,
-                    termination_reason=TerminationReason.API_ERROR,
+                    termination_reason=TerminationReason.CHECKPOINT_ERROR,
                 )
             else:
-                result = build_agent_loop(
-                    client=client,
-                    resources=resources,
-                    limits=limits,
-                    sensitive_values=sensitive_values,
-                ).run(fixture.task)
+                try:
+                    client = client_factory(config)
+                except KeyboardInterrupt:
+                    emit_setup_termination(
+                        task=fixture.task,
+                        resources=resources,
+                        termination_reason=TerminationReason.INTERRUPTED,
+                        sensitive_values=sensitive_values,
+                    )
+                    result = setup_failure_result(
+                        task=fixture.task,
+                        resources=resources,
+                        termination_reason=TerminationReason.INTERRUPTED,
+                    )
+                except ProofCoderError:
+                    emit_setup_termination(
+                        task=fixture.task,
+                        resources=resources,
+                        termination_reason=TerminationReason.API_ERROR,
+                        sensitive_values=sensitive_values,
+                    )
+                    result = setup_failure_result(
+                        task=fixture.task,
+                        resources=resources,
+                        termination_reason=TerminationReason.API_ERROR,
+                    )
+                else:
+                    result = build_agent_loop(
+                        client=client,
+                        resources=resources,
+                        limits=limits,
+                        sensitive_values=sensitive_values,
+                    ).run(fixture.task)
         finally:
             resources.close()
         return replace(

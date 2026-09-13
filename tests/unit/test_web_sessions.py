@@ -421,7 +421,9 @@ def test_missing_credentials_end_the_run_with_a_configuration_termination(
 
     assert summary.termination_reason == "configuration_error"
     assert summary.exit_code == 1
-    assert [item["event_type"] for item in events] == ["task", "termination"]
+    # The baseline is captured before configuration is read, so the trace of a run
+    # that stops during setup still records that a checkpoint exists for it.
+    assert [item["event_type"] for item in events] == ["task", "checkpoint", "termination"]
     assert list_traces(tmp_path)[0].run_id == session.run_id
 
 

@@ -271,6 +271,7 @@ proofcoder/
 │   ├── cli.py
 │   ├── config.py
 │   ├── agent.py
+│   ├── checkpoint.py
 │   ├── protocol.py
 │   ├── context.py
 │   ├── errors.py

@@ -117,6 +117,23 @@ uv run --locked --env-file .env proofcoder run --workspace ../proofcoder-demo "C
 
 `run` defaults to 8 assistant responses, 600 seconds, a 262144-byte context budget, 5 consecutive failed batches, and up to 3 API attempts per model response. Use `proofcoder run --help` for their bounded overrides. Exit code `0` represents verified completion or a locally observed no-change completion, `3` unverified changes, and `4` an explicit blocked result. Other failures are nonzero; interruption returns `130`.
 
+## Run Checkpoints
+
+Before its first model call, every run records a checkpoint: a content-addressed copy of the workspace baseline under the ignored `.proofcoder/checkpoints/<run_id>` directory. The baseline is taken before any tool exists to be called, so it also covers writes made by an allowed workspace script, a build, or a test, not only writes made by ProofCoder's own file tools.
+
+A checkpoint records what it does not cover, and those gaps are real:
+
+| Not covered | Why |
+| --- | --- |
+| `.env`, private keys, certificates, and other credential paths | Neither their content nor a digest of it is stored, so a checkpoint never becomes a copy of your credentials. Changes to them are reported instead |
+| Files larger than 1 MiB | Recorded by metadata only; a change is detected and reported, but the content is not stored |
+| `.git`, virtual environments, `node_modules`, caches, and `.proofcoder` | Outside the captured scope, as they are for the file tools |
+| Symbolic links and anything outside the workspace | Never followed and never captured; a workspace script still runs with your full authority |
+
+The capture is a precondition, not a convenience: if it fails or the workspace exceeds the checkpoint limits, the run ends as `checkpoint_error` before contacting the provider. `proofcoder run --no-checkpoint` starts without one, and then nothing the run writes can be undone. The most recent three checkpoints are kept, subject to a total size limit; pruning happens before the next capture and never removes a run trace.
+
+The command-line and browser entry points that roll a run back are not implemented yet; the current release records the baseline and its trace event. See the [roadmap](docs/ROADMAP.md) for stage F.
+
 ## Browser Interface
 
 `proofcoder serve` presents the same bounded run in a local web page, so a task can be
@@ -209,7 +226,7 @@ uv run --offline proofcoder trace list --workspace ../proofcoder-demo
 uv run --offline proofcoder trace show --workspace ../proofcoder-demo <run_id>
 ```
 
-Trace commands are local and do not load provider credentials. The stored JSONL contains sanitized ordered events plus bounded action, diff, verification, statistics, completion, and termination summaries. It deliberately omits complete hidden reasoning, full file bodies, full command output, raw environments, and provider request/response bodies.
+Trace commands are local and do not load provider credentials. The stored JSONL contains sanitized ordered events plus bounded action, diff, verification, checkpoint, statistics, completion, and termination summaries. It deliberately omits complete hidden reasoning, full file bodies, full command output, raw environments, and provider request/response bodies.
 
 `trace show` returns `0` only for a complete, valid trace and returns nonzero for malformed, truncated, missing-termination, or recorder-incomplete evidence. A run with `trace_complete=false` may still have performed work, but its trace must not be treated as complete evaluation evidence.
 
@@ -246,7 +263,8 @@ The lock check and dependency synchronization are separate from offline validati
 
 - ProofCoder enforces an application policy, not an OS or kernel sandbox.
 - The optional browser interface adds a local HTTP surface. Its loopback bind, session token, and Host/Origin checks are access controls on that surface, not isolation of the underlying file and command authority.
-- An allowed workspace Python script runs with the current user's authority and can act outside file-tool policy.
+- An allowed workspace Python script runs with the current user's authority and can act outside file-tool policy. A run checkpoint covers such writes inside the workspace; it cannot cover anything the script does outside it.
+- A checkpoint restores content within its captured scope. It is not a backup: credential paths, files over 1 MiB, ignored directories, and everything outside the workspace stay uncovered, and it protects nothing once `--no-checkpoint` is used.
 - Optional accelerated search trusts an operator-provided external `ripgrep` selected through `PATH`; executable provenance remains the operator's responsibility.
 - Filesystem checks reduce but cannot eliminate time-of-check/time-of-use races.
 - The provider, dependencies, package sources, Python, Git, external executables, operating system, and CI runner remain trust and supply-chain boundaries.
