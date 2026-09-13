@@ -83,6 +83,30 @@ const TEXT = {
     cancelSent: "已请求停止，会在下一个检查点结束",
     replayTitle: "历史运行",
     liveTitle: "当前运行",
+    checkpointTitle: "运行前检查点",
+    checkpointEntries: "已记录文件",
+    checkpointBytes: "已存字节",
+    checkpointUncovered: "未覆盖",
+    checkpointNone: "本次运行没有检查点，写入无法撤销",
+    rollbackButton: "回滚这次运行",
+    rollbackTitle: "回滚清单",
+    rollbackLoading: "正在读取回滚清单…",
+    rollbackEmpty: "工作区与运行前一致，没有需要撤销的改动",
+    rollbackConfirm: "确认回滚",
+    rollbackCancel: "取消",
+    rollbackNotCovered: "不在覆盖范围内，将保持原样",
+    rollbackByTool: "工具写入",
+    rollbackChanged: "工作区在清单生成后发生了变化，请重新确认",
+    rollbackDone: "回滚完成",
+    rollbackPartial: "回滚未全部完成",
+    rollbackFailedPaths: "未能恢复",
+    rollbackBusy: "该工作区有运行在进行中，先停止它再回滚",
+    rollbackMissing: "这次运行没有可用的检查点",
+    actionRestore: "恢复",
+    actionRecreate: "重建",
+    actionDelete: "删除",
+    actionCreateDirectory: "新建目录",
+    actionRemoveDirectory: "删除目录",
     suggestions: [
       "在工作区里创建 hello.py，打印一行问候，并补一个单元测试后运行",
       "阅读工作区结构，找出没有测试覆盖的模块并补充测试",
@@ -162,6 +186,30 @@ const TEXT = {
     cancelSent: "Stop requested; the run ends at its next checkpoint",
     replayTitle: "Stored run",
     liveTitle: "Current run",
+    checkpointTitle: "Pre-run checkpoint",
+    checkpointEntries: "Files recorded",
+    checkpointBytes: "Bytes stored",
+    checkpointUncovered: "Not covered",
+    checkpointNone: "This run has no checkpoint; its writes cannot be undone",
+    rollbackButton: "Roll back this run",
+    rollbackTitle: "Rollback plan",
+    rollbackLoading: "Reading the rollback plan…",
+    rollbackEmpty: "The workspace matches the pre-run state; there is nothing to undo",
+    rollbackConfirm: "Apply rollback",
+    rollbackCancel: "Cancel",
+    rollbackNotCovered: "Not covered; left exactly as it is",
+    rollbackByTool: "written by a tool",
+    rollbackChanged: "The workspace changed after this plan was shown; review it again",
+    rollbackDone: "Rollback finished",
+    rollbackPartial: "Rollback did not finish completely",
+    rollbackFailedPaths: "Not restored",
+    rollbackBusy: "A run is using this workspace; stop it before rolling back",
+    rollbackMissing: "This run has no stored checkpoint",
+    actionRestore: "restore",
+    actionRecreate: "recreate",
+    actionDelete: "delete",
+    actionCreateDirectory: "create directory",
+    actionRemoveDirectory: "remove directory",
     suggestions: [
       "Create hello.py that prints a greeting, add a unit test, and run it",
       "Review the workspace layout and add tests for an uncovered module",
@@ -336,6 +384,8 @@ async function api(path, options) {
     const error = new Error((payload.error && payload.error.message) || t("loadFailed"));
     error.code = payload.error && payload.error.code;
     error.status = response.status;
+    // Some errors carry usable data, such as the replacement plan behind PLAN_CHANGED.
+    error.body = payload;
     throw error;
   }
   return payload;
@@ -447,7 +497,7 @@ async function refreshHistory() {
       if (entry.run_id === state.viewedRunId || entry.run_id === state.activeRunId) {
         item.classList.add("is-active");
       }
-      item.appendChild(node("span", "history__task", entry.task || entry.run_id.slice(0, 12)));
+      item.appendChild(node("span", "history__task", historyTitle(entry)));
       const meta = node("div", "history__meta");
       meta.appendChild(node("span", "", formatTime(entry.started_at)));
       const [label, tone] = COMPLETION_TEXT[entry.completion_status] || [null, null];
@@ -466,6 +516,14 @@ async function refreshHistory() {
 }
 
 /* ---------- thread rendering ---------- */
+
+function historyTitle(entry) {
+  if (entry.termination_reason === "rollback") {
+    const target = entry.target_run_id ? entry.target_run_id.slice(0, 12) : "";
+    return target ? `${t("rollbackTitle")} · ${target}` : t("rollbackTitle");
+  }
+  return entry.task || entry.run_id.slice(0, 12);
+}
 
 function clearThread() {
   dom.messages.replaceChildren();
@@ -639,9 +697,58 @@ function renderEvent(event) {
     return;
   }
 
-  if (type === "termination") {
-    dom.messages.appendChild(renderTermination(payload));
+  if (type === "checkpoint") {
+    body.appendChild(renderCheckpoint(payload));
+    return;
   }
+
+  if (type === "rollback") {
+    body.appendChild(renderRollbackEvent(payload));
+    return;
+  }
+
+  if (type === "termination") {
+    dom.messages.appendChild(renderTermination(payload, event.run_id));
+  }
+}
+
+function renderCheckpoint(payload) {
+  const detail = payload.captured
+    ? `${t("checkpointEntries")} ${payload.entry_count || 0} · ${t("checkpointBytes")} ${
+        payload.captured_bytes || 0
+      }`
+    : t("checkpointNone");
+  const { card, body } = collapsibleCard(t("checkpointTitle"), detail, ICONS.check);
+  const uncovered = payload.uncovered;
+  if (uncovered && typeof uncovered === "object") {
+    body.appendChild(
+      keyValues(
+        Object.keys(uncovered)
+          .sort()
+          .map((key) => [`${t("checkpointUncovered")}: ${key}`, uncovered[key]])
+      )
+    );
+  }
+  return card;
+}
+
+function renderRollbackEvent(payload) {
+  const detail = [
+    `restored ${payload.restored_count || 0}`,
+    `recreated ${payload.recreated_count || 0}`,
+    `deleted ${payload.deleted_count || 0}`,
+    `skipped ${payload.skipped_count || 0}`,
+    `failed ${payload.failed_count || 0}`,
+  ].join(" · ");
+  const title = payload.complete ? t("rollbackDone") : t("rollbackPartial");
+  const { card, body } = collapsibleCard(title, detail, ICONS.check);
+  const failures = Array.isArray(payload.failures) ? payload.failures : [];
+  if (failures.length) {
+    body.appendChild(
+      keyValues(failures.map((item) => [`${t("rollbackFailedPaths")}: ${item.path}`, item.code]))
+    );
+  }
+  return card;
 }
 
 function findToolCard(callId) {
@@ -699,7 +806,7 @@ function renderDiff(preview) {
   return block;
 }
 
-function renderTermination(payload) {
+function renderTermination(payload, runId) {
   const card = node("div", "final");
   const head = node("div", "final__head");
   head.appendChild(node("span", "final__title", t("finished")));
@@ -753,8 +860,162 @@ function renderTermination(payload) {
     stats.appendChild(stat);
   });
   body.appendChild(stats);
+
+  if (runId && state.workspace) {
+    const actions = node("div", "final__actions");
+    const button = node("button", "text-button rollback__open", t("rollbackButton"));
+    button.type = "button";
+    const panel = node("div", "rollback");
+    panel.hidden = true;
+    button.addEventListener("click", () => {
+      button.disabled = true;
+      openRollback(runId, panel, button);
+    });
+    actions.appendChild(button);
+    body.appendChild(actions);
+    body.appendChild(panel);
+  }
+
   card.appendChild(body);
   return card;
+}
+
+/* ---------- rollback ---------- */
+
+const ROLLBACK_ACTION_TEXT = {
+  restore: "actionRestore",
+  recreate: "actionRecreate",
+  delete: "actionDelete",
+  create_directory: "actionCreateDirectory",
+  remove_directory: "actionRemoveDirectory",
+};
+
+async function openRollback(runId, panel, button) {
+  panel.hidden = false;
+  panel.replaceChildren(node("p", "rollback__note", t("rollbackLoading")));
+  try {
+    const plan = await api(
+      `/api/checkpoints/${encodeURIComponent(runId)}/plan?workspace=` +
+        encodeURIComponent(state.workspace)
+    );
+    renderRollbackPlan(plan, runId, panel, button);
+  } catch (error) {
+    panel.replaceChildren(
+      node("p", "rollback__note", rollbackErrorText(error))
+    );
+    button.disabled = false;
+  }
+}
+
+function renderRollbackPlan(plan, runId, panel, button, warning) {
+  panel.replaceChildren();
+  panel.appendChild(node("p", "rollback__title", t("rollbackTitle")));
+  if (warning) panel.appendChild(node("p", "rollback__warn", warning));
+
+  const items = Array.isArray(plan.items) ? plan.items : [];
+  if (!items.length) {
+    panel.appendChild(node("p", "rollback__note", t("rollbackEmpty")));
+  } else {
+    const list = node("ul", "rollback__list");
+    items.forEach((item) => {
+      const entry = node("li", "rollback__item");
+      entry.appendChild(node("span", "pill pill--muted", t(ROLLBACK_ACTION_TEXT[item.action] || "actionRestore")));
+      entry.appendChild(node("span", "rollback__path", item.path));
+      if (item.by_tool) entry.appendChild(node("span", "rollback__source", t("rollbackByTool")));
+      list.appendChild(entry);
+    });
+    panel.appendChild(list);
+  }
+
+  const skipped = Array.isArray(plan.skipped) ? plan.skipped : [];
+  if (skipped.length) {
+    panel.appendChild(node("p", "rollback__note", t("rollbackNotCovered")));
+    const list = node("ul", "rollback__list");
+    skipped.forEach((skip) => {
+      const entry = node("li", "rollback__item rollback__item--skipped");
+      entry.appendChild(node("span", "rollback__path", skip.path));
+      entry.appendChild(node("span", "rollback__source", skip.reason));
+      list.appendChild(entry);
+    });
+    panel.appendChild(list);
+  }
+
+  if (!items.length) {
+    const actions = node("div", "rollback__actions");
+    const close = node("button", "text-button", t("rollbackCancel"));
+    close.type = "button";
+    close.addEventListener("click", () => {
+      panel.hidden = true;
+      button.disabled = false;
+    });
+    actions.appendChild(close);
+    panel.appendChild(actions);
+    return;
+  }
+
+  const actions = node("div", "rollback__actions");
+  const confirm = node("button", "primary-button", t("rollbackConfirm"));
+  confirm.type = "button";
+  const cancel = node("button", "text-button", t("rollbackCancel"));
+  cancel.type = "button";
+  cancel.addEventListener("click", () => {
+    panel.hidden = true;
+    button.disabled = false;
+  });
+  confirm.addEventListener("click", () => {
+    confirm.disabled = true;
+    cancel.disabled = true;
+    applyRollback(runId, plan.plan_digest, panel, button);
+  });
+  actions.appendChild(confirm);
+  actions.appendChild(cancel);
+  panel.appendChild(actions);
+}
+
+async function applyRollback(runId, digest, panel, button) {
+  try {
+    const result = await api(`/api/checkpoints/${encodeURIComponent(runId)}/rollback`, {
+      method: "POST",
+      json: { workspace: state.workspace, plan_digest: digest },
+    });
+    renderRollbackResult(result, panel, button);
+  } catch (error) {
+    if (error.code === "PLAN_CHANGED" && error.body) {
+      // The approval was for a plan that no longer applies, so ask again on the new one.
+      renderRollbackPlan(error.body, runId, panel, button, t("rollbackChanged"));
+      return;
+    }
+    panel.replaceChildren(node("p", "rollback__warn", rollbackErrorText(error)));
+    button.disabled = false;
+  }
+}
+
+function renderRollbackResult(result, panel, button) {
+  panel.replaceChildren();
+  const complete = result.complete !== false;
+  panel.appendChild(
+    node("p", complete ? "rollback__title" : "rollback__warn", complete ? t("rollbackDone") : t("rollbackPartial"))
+  );
+  const counts = [
+    ["actionRestore", (result.restored || []).length],
+    ["actionRecreate", (result.recreated || []).length],
+    ["actionDelete", (result.deleted || []).length],
+  ];
+  panel.appendChild(keyValues(counts.map(([key, value]) => [t(key), value])));
+  const failures = Array.isArray(result.failures) ? result.failures : [];
+  if (failures.length) {
+    panel.appendChild(
+      keyValues(failures.map((item) => [`${t("rollbackFailedPaths")}: ${item.path}`, item.code]))
+    );
+  }
+  button.disabled = false;
+  refreshHistory();
+}
+
+function rollbackErrorText(error) {
+  if (error.code === "WORKSPACE_BUSY") return t("rollbackBusy");
+  if (error.code === "CHECKPOINT_NOT_FOUND") return t("rollbackMissing");
+  return error.message || t("loadFailed");
 }
 
 function formatSeconds(value) {

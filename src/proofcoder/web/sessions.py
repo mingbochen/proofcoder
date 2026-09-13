@@ -353,6 +353,15 @@ class SessionManager:
             sessions = list(self._sessions.values())
         return tuple(session.summary() for session in reversed(sessions))
 
+    def workspace_busy(self, workspace: Path) -> bool:
+        """Return whether one workspace currently has a run writing to it."""
+
+        with self._lock:
+            return any(
+                item.workspace == workspace and item.status is SessionStatus.RUNNING
+                for item in self._sessions.values()
+            )
+
     def active_count(self) -> int:
         """Return how many retained sessions are still running."""
 

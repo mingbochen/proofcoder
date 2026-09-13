@@ -147,7 +147,7 @@ uv run --offline proofcoder rollback delete --workspace ../proofcoder-demo <run_
 
 A rollback is a separate operation against a finished run, so it records its own trace with a new run ID whose `rollback` event names the run it undid; `proofcoder trace list` shows it with status `rollback`. Rollback commands are local and load no provider credentials.
 
-The browser button that triggers a rollback is not implemented yet. See the [roadmap](docs/ROADMAP.md) for stage F.
+The browser interface offers the same thing on the card that closes a run; see below.
 
 ## Browser Interface
 
@@ -168,6 +168,17 @@ The interface is presentation only. It adds no agent behaviour, no new runtime
 dependency, and no second completion rule: it starts `AgentLoop` exactly as `run` does,
 streams the same sanitized events the JSONL trace receives, and shows the completion
 status the local run reported.
+
+The card that closes a run carries a rollback entry. Opening it shows the same plan the
+command line prints — what would be restored, recreated, deleted, which directories
+move, which paths ProofCoder's own tools wrote, and every path reported rather than
+restored — and only a second, explicit confirmation applies it. A browser has no
+terminal to be asked at, so the approval is bound to the plan it was given for: the
+server issues a digest with the plan and refuses any request whose digest no longer
+matches the plan that would run now, returning the new plan to be reviewed instead. A
+workspace with a run in progress refuses outright. The run's own checkpoint coverage is
+shown while the run streams, so what is recoverable is visible before anything needs
+recovering.
 
 | Option | Purpose |
 | --- | --- |
