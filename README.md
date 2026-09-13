@@ -162,12 +162,15 @@ Stopping a run from the page is cooperative: the loop checks for the request bet
 model calls and between tool calls, so an in-flight provider request or local command
 finishes first and the run then terminates as `interrupted`.
 
-This interface is a deliberate departure from the graphical-interface non-goal in
-[section 3.2 of the Development Specification](docs/DEVELOPMENT_SPEC.md), which records
-non-goals as bounds on the current version rather than permanent prohibitions. It
-touches none of the project redlines in section 2: no agent framework or SDK, no
-provider-hosted execution or file access, no new runtime dependency, and no agent logic
-outside the existing repository-owned loop.
+The interface was added under [ADR-0002](docs/adr/0002-local-browser-interface.md), which
+removed the graphical-interface non-goal from the Development Specification. It touches
+none of the project redlines in section 2: no agent framework or SDK, no provider-hosted
+execution or file access, no new runtime dependency, and no agent logic outside the
+existing repository-owned loop.
+
+The page shows the tasks for a workspace as one thread, but each task is still an
+independent run: the model does not see earlier tasks. Multi-turn sessions are a later
+stage in the [roadmap](docs/ROADMAP.md).
 
 ## Local Tools
 
@@ -259,8 +262,11 @@ Use a low-privilege, low-quota credential, review workspace scripts before execu
 | [Threat Model](docs/THREAT_MODEL.md) | Assets, trust boundaries, abuse cases, mitigations, and residual risks |
 | [Compliance Evidence](docs/COMPLIANCE.md) | Project-redline, dependency, call-chain, CI, and scanning evidence |
 | [Evaluation Report](docs/EVAL_REPORT.md) | Dated real-model fixture results, failure diagnosis, and limitations |
-| [Development Specification](docs/DEVELOPMENT_SPEC.md) | Normative scope, architecture, security rules, and acceptance criteria |
+| [Development Specification](docs/DEVELOPMENT_SPEC.md) | Normative scope, architecture, security rules, stages, and acceptance criteria |
+| [Roadmap](docs/ROADMAP.md) | Current stage, planned stages, and their status |
+| [Architecture Decision Records](docs/adr/README.md) | Why scope and constraints changed, and the alternatives considered |
+| [Changelog](CHANGELOG.md) | User-facing changes |
 
 ## Project Status and License
 
-ProofCoder is a bounded engineering project and should not be described as production-ready or fully secure. No `LICENSE` file is currently included, so this README makes no license grant.
+ProofCoder is a bounded engineering project and should not be described as production-ready or fully secure. Planned work and its status are tracked in the [roadmap](docs/ROADMAP.md). No `LICENSE` file is currently included, so this README makes no license grant.
