@@ -348,6 +348,7 @@ _CAPABILITIES = (
             "tests/unit/test_checkpoint.py",
             "tests/unit/test_checkpoint_runtime.py",
             "tests/unit/test_cli_rollback.py",
+            "tests/unit/test_web_rollback.py",
         ),
     ),
     _Capability(

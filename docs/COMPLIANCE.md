@@ -53,7 +53,7 @@ future dependency, environment, configuration, or source changes remain complian
 | --- | --- | --- | --- |
 | Agent loop | `proofcoder.agent.AgentLoop` | `tests/unit/test_agent.py`, `tests/unit/test_agent_d2.py` | Mechanical `PASS` |
 | API retry policy | `proofcoder.retry.retry_delay_seconds`; `proofcoder.agent.AgentLoop._request_model` | `tests/unit/test_retry.py`, `tests/unit/test_agent_d2.py` | Mechanical `PASS` |
-| Checkpoint and rollback | `proofcoder.checkpoint.create_checkpoint`, `proofcoder.checkpoint.plan_rollback`, `proofcoder.checkpoint.apply_rollback`, `proofcoder.rollback.perform_rollback` | `tests/unit/test_checkpoint.py`, `tests/unit/test_checkpoint_runtime.py`, `tests/unit/test_cli_rollback.py` | Mechanical `PASS` |
+| Checkpoint and rollback | `proofcoder.checkpoint.create_checkpoint`, `proofcoder.checkpoint.plan_rollback`, `proofcoder.checkpoint.apply_rollback`, `proofcoder.rollback.perform_rollback` | `tests/unit/test_checkpoint.py`, `tests/unit/test_checkpoint_runtime.py`, `tests/unit/test_cli_rollback.py`, `tests/unit/test_web_rollback.py` | Mechanical `PASS` |
 | Command policy and execution | `proofcoder.safety.commands.prepare_command`; `proofcoder.tools.command.create_run_command_tool` | `tests/unit/test_command_policy.py`, `tests/unit/test_run_command.py` | Mechanical `PASS`; dynamic starts manually reviewed |
 | DeepSeek client | `proofcoder.llm.deepseek.DeepSeekClient` | `tests/unit/test_deepseek.py` | Mechanical `PASS`; dynamic request manually reviewed |
 | Evaluation pipeline | `proofcoder.eval_fixtures`, `proofcoder.eval_core`, `proofcoder.eval_runner` | `tests/unit/test_eval_fixtures.py`, `tests/unit/test_eval_core.py`, `tests/unit/test_eval_runner.py` | Mechanical `PASS` |

@@ -13,10 +13,12 @@ import os
 import sys
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from hmac import compare_digest
 from pathlib import Path
 from typing import Protocol, cast
 
 from proofcoder.agent_runtime import AgentRunLimits
+from proofcoder.checkpoint import ChangeSource, CheckpointError, RollbackPlan
 from proofcoder.config import ProofCoderConfig
 from proofcoder.context import DEFAULT_CONTEXT_BUDGET_BYTES
 from proofcoder.errors import ConfigurationError
@@ -24,6 +26,12 @@ from proofcoder.events import EventType
 from proofcoder.llm.deepseek import DeepSeekClient
 from proofcoder.protocol import ModelResponse
 from proofcoder.retry import DEFAULT_MAX_API_ATTEMPTS
+from proofcoder.rollback import (
+    build_rollback_plan,
+    perform_rollback,
+    plan_digest,
+)
+from proofcoder.safety.secrets import sensitive_environment_values
 from proofcoder.tools.files import DEFAULT_IGNORED_DIRECTORIES
 from proofcoder.trace import (
     TracePathError,
@@ -114,6 +122,9 @@ class ApiRouter:
         except TracePathError as error:
             status = 404 if error.code in {"TRACE_NOT_FOUND", "INVALID_RUN_ID"} else 400
             return error_response(status, error.code, str(error))
+        except CheckpointError as error:
+            status = 404 if error.code in {"CHECKPOINT_NOT_FOUND", "INVALID_RUN_ID"} else 400
+            return error_response(status, error.code, str(error))
 
     def _dispatch(self, request: ApiRequest, route: tuple[str, ...]) -> ApiResponse:
         method = request.method.upper()
@@ -135,6 +146,10 @@ class ApiRouter:
             return self._run_events(request, route[1])
         if len(route) == 3 and route[0] == "runs" and route[2] == "cancel" and method == "POST":
             return self._cancel_run(route[1])
+        if _matches(route, "checkpoints", "plan") and method == "GET":
+            return self._rollback_plan(request, route[1])
+        if _matches(route, "checkpoints", "rollback") and method == "POST":
+            return self._apply_rollback(request, route[1])
         if route == ("traces",) and method == "GET":
             return self._list_traces(request)
         if len(route) == 2 and route[0] == "traces" and method == "GET":
@@ -473,6 +488,84 @@ class ApiRouter:
             },
         )
 
+    def _rollback_plan(self, request: ApiRequest, run_id: str) -> ApiResponse:
+        """Return everything a rollback of one run would change, changing nothing."""
+
+        workspace = self._workspace_from_query(request)
+        if isinstance(workspace, ApiResponse):
+            return workspace
+        plan = build_rollback_plan(workspace, validate_run_id(run_id))
+        return ApiResponse(200, _plan_body(workspace, plan))
+
+    def _apply_rollback(self, request: ApiRequest, run_id: str) -> ApiResponse:
+        """Apply one plan the caller has seen, refusing anything else.
+
+        The browser cannot be asked at a terminal, so an approval is bound to the plan
+        it was given for: the digest of the displayed plan must still match the plan
+        that would run now. When the workspace moved in between, the caller gets the
+        new plan and has to confirm that one instead.
+        """
+
+        raw_workspace = request.body.get("workspace")
+        if not isinstance(raw_workspace, str) or not raw_workspace.strip():
+            return error_response(400, "INVALID_WORKSPACE", "a workspace path is required")
+        workspace = self._absolute(raw_workspace.strip())
+        if not workspace.is_dir():
+            return error_response(
+                404, "INVALID_WORKSPACE", "workspace must be an existing directory"
+            )
+        submitted = request.body.get("plan_digest")
+        if not isinstance(submitted, str) or not submitted:
+            return error_response(
+                400,
+                "PLAN_DIGEST_REQUIRED",
+                "the digest of the plan that was shown is required",
+            )
+        if self._sessions.workspace_busy(workspace):
+            return error_response(
+                409,
+                "WORKSPACE_BUSY",
+                "a run is using this workspace; wait for it or stop it before rolling back",
+            )
+
+        validated = validate_run_id(run_id)
+        plan = build_rollback_plan(workspace, validated)
+        current = plan_digest(plan)
+        if not compare_digest(submitted, current):
+            body = _plan_body(workspace, plan)
+            body["error"] = {
+                "code": "PLAN_CHANGED",
+                "message": "the workspace changed since this plan was shown; review it again",
+            }
+            return ApiResponse(409, body)
+
+        recorded = perform_rollback(workspace, plan, sensitive_values=self._sensitive_values())
+        result = recorded.result
+        return ApiResponse(
+            200,
+            {
+                "workspace": str(workspace),
+                "target_run_id": recorded.target_run_id,
+                "run_id": recorded.run_id,
+                "complete": recorded.result.complete,
+                "trace_path": recorded.trace_path,
+                "trace_complete": recorded.trace_complete,
+                "restored": list(result.restored),
+                "recreated": list(result.recreated),
+                "deleted": list(result.deleted),
+                "directories_created": list(result.directories_created),
+                "directories_removed": list(result.directories_removed),
+                "skipped": [{"path": skip.path, "reason": skip.reason} for skip in result.skipped],
+                "failures": [
+                    {"path": failure.path, "action": failure.action.value, "code": failure.code}
+                    for failure in result.failures
+                ],
+            },
+        )
+
+    def _sensitive_values(self) -> tuple[str, ...]:
+        return sensitive_environment_values(self._environ)
+
     def _workspace_from_query(self, request: ApiRequest) -> Path | ApiResponse:
         raw = request.query.get("workspace", "").strip()
         if not raw:
@@ -491,6 +584,33 @@ class ApiRouter:
         return candidate.resolve(strict=False)
 
 
+def _matches(route: tuple[str, ...], prefix: str, suffix: str) -> bool:
+    """Return whether one route is the three-segment ``prefix/<id>/suffix`` shape."""
+
+    return len(route) == 3 and route[0] == prefix and route[2] == suffix
+
+
+def _plan_body(workspace: Path, plan: RollbackPlan) -> dict[str, object]:
+    """Serialize one plan together with the digest that confirms it."""
+
+    return {
+        "workspace": str(workspace),
+        "target_run_id": plan.run_id,
+        "plan_digest": plan_digest(plan),
+        "empty": plan.empty,
+        "items": [
+            {
+                "action": item.action.value,
+                "path": item.path,
+                "source": item.source.value,
+                "by_tool": item.source is ChangeSource.TOOL,
+            }
+            for item in plan.items
+        ],
+        "skipped": [{"path": skip.path, "reason": skip.reason} for skip in plan.skipped],
+    }
+
+
 def _trace_headline(events: Sequence[object]) -> dict[str, object]:
     """Extract the task text and terminal facts from one decoded trace."""
 
@@ -498,6 +618,7 @@ def _trace_headline(events: Sequence[object]) -> dict[str, object]:
     termination_reason: str | None = None
     completion_status: str | None = None
     changed_files: list[str] = []
+    target_run_id: str | None = None
     for event in events:
         event_type = getattr(event, "event_type", None)
         payload = getattr(event, "payload", {})
@@ -514,11 +635,16 @@ def _trace_headline(events: Sequence[object]) -> dict[str, object]:
             files = payload.get("changed_files")
             if isinstance(files, list):
                 changed_files = [item for item in files if isinstance(item, str)]
+        elif event_type is EventType.ROLLBACK:
+            # A rollback trace has no task text; the run it undid is what names it.
+            target = payload.get("target_run_id")
+            target_run_id = target if isinstance(target, str) else None
     return {
         "task": task,
         "termination_reason": termination_reason,
         "completion_status": completion_status,
         "changed_files": changed_files,
+        "target_run_id": target_run_id,
     }
 
 

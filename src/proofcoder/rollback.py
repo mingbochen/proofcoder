@@ -13,6 +13,8 @@ of it.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -65,6 +67,27 @@ def build_rollback_plan(workspace: Path, target_run_id: str) -> RollbackPlan:
         target_run_id,
         tool_written_paths=tool_written_paths(workspace, target_run_id),
     )
+
+
+def plan_digest(plan: RollbackPlan) -> str:
+    """Return a stable digest of everything one plan says it would do.
+
+    A caller that cannot be asked interactively confirms by echoing this value back.
+    Recomputing the plan and comparing digests is what keeps an approval attached to
+    the actions it was given for: if the workspace moved underneath a displayed plan,
+    the digest no longer matches and the approval does not carry over to the new one.
+    """
+
+    payload = {
+        "items": [
+            {"action": item.action.value, "path": item.path, "source": item.source.value}
+            for item in plan.items
+        ],
+        "run_id": plan.run_id,
+        "skipped": [{"path": skip.path, "reason": skip.reason} for skip in plan.skipped],
+    }
+    encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
 def perform_rollback(
