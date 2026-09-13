@@ -21,6 +21,14 @@ from proofcoder.agent_runtime import (
     emit_setup_termination,
     run_exit_code,
 )
+from proofcoder.checkpoint import (
+    ChangeSource,
+    CheckpointError,
+    RollbackAction,
+    RollbackPlan,
+    delete_checkpoint,
+    list_checkpoints,
+)
 from proofcoder.config import ProofCoderConfig
 from proofcoder.context import DEFAULT_CONTEXT_BUDGET_BYTES
 from proofcoder.errors import ConfigurationError, ProofCoderError
@@ -43,6 +51,7 @@ from proofcoder.llm.base import LLMClient
 from proofcoder.llm.deepseek import DeepSeekClient
 from proofcoder.protocol import ModelResponse, TerminationReason
 from proofcoder.retry import DEFAULT_MAX_API_ATTEMPTS
+from proofcoder.rollback import build_rollback_plan, perform_rollback, rollback_exit_code
 from proofcoder.safety.secrets import redact_text, sensitive_environment_values
 from proofcoder.trace import (
     TracePathError,
@@ -236,6 +245,40 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="open the interface in the default browser after binding",
     )
+    rollback = commands.add_parser(
+        "rollback",
+        help="inspect run checkpoints and undo one run's workspace changes",
+        description=(
+            "Work with the checkpoints recorded before each run. 'apply' restores the "
+            "workspace to one run's baseline after showing everything it would change."
+        ),
+    )
+    rollback_commands = rollback.add_subparsers(dest="rollback_command", required=True)
+    rollback_list = rollback_commands.add_parser("list", help="list stored run checkpoints")
+    rollback_list.add_argument("--workspace", required=True, help="existing workspace directory")
+    rollback_show = rollback_commands.add_parser(
+        "show",
+        help="show what rolling back one run would change, without changing anything",
+    )
+    rollback_show.add_argument("--workspace", required=True, help="existing workspace directory")
+    rollback_show.add_argument("run_id", help="32-character lowercase hexadecimal run ID")
+    rollback_apply = rollback_commands.add_parser(
+        "apply",
+        help="restore the workspace to one run's baseline",
+    )
+    rollback_apply.add_argument("--workspace", required=True, help="existing workspace directory")
+    rollback_apply.add_argument(
+        "--yes",
+        action="store_true",
+        help="apply without the confirmation prompt, for unattended use",
+    )
+    rollback_apply.add_argument("run_id", help="32-character lowercase hexadecimal run ID")
+    rollback_delete = rollback_commands.add_parser(
+        "delete",
+        help="remove one stored checkpoint and free its space",
+    )
+    rollback_delete.add_argument("--workspace", required=True, help="existing workspace directory")
+    rollback_delete.add_argument("run_id", help="32-character lowercase hexadecimal run ID")
     trace = commands.add_parser("trace", help="inspect safe workspace JSONL traces")
     trace_commands = trace.add_subparsers(dest="trace_command", required=True)
     trace_list = trace_commands.add_parser("list", help="list workspace run traces")
@@ -257,6 +300,7 @@ def main(
     eval_client_factory: _RunClientFactory = _DEFAULT_RUN_CLIENT_FACTORY,
     eval_agent_runner: AgentRunner | None = None,
     serve_forever: Callable[[WebServer], None] | None = None,
+    confirm_rollback: Callable[[], bool] | None = None,
 ) -> int:
     """Run the ProofCoder CLI and return a process exit code."""
 
@@ -352,6 +396,20 @@ def main(
             )
         except KeyboardInterrupt:
             _print(output, "SERVE stopped")
+            return 130
+    if args.command == "rollback":
+        try:
+            return _run_rollback(
+                rollback_command=str(args.rollback_command),
+                workspace_argument=str(args.workspace),
+                run_id=None if not hasattr(args, "run_id") else str(args.run_id),
+                assume_yes=bool(getattr(args, "yes", False)),
+                cwd=base_cwd,
+                console=output,
+                confirm=confirm_rollback,
+            )
+        except KeyboardInterrupt:
+            _print(output, "ROLLBACK interrupted: nothing further was changed")
             return 130
     if args.command == "trace":
         return _run_trace(
@@ -677,6 +735,168 @@ def _open_browser(url: str) -> None:
 
     with suppress(Exception):
         webbrowser.open(url)
+
+
+_MAX_LISTED_PATHS = 50
+_ROLLBACK_ACTION_LABELS = {
+    RollbackAction.RESTORE: "restore",
+    RollbackAction.RECREATE: "recreate",
+    RollbackAction.DELETE: "delete",
+    RollbackAction.CREATE_DIRECTORY: "create dir",
+    RollbackAction.REMOVE_DIRECTORY: "remove dir",
+}
+
+
+def _run_rollback(
+    *,
+    rollback_command: str,
+    workspace_argument: str,
+    run_id: str | None,
+    assume_yes: bool,
+    cwd: Path,
+    console: Console,
+    confirm: Callable[[], bool] | None = None,
+) -> int:
+    """Inspect checkpoints and undo one run, never writing before it is confirmed."""
+
+    workspace_input = Path(workspace_argument)
+    workspace = (
+        workspace_input.resolve(strict=False)
+        if workspace_input.is_absolute()
+        else (cwd / workspace_input).resolve(strict=False)
+    )
+    if not workspace.exists() or not workspace.is_dir():
+        _print(console, "FAIL rollback: workspace must be an existing directory")
+        return 2
+
+    try:
+        if rollback_command == "list":
+            return _print_checkpoint_list(workspace, console)
+        if run_id is None:
+            _print(console, "FAIL rollback: a run ID is required")
+            return 2
+        if rollback_command == "delete":
+            freed = delete_checkpoint(workspace, run_id)
+            _print(console, f"CHECKPOINT deleted: run_id={run_id} freed_bytes={freed}")
+            return 0
+        plan = build_rollback_plan(workspace, run_id)
+        if rollback_command == "show":
+            _print_rollback_plan(plan, console)
+            return 0
+        if rollback_command == "apply":
+            return _apply_rollback(
+                workspace=workspace,
+                plan=plan,
+                assume_yes=assume_yes,
+                console=console,
+                confirm=confirm,
+            )
+    except CheckpointError as error:
+        _print(console, f"FAIL rollback: {error.code} ({error})")
+        return 1
+    return 2
+
+
+def _apply_rollback(
+    *,
+    workspace: Path,
+    plan: RollbackPlan,
+    assume_yes: bool,
+    console: Console,
+    confirm: Callable[[], bool] | None,
+) -> int:
+    """Confirm one plan, apply it, and report every path it could not restore."""
+
+    _print_rollback_plan(plan, console)
+    if plan.empty:
+        # Reporting the gaps still matters, but there is nothing to confirm.
+        return 0
+    if not assume_yes:
+        decision = confirm() if confirm is not None else _confirm_rollback(console)
+        if not decision:
+            _print(console, "ROLLBACK declined: the workspace was not changed")
+            return 3
+
+    recorded = perform_rollback(
+        workspace,
+        plan,
+        additional_sinks=(TerminalSink(lambda line: _print(console, line)),),
+    )
+    result = recorded.result
+    _print_labelled_paths(
+        console, "failed", [f"{failure.path} ({failure.code})" for failure in result.failures]
+    )
+    if not recorded.trace_complete:
+        _print(console, "WARN: the rollback trace is incomplete")
+    return rollback_exit_code(recorded)
+
+
+def _confirm_rollback(console: Console) -> bool:
+    """Ask once on a terminal, and refuse rather than assume when there is none."""
+
+    if not sys.stdin.isatty():
+        _print(
+            console,
+            "ROLLBACK needs confirmation: standard input is not a terminal; "
+            "re-run with --yes to apply without the prompt",
+        )
+        return False
+    try:
+        answer = input("apply this rollback? [y/N] ")
+    except EOFError:
+        return False
+    return answer.strip().casefold() in {"y", "yes"}
+
+
+def _print_checkpoint_list(workspace: Path, console: Console) -> int:
+    summaries = list_checkpoints(workspace)
+    _print(console, "run_id created_at entries stored_bytes readable")
+    for summary in summaries:
+        _print(
+            console,
+            f"{summary.run_id} {summary.created_at or 'unknown'} {summary.entry_count} "
+            f"{summary.stored_bytes} {str(summary.readable).lower()}",
+        )
+    return 0
+
+
+def _print_rollback_plan(plan: RollbackPlan, console: Console) -> None:
+    """Show every planned action and every reported gap before anything is written."""
+
+    counts = " ".join(
+        f"{label}={len(plan.paths_for(action))}"
+        for action, label in _ROLLBACK_ACTION_LABELS.items()
+        if plan.paths_for(action)
+    )
+    header = f"PLAN: target={plan.run_id}"
+    _print(console, f"{header} {counts}" if counts else f"{header} no changes to undo")
+    for action, label in _ROLLBACK_ACTION_LABELS.items():
+        _print_labelled_paths(
+            console,
+            label,
+            [
+                item.path if item.source is ChangeSource.OTHER else f"{item.path} (tool)"
+                for item in plan.items
+                if item.action is action
+            ],
+        )
+    _print_labelled_paths(
+        console,
+        "not covered",
+        [f"{skip.path} ({skip.reason})" for skip in plan.skipped],
+    )
+
+
+def _print_labelled_paths(console: Console, label: str, entries: Sequence[str]) -> None:
+    """Print a bounded listing so one huge plan cannot flood the terminal."""
+
+    if not entries:
+        return
+    for entry in entries[:_MAX_LISTED_PATHS]:
+        _print(console, f"  {label}: {entry}")
+    remaining = len(entries) - _MAX_LISTED_PATHS
+    if remaining > 0:
+        _print(console, f"  {label}: ... and {remaining} more")
 
 
 def _run_trace(

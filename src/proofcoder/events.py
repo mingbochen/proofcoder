@@ -406,7 +406,7 @@ def _render_rollback(payload: Mapping[str, object]) -> str:
     """Render the rollback outcome, including anything left unrestored."""
 
     parts = [
-        f"ROLLBACK: run_id={_token(payload.get('target_run_id'))}",
+        f"ROLLBACK: target={_token(payload.get('target_run_id'))}",
         f"restored={payload.get('restored_count', 0)}",
         f"recreated={payload.get('recreated_count', 0)}",
         f"deleted={payload.get('deleted_count', 0)}",

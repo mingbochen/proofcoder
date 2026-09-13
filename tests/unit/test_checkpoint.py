@@ -850,7 +850,7 @@ def test_terminal_rendering_states_what_is_not_covered(tmp_path: Path) -> None:
     assert captured.startswith("CHECKPOINT: entries=5 captured=3")
     assert "uncovered=ignored_directories:1,oversize:1,sensitive:1" in captured
     assert disabled == "CHECKPOINT: none reason=disabled"
-    assert rolled_back.startswith(f"ROLLBACK: run_id={RUN_A} restored=1")
+    assert rolled_back.startswith(f"ROLLBACK: target={RUN_A} restored=1")
     assert "skipped=1" in rolled_back
     assert "failed=0" in rolled_back
 

@@ -6,8 +6,8 @@
 
 - 规范版本：v3.0.2
 - 当前阶段：阶段 F（检查点与回滚）
-- 下一步：小项 F.3，命令行回滚入口（`rollback` 子命令，含确认清单与轨迹事件）
-- 最近完成：小项 F.1 与 F.2，阶段 ADR、规范 §10.5 与 §13.4，以及检查点创建与回滚核心
+- 下一步：小项 F.4，浏览器界面回滚按钮
+- 最近完成：小项 F.3，命令行回滚入口 `proofcoder rollback`（list/show/apply/delete）
 
 状态取值：`已完成`、`进行中`、`未开始`、`阻塞`、`暂缓`。
 
@@ -51,7 +51,7 @@
 | --- | --- | --- | --- |
 | F.1 | 阶段 ADR 与规范补全：检查点的存储方式、覆盖范围、敏感文件处理、保留与清理策略（[ADR-0004](adr/0004-workspace-checkpoints.md)、规范 §10.5 与 §13.4） | 已完成 | [#4](https://github.com/mingbochen/proofcoder/pull/4) |
 | F.2 | 检查点创建与回滚核心，含轨迹事件和离线测试 | 已完成 | [#5](https://github.com/mingbochen/proofcoder/pull/5) |
-| F.3 | 命令行回滚入口 | 未开始 | — |
+| F.3 | 命令行回滚入口 `proofcoder rollback`（list/show/apply/delete），含确认清单与操作轨迹 | 已完成 | [#6](https://github.com/mingbochen/proofcoder/pull/6) |
 | F.4 | 浏览器界面回滚按钮 | 未开始 | — |
 | F.5 | 评测 fixture 与文档同步 | 未开始 | — |
 

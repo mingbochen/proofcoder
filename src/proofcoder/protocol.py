@@ -80,7 +80,11 @@ Message: TypeAlias = SystemMessage | UserMessage | AssistantMessage | ToolMessag
 
 
 class TerminationReason(StrEnum):
-    """Controlled termination reasons implemented through Stage D2."""
+    """Controlled termination reasons for one recorded local operation.
+
+    Every value but ``ROLLBACK`` ends an agent run. ``ROLLBACK`` closes the trace of a
+    rollback, which is a user action against a finished run rather than a run itself.
+    """
 
     FINISH_TASK = "finish_task"
     MODEL_STOPPED = "model_stopped"
@@ -92,6 +96,7 @@ class TerminationReason(StrEnum):
     API_ERROR = "api_error"
     CONFIGURATION_ERROR = "configuration_error"
     CHECKPOINT_ERROR = "checkpoint_error"
+    ROLLBACK = "rollback"
     CONTEXT_BUDGET_EXCEEDED = "context_budget_exceeded"
     INTERNAL_ERROR = "internal_error"
 

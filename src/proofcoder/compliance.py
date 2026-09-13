@@ -342,8 +342,13 @@ _CAPABILITIES = (
                 "src/proofcoder/checkpoint.py",
                 ("create_checkpoint", "plan_rollback", "apply_rollback"),
             ),
+            ("src/proofcoder/rollback.py", ("perform_rollback",)),
         ),
-        ("tests/unit/test_checkpoint.py", "tests/unit/test_checkpoint_runtime.py"),
+        (
+            "tests/unit/test_checkpoint.py",
+            "tests/unit/test_checkpoint_runtime.py",
+            "tests/unit/test_cli_rollback.py",
+        ),
     ),
     _Capability(
         "capability.trace_replay",
