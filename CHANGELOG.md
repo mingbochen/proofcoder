@@ -18,7 +18,7 @@ No version has been tagged yet. Planned versions and stages are tracked in the [
 
 - The README states that the secret scanner's `history` scope requires Git 2.44 or newer.
 - The development specification's scope and non-goals were revised for the v3.0 roadmap ([ADR-0003](docs/adr/0003-v3-scope-revision.md)).
-- The development specification defines the Stage F workspace checkpoint and rollback constraints in new sections 10.5 and 13.4: a content-addressed baseline captured before the first model call, rollback that covers changes made by allowed workspace processes as well as the built-in file tools, sensitive paths recorded as metadata only and never restored, and a bounded retention policy ([ADR-0004](docs/adr/0004-workspace-checkpoints.md), proposed). No checkpoint or rollback behavior is implemented yet.
+- The development specification defines the Stage F workspace checkpoint and rollback constraints in new sections 10.5 and 13.4: a content-addressed baseline captured before the first model call, rollback that covers changes made by allowed workspace processes as well as the built-in file tools, sensitive paths recorded as metadata only and never restored, and a bounded retention policy ([ADR-0004](docs/adr/0004-workspace-checkpoints.md)). No checkpoint or rollback behavior is implemented yet.
 
 ## Baseline before this changelog
 
