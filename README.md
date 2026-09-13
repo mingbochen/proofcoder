@@ -132,7 +132,22 @@ A checkpoint records what it does not cover, and those gaps are real:
 
 The capture is a precondition, not a convenience: if it fails or the workspace exceeds the checkpoint limits, the run ends as `checkpoint_error` before contacting the provider. `proofcoder run --no-checkpoint` starts without one, and then nothing the run writes can be undone. The most recent three checkpoints are kept, subject to a total size limit; pruning happens before the next capture and never removes a run trace.
 
-The command-line and browser entry points that roll a run back are not implemented yet; the current release records the baseline and its trace event. See the [roadmap](docs/ROADMAP.md) for stage F.
+### Undoing a run
+
+```text
+uv run --offline proofcoder rollback list --workspace ../proofcoder-demo
+uv run --offline proofcoder rollback show --workspace ../proofcoder-demo <run_id>
+uv run --offline proofcoder rollback apply --workspace ../proofcoder-demo <run_id>
+uv run --offline proofcoder rollback delete --workspace ../proofcoder-demo <run_id>
+```
+
+`show` prints everything a rollback would change and writes nothing: files to restore, files to recreate, paths to delete, directories to add or remove, and every path that is reported rather than restored. Each entry is labelled `(tool)` when the run's own file tools wrote it, so a change made by a workspace script is distinguishable from one ProofCoder made itself.
+
+`apply` prints that same plan, asks for confirmation, and only then writes. `--yes` skips the prompt for unattended use; without it, a non-terminal standard input refuses rather than assuming either answer. Exit code `0` means the plan was applied or there was nothing to undo, `3` that confirmation was declined and nothing changed, `1` that at least one path could not be restored — each such path is printed with its error code, because a partly restored workspace must never look like a finished one. Applying the same rollback twice is a no-op.
+
+A rollback is a separate operation against a finished run, so it records its own trace with a new run ID whose `rollback` event names the run it undid; `proofcoder trace list` shows it with status `rollback`. Rollback commands are local and load no provider credentials.
+
+The browser button that triggers a rollback is not implemented yet. See the [roadmap](docs/ROADMAP.md) for stage F.
 
 ## Browser Interface
 

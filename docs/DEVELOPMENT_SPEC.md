@@ -216,6 +216,7 @@ DeepSeek thinking mode 的 assistant 消息可能同时包含：
 proofcoder doctor
 proofcoder run --workspace ./project "修复任务描述"
 proofcoder trace <run-id>
+proofcoder rollback <list|show|apply|delete> --workspace ./project [<run-id>]
 proofcoder eval --repeat 3
 proofcoder serve --workspace ./project
 ```
@@ -223,6 +224,7 @@ proofcoder serve --workspace ./project
 - `doctor` 检查 Python、依赖、工作区权限、密钥是否设置和模型是否可访问，但不显示密钥。
 - `run` 执行一次 agent 任务。
 - `trace` 回放脱敏运行轨迹。
+- `rollback` 列出检查点、预览一次运行的回滚清单、执行回滚或删除检查点。执行前必须先显示完整清单并取得确认。
 - `eval` 运行项目自带评测，不依赖第三方 agent harness。
 - `serve` 启动只监听本机回环地址的浏览器界面，运行与 `run` 相同的 AgentLoop，决策依据见 ADR-0002。
 
@@ -276,6 +278,7 @@ proofcoder/
 │   ├── context.py
 │   ├── errors.py
 │   ├── retry.py
+│   ├── rollback.py
 │   ├── prompt.py
 │   ├── trace.py
 │   ├── verification.py
