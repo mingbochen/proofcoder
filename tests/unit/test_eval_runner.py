@@ -853,6 +853,10 @@ def test_production_eval_runner_rebuilds_loop_registry_history_and_trace(
             "read_file",
             "create_file",
             "replace_in_file",
+            "patch_file",
+            "make_directory",
+            "delete_path",
+            "move_path",
             "run_command",
             "finish_task",
         ]

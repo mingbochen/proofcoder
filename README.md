@@ -223,12 +223,18 @@ stage in the [roadmap](docs/ROADMAP.md).
 | `list_files` | Return a sorted workspace inventory | Omits sensitive/internal paths and bounds depth and entry count |
 | `search_text` | Search literal text or a regular expression | Skips sensitive, binary, oversized, linked, and runtime files; results are capped |
 | `read_file` | Read numbered UTF-8 line ranges | Rejects sensitive, binary, and oversized files; each response is bounded |
-| `create_file` | Create one UTF-8 file | Parent must exist and an existing file, directory, or link is never overwritten |
+| `create_file` | Create one UTF-8 file, or replace one with `overwrite` | Parent must exist; an existing file is replaced only with `overwrite: true`, and directories and links never are |
 | `replace_in_file` | Replace exact text in an existing file | Match count must equal `expected_replacements`; failed or ambiguous matches do not mutate |
+| `patch_file` | Apply several exact replacements to one file at once | Every edit is validated in memory first: one bad match fails the call and leaves the file untouched |
+| `make_directory` | Create a directory and any missing parents | Refused when the path exists as a file or a link; an existing directory is reported, not recreated |
+| `delete_path` | Delete one file, one empty directory, or one link | Never recursive; a non-empty directory is refused, and a link is removed without following it |
+| `move_path` | Move or rename one file or directory | The destination must not exist; nothing is ever overwritten |
 | `run_command` | Run an approved local check or workspace script | argv-only, `shell=False`, default-deny policy, filtered environment, timeout, and bounded output |
 | `finish_task` | Request completion or report a blocker | Runs no claimed verification and cannot override local evidence |
 
-All seven tools are implemented and executed locally. Expected failures return structured results so the model can change its approach; valid calls in a fully valid batch execute synchronously in model-provided order.
+All eleven tools are implemented and executed locally. Expected failures return structured results so the model can change its approach; valid calls in a fully valid batch execute synchronously in model-provided order.
+
+Three of them destroy content in a single call: `delete_path`, `move_path`, and `create_file` with `overwrite: true`. Those three refuse to run when the run has no checkpoint, because a change that cannot be undone should not be available without the thing that undoes it. A run started with `--no-checkpoint` keeps every other tool, including the ones that create files and edit them.
 
 ## Completion Semantics
 

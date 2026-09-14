@@ -212,3 +212,60 @@ def test_a_run_can_be_rolled_back_end_to_end(tmp_path: Path) -> None:
 
 def test_termination_reason_is_a_stable_value() -> None:
     assert TerminationReason.CHECKPOINT_ERROR.value == "checkpoint_error"
+
+
+def test_every_destructive_tool_change_is_undone_by_rollback(tmp_path: Path) -> None:
+    """The stage G exit criterion: each new tool's damage is fully reversible."""
+
+    from proofcoder.protocol import FunctionCall, ToolCall
+
+    (tmp_path / "keep.txt").write_text("keep\n", encoding="utf-8")
+    (tmp_path / "doomed.txt").write_text("doomed\n", encoding="utf-8")
+    (tmp_path / "old").mkdir()
+    (tmp_path / "old" / "mod.py").write_text("value = 1\n", encoding="utf-8")
+    (tmp_path / "spare").mkdir()
+
+    resources = _resources(tmp_path)
+    try:
+        import json
+
+        for name, arguments in [
+            ("delete_path", {"path": "doomed.txt"}),
+            ("delete_path", {"path": "spare"}),
+            ("move_path", {"source": "old/mod.py", "destination": "moved.py"}),
+            ("make_directory", {"path": "fresh/nested"}),
+            ("create_file", {"path": "keep.txt", "content": "rewritten\n", "overwrite": True}),
+            (
+                "patch_file",
+                {"path": "moved.py", "edits": [{"old_text": "1", "new_text": "2"}]},
+            ),
+        ]:
+            result = resources.registry.dispatch(
+                ToolCall(
+                    id=f"call-{name}",
+                    function=FunctionCall(name=name, arguments=json.dumps(arguments)),
+                )
+            )
+            assert result.ok, (name, arguments, result.error)
+    finally:
+        resources.close()
+
+    # Everything the tools did, from every category the stage added.
+    assert not (tmp_path / "doomed.txt").exists()
+    assert not (tmp_path / "spare").exists()
+    assert (tmp_path / "moved.py").read_text(encoding="utf-8") == "value = 2\n"
+    assert (tmp_path / "fresh" / "nested").is_dir()
+    assert (tmp_path / "keep.txt").read_text(encoding="utf-8") == "rewritten\n"
+
+    rollback = apply_rollback(
+        tmp_path,
+        plan_rollback(tmp_path, RUN_ID, tool_written_paths=tool_written_paths(tmp_path, RUN_ID)),
+    )
+
+    assert rollback.complete
+    assert (tmp_path / "keep.txt").read_text(encoding="utf-8") == "keep\n"
+    assert (tmp_path / "doomed.txt").read_text(encoding="utf-8") == "doomed\n"
+    assert (tmp_path / "old" / "mod.py").read_text(encoding="utf-8") == "value = 1\n"
+    assert (tmp_path / "spare").is_dir()
+    assert not (tmp_path / "moved.py").exists()
+    assert not (tmp_path / "fresh").exists()

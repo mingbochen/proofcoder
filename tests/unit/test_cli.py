@@ -264,6 +264,10 @@ def test_run_cli_uses_scripted_client_and_hides_reasoning(tmp_path: Path) -> Non
         "read_file",
         "create_file",
         "replace_in_file",
+        "patch_file",
+        "make_directory",
+        "delete_path",
+        "move_path",
         "run_command",
         "finish_task",
     ]

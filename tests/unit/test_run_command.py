@@ -73,7 +73,7 @@ def _dispatch(
 
 def _create_file(workspace: Path, path: str, content: str) -> ToolResult:
     registry = ToolRegistry()
-    registry.register(create_create_file_tool(workspace))
+    registry.register(create_create_file_tool(workspace, checkpoint_available=True))
     return registry.dispatch(
         ToolCall(
             id="create-1",
