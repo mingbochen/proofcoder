@@ -838,6 +838,11 @@ def _attempt_payload(
             "initial": _validation_payload(result.initial_validation),
             "final": _validation_payload(result.final_validation),
         },
+        "rollback": {
+            "checked": result.rollback_checked,
+            "restored": list(result.rollback_restored_files),
+            "unrestored": list(result.rollback_unrestored_files),
+        },
         "statistics": {
             "model_calls": result.model_call_count,
             "tool_calls": result.tool_call_count,

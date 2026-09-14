@@ -18,6 +18,7 @@ from rich.console import Console
 
 from proofcoder import cli
 from proofcoder.agent_runtime import AgentRunLimits
+from proofcoder.checkpoint import create_checkpoint
 from proofcoder.config import ProofCoderConfig
 from proofcoder.context import MessageHistory
 from proofcoder.errors import ProofCoderError
@@ -98,6 +99,15 @@ def _modify_fixture(fixture: EvalFixture, workspace: Path, *, valid: bool = True
             )
         source.write_text(text + "\n# fake runner source evidence\n", encoding="utf-8")
         test = workspace / "tests" / "test_inventory.py"
+    elif fixture.fixture_id == "rollback-word-wrap":
+        source = workspace / "word_wrap.py"
+        text = source.read_text(encoding="utf-8")
+        if valid:
+            text = text.replace(
+                "    if lines:\n        lines.append(current)", "    lines.append(current)"
+            )
+        source.write_text(text + "\n# fake runner source evidence\n", encoding="utf-8")
+        test = workspace / "tests" / "test_word_wrap.py"
     else:
         settings = workspace / "settings.py"
         settings.write_text(
@@ -192,6 +202,10 @@ def _successful_runner(
     def runner(fixture: EvalFixture, workspace: Path) -> RunResult:
         run_number = len(calls) + 1
         calls.append((fixture.fixture_id, workspace))
+        if fixture.verify_rollback:
+            # The production runtime captures this before any tool exists; the fake
+            # does the same so the evaluation's rollback check runs for real.
+            create_checkpoint(workspace, f"{run_number:032x}")
         _modify_fixture(fixture, workspace, valid=True if valid is None else valid(run_number))
         completion, termination = (
             (CompletionStatus.COMPLETED_VERIFIED, TerminationReason.FINISH_TASK)
@@ -263,14 +277,16 @@ def test_three_fixtures_repeat_two_are_ordered_isolated_and_fully_persisted(
         "cross-file-message-format",
         "feature-available-items",
         "feature-available-items",
+        "rollback-word-wrap",
+        "rollback-word-wrap",
     ]
     assert session.status is EvaluationStatus.COMPLETED
     assert session.exit_code == 0
     assert [fixture_id for fixture_id, _ in calls] == expected_order
-    assert len({workspace for _, workspace in calls}) == 6
+    assert len({workspace for _, workspace in calls}) == 8
     assert all(workspace.name == "w" for _, workspace in calls)
     assert all(workspace.is_dir() for _, workspace in calls)
-    assert len({attempt.run_id for attempt in session.attempts}) == 6
+    assert len({attempt.run_id for attempt in session.attempts}) == 8
     assert all(attempt.trace_complete for attempt in session.attempts)
 
     evaluation = session.evaluation_directory
@@ -284,10 +300,10 @@ def test_three_fixtures_repeat_two_are_ordered_isolated_and_fully_persisted(
     assert metadata["code"] == {"dirty": None, "revision": None}
     assert metadata["warnings"] == ["GIT_REVISION_UNAVAILABLE", "GIT_DIRTY_UNAVAILABLE"]
     assert summary["status"] == "completed"
-    assert summary["recorded_attempts"] == summary["expected_attempts"] == 6
-    assert summary["overall"]["successes"] == 6
-    assert [item["sequence"] for item in attempts] == list(range(1, 7))
-    assert len({(item["fixture_id"], item["attempt"]) for item in attempts}) == 6
+    assert summary["recorded_attempts"] == summary["expected_attempts"] == 8
+    assert summary["overall"]["successes"] == 8
+    assert [item["sequence"] for item in attempts] == list(range(1, 9))
+    assert len({(item["fixture_id"], item["attempt"]) for item in attempts}) == 8
     assert [item["fixture_id"] for item in attempts] == expected_order
     assert all(not Path(item["workspace"]).is_absolute() for item in attempts)
     assert all(item["files"]["ignored_runtime"] for item in attempts)
@@ -1005,3 +1021,27 @@ def test_missing_fixture_and_invalid_project_roots_are_rejected(tmp_path: Path) 
 
     assert fixtures.value.code == "PATH_INVALID"
     assert project.value.code == "PROJECT_ROOT_INVALID"
+
+
+def test_rollback_evidence_is_persisted_for_the_fixture_that_asks_for_it(
+    tmp_path: Path,
+) -> None:
+    root = _project(tmp_path)
+    calls: list[tuple[str, Path]] = []
+
+    session = _run(root, _successful_runner(calls), repeat=1)
+
+    evaluation = session.evaluation_directory
+    lines = (evaluation / "attempts.jsonl").read_text(encoding="utf-8").splitlines()
+    attempts = {json.loads(line)["fixture_id"]: json.loads(line) for line in lines}
+
+    rolled_back = attempts["rollback-word-wrap"]["rollback"]
+    untouched = attempts["bugfix-inclusive-total"]["rollback"]
+
+    assert session.exit_code == 0
+    assert rolled_back["checked"] is True
+    # The fake runner touches both files, so the rollback restores both.
+    assert rolled_back["restored"] == ["tests/test_word_wrap.py", "word_wrap.py"]
+    assert rolled_back["unrestored"] == []
+    # Only the fixture that declares it is undone; the others keep their changes.
+    assert untouched == {"checked": False, "restored": [], "unrestored": []}

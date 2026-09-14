@@ -13,7 +13,7 @@ from proofcoder.errors import ProofCoderError
 from proofcoder.safety.paths import is_internal_runtime_path
 from proofcoder.safety.secrets import is_sensitive_path
 
-FIXTURE_SCHEMA_VERSION = 1
+FIXTURE_SCHEMA_VERSION = 2
 MAX_METADATA_BYTES = 64 * 1024
 MAX_WORKSPACE_FILE_BYTES = 256 * 1024
 MAX_WORKSPACE_BYTES = 1024 * 1024
@@ -28,6 +28,7 @@ _METADATA_FIELDS = frozenset(
         "schema_version",
         "task",
         "validation",
+        "verify_rollback",
     }
 )
 _VALIDATION_FIELDS = frozenset(
@@ -74,6 +75,7 @@ class EvalFixture:
     required_modified_files: tuple[str, ...]
     workspace_files: tuple[str, ...]
     source_workspace: Path
+    verify_rollback: bool = False
 
 
 def load_fixtures(fixtures_root: Path) -> tuple[EvalFixture, ...]:
@@ -207,6 +209,7 @@ def _load_fixture(directory: Path) -> EvalFixture:
         required_modified_files=required,
         workspace_files=workspace_files,
         source_workspace=workspace,
+        verify_rollback=_required_bool(metadata["verify_rollback"], "verify_rollback"),
     )
 
 
@@ -284,6 +287,14 @@ def _mapping_with_fields(value: object, fields: frozenset[str]) -> dict[str, obj
     if not isinstance(value, dict) or set(value) != fields:
         raise EvalFixtureError(
             "FIXTURE_METADATA_INVALID", "fixture metadata fields do not match the schema"
+        )
+    return value
+
+
+def _required_bool(value: object, field: str) -> bool:
+    if type(value) is not bool:
+        raise EvalFixtureError(
+            "FIXTURE_METADATA_INVALID", f"fixture field must be a boolean: {field}"
         )
     return value
 

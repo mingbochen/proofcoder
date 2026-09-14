@@ -233,6 +233,9 @@ into automatic passes; their manual dispositions and limitations remain distinct
 - ProofCoder's command policy constrains model-selected commands but does not provide
   kernel isolation. Allowed workspace Python scripts execute with the current user's
   OS permissions.
+- The `rollback-word-wrap` evaluation fixture has offline coverage of the rollback
+  verification path but no real-model repeated-run data yet, so the stage F exit
+  criterion that requires such data is not met. See `docs/EVAL_REPORT.md` section 11.
 - A run checkpoint records the workspace baseline before the first model call and can
   restore it afterwards, but only within its captured scope. Credential paths, files
   above the file-tool size limit, ignored directories, symbolic links, and everything

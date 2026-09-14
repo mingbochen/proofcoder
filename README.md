@@ -264,6 +264,8 @@ Real evaluation calls the configured provider and may incur usage charges:
 uv run --locked --env-file .env proofcoder eval --repeat 3
 ```
 
+One fixture, `rollback-word-wrap`, declares `verify_rollback`. For it the runner does one extra step after the usual scoring: it rolls the attempt back and compares the workspace file-by-file with the snapshot taken before the agent started. An incomplete rollback, a workspace that does not return to that baseline, or a run with no usable checkpoint each become their own failure reason, and the attempt's record carries what was restored and what was not.
+
 The default repeat count is 3, and the default fixture selection is all fixtures under `evals/fixtures`. Repeat `--fixture <fixture-id>` to select one or more fixtures. Each attempt uses an isolated workspace, initial-failure evidence, independent final validation, exact change-scope checks, and a complete trace requirement. Results are written below the ignored `.proofcoder/evals` directory.
 
 The dated real-model results and failure analysis are in the [Evaluation Report](docs/EVAL_REPORT.md). Those small-fixture results are bounded evidence, not a general success-rate claim. Real evaluation is opt-in and is not run by CI; CI configures no provider key and runs only offline validation and scanning after dependency synchronization.

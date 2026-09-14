@@ -58,6 +58,8 @@ def _environment(temp_directory: Path) -> dict[str, str]:
 
 def _run_result(
     status: CompletionStatus = CompletionStatus.COMPLETED_VERIFIED,
+    *,
+    run_id: str = "run-test",
 ) -> RunResult:
     return RunResult(
         termination_reason=TerminationReason.FINISH_TASK,
@@ -73,7 +75,7 @@ def _run_result(
         context_compaction_count=2,
         input_token_count=120,
         output_token_count=30,
-        run_id="run-test",
+        run_id=run_id,
         trace_path=".proofcoder/traces/run-test.jsonl",
         trace_complete=True,
     )
@@ -754,3 +756,131 @@ def test_attempt_index_must_be_positive(tmp_path: Path) -> None:
             0,
             lambda _fixture, _workspace: _run_result(),
         )
+
+
+def _rollback_fixture() -> EvalFixture:
+    return next(
+        fixture
+        for fixture in load_fixtures(FIXTURES_ROOT)
+        if fixture.fixture_id == "rollback-word-wrap"
+    )
+
+
+def _fix_word_wrap(workspace: Path) -> None:
+    source = workspace / "word_wrap.py"
+    source.write_text(
+        source.read_text(encoding="utf-8").replace(
+            "    if lines:\n        lines.append(current)", "    lines.append(current)"
+        ),
+        encoding="utf-8",
+    )
+
+
+def _checkpointed_runner(
+    change: object = None,
+    *,
+    run_id: str = "b" * 32,
+    checkpoint: bool = True,
+) -> object:
+    """Return a runner that captures a baseline the way the real runtime does."""
+
+    from proofcoder.checkpoint import create_checkpoint
+
+    def runner(_fixture: EvalFixture, workspace: Path) -> RunResult:
+        if checkpoint:
+            create_checkpoint(workspace, run_id)
+        _fix_word_wrap(workspace)
+        if callable(change):
+            change(workspace)
+        return _run_result(run_id=run_id)
+
+    return runner
+
+
+def test_a_rollback_fixture_undoes_the_run_it_just_scored(tmp_path: Path) -> None:
+    fixture = _rollback_fixture()
+    workspace = tmp_path / "workspace"
+
+    result = run_evaluation_attempt(
+        fixture,
+        workspace,
+        1,
+        _checkpointed_runner(),
+        environ=_environment(tmp_path),
+    )
+
+    # The task itself was scored on the fixed workspace before anything was undone.
+    assert result.success is True
+    assert result.failure_reasons == ()
+    assert result.final_validation is not None
+    assert result.final_validation.exit_code == fixture.validation.success_exit_code
+    assert result.modified_files == ("word_wrap.py",)
+    # Then the rollback put the workspace back exactly as the attempt started it.
+    assert result.rollback_checked is True
+    assert result.rollback_restored_files == ("word_wrap.py",)
+    assert result.rollback_unrestored_files == ()
+    assert "if lines:" in (workspace / "word_wrap.py").read_text(encoding="utf-8")
+
+
+def test_a_fixture_without_the_flag_is_never_rolled_back(tmp_path: Path) -> None:
+    fixture = _bug_fixture()
+
+    def runner(_fixture: EvalFixture, workspace: Path) -> RunResult:
+        _change_bug_workspace(workspace)
+        return _run_result()
+
+    result = run_evaluation_attempt(
+        fixture,
+        tmp_path / "workspace",
+        1,
+        runner,
+        environ=_environment(tmp_path),
+    )
+
+    assert fixture.verify_rollback is False
+    assert result.success is True
+    assert result.rollback_checked is False
+    assert result.rollback_restored_files == ()
+    # The agent's work is still there, because nothing undid it.
+    assert "end + 1" in (tmp_path / "workspace" / "inclusive_total.py").read_text(encoding="utf-8")
+
+
+def test_a_run_without_a_checkpoint_fails_the_rollback_check(tmp_path: Path) -> None:
+    fixture = _rollback_fixture()
+
+    result = run_evaluation_attempt(
+        fixture,
+        tmp_path / "workspace",
+        1,
+        _checkpointed_runner(checkpoint=False),
+        environ=_environment(tmp_path),
+    )
+
+    assert result.success is False
+    assert EvaluationFailureReason.ROLLBACK_ERROR in result.failure_reasons
+    assert result.rollback_checked is True
+    assert result.rollback_restored_files == ()
+
+
+def test_a_workspace_that_does_not_return_to_its_baseline_is_reported(
+    tmp_path: Path,
+) -> None:
+    fixture = _rollback_fixture()
+
+    def leave_an_uncovered_file(workspace: Path) -> None:
+        # A credential path is outside the checkpoint's coverage by design, so a
+        # rollback cannot restore it and the attempt must say so rather than pass.
+        (workspace / ".env").write_text("TOKEN_NAME=never-real\n", encoding="utf-8")
+
+    result = run_evaluation_attempt(
+        fixture,
+        tmp_path / "workspace",
+        1,
+        _checkpointed_runner(leave_an_uncovered_file),
+        environ=_environment(tmp_path),
+    )
+
+    assert result.success is False
+    assert EvaluationFailureReason.ROLLBACK_MISMATCH in result.failure_reasons
+    assert result.rollback_unrestored_files == (".env",)
+    assert (tmp_path / "workspace" / ".env").is_file()
