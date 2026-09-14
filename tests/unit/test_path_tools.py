@@ -66,11 +66,14 @@ def _workspace(root: Path) -> Path:
 
 def test_delete_removes_a_file_and_reports_what_it_freed(tmp_path: Path) -> None:
     _workspace(tmp_path)
+    # Text mode writes CRLF on Windows, so the true size is the only correct
+    # expectation; the tool reports what the filesystem holds, not what was typed.
+    expected_bytes = (tmp_path / "keep.txt").stat().st_size
 
     result = _delete(tmp_path, "keep.txt")
 
     assert result.ok
-    assert result.data == {"path": "keep.txt", "kind": "file", "bytes_freed": 5}
+    assert result.data == {"path": "keep.txt", "kind": "file", "bytes_freed": expected_bytes}
     assert not (tmp_path / "keep.txt").exists()
 
 
