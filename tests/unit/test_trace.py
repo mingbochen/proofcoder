@@ -237,7 +237,7 @@ def test_keyboard_interrupt_keeps_prior_events_and_termination(tmp_path: Path) -
 
 def test_unverified_finish_has_completion_and_termination_trace(tmp_path: Path) -> None:
     registry = ToolRegistry()
-    registry.register(create_create_file_tool(tmp_path))
+    registry.register(create_create_file_tool(tmp_path, checkpoint_available=True))
     registry.register(create_finish_task_tool(tmp_path))
     client = ScriptedClient(
         [

@@ -5,7 +5,8 @@ from __future__ import annotations
 import codecs
 import difflib
 import os
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 
 from proofcoder.safety.paths import (
@@ -23,26 +24,29 @@ from proofcoder.safety.writes import (
 )
 from proofcoder.tools.base import RiskLevel, ToolDefinition, ToolResult
 from proofcoder.tools.files import MAX_FILE_SIZE_BYTES, _looks_binary
+from proofcoder.tools.paths import NO_CHECKPOINT_CODE, NO_CHECKPOINT_MESSAGE
 
 MAX_CONTENT_SIZE_BYTES = 1024 * 1024
 MAX_REPLACEMENTS = 100
+MAX_PATCH_EDITS = 32
 MAX_DIFF_LINES = 200
 MAX_DIFF_CHARACTERS = 32 * 1024
 
 
-def create_create_file_tool(workspace: Path) -> ToolDefinition:
+def create_create_file_tool(workspace: Path, *, checkpoint_available: bool) -> ToolDefinition:
     """Create a UTF-8 file creator bound to one workspace."""
 
     workspace_root = workspace.resolve(strict=True)
 
     def execute(arguments: Mapping[str, object]) -> ToolResult:
-        return _create_file(workspace_root, arguments)
+        return _create_file(workspace_root, arguments, checkpoint_available=checkpoint_available)
 
     return ToolDefinition(
         name="create_file",
         description=(
             "Create one new, non-sensitive UTF-8 workspace file. The parent directory must "
-            "already exist. Existing files, directories, and symlinks are never overwritten. "
+            "already exist. An existing file is replaced only when overwrite is true; "
+            "directories and symlinks are never replaced. "
             "Content is limited to 1 MiB and the returned unified diff may be truncated. "
             "For a file beyond roughly 300 lines, create a short skeleton first and add the "
             "remaining sections with successive replace_in_file calls; a single oversized "
@@ -59,6 +63,15 @@ def create_create_file_tool(workspace: Path) -> ToolDefinition:
                 "content": {
                     "type": "string",
                     "description": "Complete UTF-8 text content; an empty string is allowed.",
+                },
+                "overwrite": {
+                    "type": "boolean",
+                    "description": (
+                        "Replace an existing regular file instead of refusing. Leave it "
+                        "false unless the whole file is meant to be rewritten; prefer "
+                        "replace_in_file or patch_file to change part of one."
+                    ),
+                    "default": False,
                 },
             },
             "required": ["path", "content"],
@@ -119,9 +132,105 @@ def create_replace_in_file_tool(workspace: Path) -> ToolDefinition:
     )
 
 
-def _create_file(workspace_root: Path, arguments: Mapping[str, object]) -> ToolResult:
+def _overwrite_file(
+    workspace_root: Path,
+    path: str,
+    content: str,
+    *,
+    checkpoint_available: bool,
+) -> ToolResult:
+    """Replace one existing regular file, which is only allowed with a checkpoint."""
+
+    if not checkpoint_available:
+        return ToolResult.failure(NO_CHECKPOINT_CODE, NO_CHECKPOINT_MESSAGE, retryable=False)
+    editable = _read_editable_file(workspace_root, path)
+    if isinstance(editable, ToolResult):
+        return editable
+    return _commit_edited_text(
+        editable,
+        content,
+        replacement_count=0,
+        extra_data={"overwritten": True},
+    )
+
+
+def create_patch_file_tool(workspace: Path) -> ToolDefinition:
+    """Create a multi-replacement tool that writes one file once or not at all."""
+
+    workspace_root = workspace.resolve(strict=True)
+
+    def execute(arguments: Mapping[str, object]) -> ToolResult:
+        return _patch_file(workspace_root, arguments)
+
+    return ToolDefinition(
+        name="patch_file",
+        description=(
+            "Apply several exact replacements to one existing UTF-8 workspace file in a "
+            "single call. Each edit matches like replace_in_file and is applied in order "
+            "to the result of the previous one. If any edit does not match its expected "
+            "count, the whole call fails and the file is left untouched. Prefer this over "
+            "several replace_in_file calls when changing one file in more than one place."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Workspace-relative existing file to modify.",
+                    "minLength": 1,
+                },
+                "edits": {
+                    "type": "array",
+                    "description": "Ordered replacements applied to one file.",
+                    "minItems": 1,
+                    "maxItems": MAX_PATCH_EDITS,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "old_text": {
+                                "type": "string",
+                                "description": (
+                                    "Exact text to replace; LF matches LF, CRLF, or CR."
+                                ),
+                                "minLength": 1,
+                            },
+                            "new_text": {
+                                "type": "string",
+                                "description": (
+                                    "Replacement text; an empty string deletes the match."
+                                ),
+                            },
+                            "expected_replacements": {
+                                "type": "integer",
+                                "description": "Required number of non-overlapping matches.",
+                                "minimum": 1,
+                                "maximum": MAX_REPLACEMENTS,
+                                "default": 1,
+                            },
+                        },
+                        "required": ["old_text", "new_text"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            "required": ["path", "edits"],
+            "additionalProperties": False,
+        },
+        execute=execute,
+        modifies_workspace=True,
+        risk_level=RiskLevel.WRITE,
+    )
+
+
+def _create_file(
+    workspace_root: Path,
+    arguments: Mapping[str, object],
+    *,
+    checkpoint_available: bool = True,
+) -> ToolResult:
     path = str(arguments["path"])
     content = str(arguments["content"])
+    overwrite = bool(arguments.get("overwrite", False))
     encoded = content.encode("utf-8")
     if len(encoded) > MAX_CONTENT_SIZE_BYTES:
         return ToolResult.failure(
@@ -133,6 +242,13 @@ def _create_file(workspace_root: Path, arguments: Mapping[str, object]) -> ToolR
     try:
         target, relative_path = resolve_workspace_new_file(workspace_root, path)
     except WorkspacePathError as error:
+        if error.code == "PATH_ALREADY_EXISTS" and overwrite:
+            return _overwrite_file(
+                workspace_root,
+                path,
+                content,
+                checkpoint_available=checkpoint_available,
+            )
         return ToolResult.failure(error.code, str(error), retryable=True)
 
     diff, diff_stats, truncated = _build_diff(
@@ -206,6 +322,132 @@ def _replace_in_file(workspace_root: Path, arguments: Mapping[str, object]) -> T
             retryable=True,
         )
 
+    editable = _read_editable_file(workspace_root, path)
+    if isinstance(editable, ToolResult):
+        return editable
+    try:
+        after_text, actual_replacements = _apply_one_edit(
+            editable.text, old_text, new_text, expected_replacements
+        )
+    except _EditRejected as rejected:
+        return ToolResult.failure(rejected.code, str(rejected), retryable=True)
+    return _commit_edited_text(editable, after_text, replacement_count=actual_replacements)
+
+
+def _patch_file(workspace_root: Path, arguments: Mapping[str, object]) -> ToolResult:
+    """Apply an ordered list of exact replacements, or change nothing at all."""
+
+    path = str(arguments["path"])
+    raw_edits = arguments["edits"]
+    if not isinstance(raw_edits, Sequence) or isinstance(raw_edits, (str, bytes)):
+        return ToolResult.failure(
+            "INVALID_ARGUMENTS", "edits must be an array of replacements", retryable=True
+        )
+    edits = list(raw_edits)
+    if not 1 <= len(edits) <= MAX_PATCH_EDITS:
+        return ToolResult.failure(
+            "INVALID_ARGUMENTS",
+            f"edits must contain between 1 and {MAX_PATCH_EDITS} replacements",
+            retryable=True,
+        )
+
+    parsed: list[tuple[str, str, int]] = []
+    for index, item in enumerate(edits):
+        if not isinstance(item, Mapping):
+            return ToolResult.failure(
+                "INVALID_ARGUMENTS", f"edit {index + 1} is not an object", retryable=True
+            )
+        unknown = set(item) - {"old_text", "new_text", "expected_replacements"}
+        if unknown or "old_text" not in item or "new_text" not in item:
+            return ToolResult.failure(
+                "INVALID_ARGUMENTS",
+                f"edit {index + 1} must contain old_text and new_text only",
+                retryable=True,
+            )
+        old_text = item["old_text"]
+        new_text = item["new_text"]
+        expected = item.get("expected_replacements", 1)
+        if not isinstance(old_text, str) or not old_text or not isinstance(new_text, str):
+            return ToolResult.failure(
+                "INVALID_ARGUMENTS",
+                f"edit {index + 1} has an invalid old_text or new_text",
+                retryable=True,
+            )
+        if type(expected) is not int or not 1 <= expected <= MAX_REPLACEMENTS:
+            return ToolResult.failure(
+                "INVALID_ARGUMENTS",
+                f"edit {index + 1} has an invalid expected_replacements",
+                retryable=True,
+            )
+        if (
+            len(old_text.encode("utf-8")) > MAX_CONTENT_SIZE_BYTES
+            or len(new_text.encode("utf-8")) > MAX_CONTENT_SIZE_BYTES
+        ):
+            return ToolResult.failure(
+                "CONTENT_TOO_LARGE",
+                f"edit {index + 1} exceeds the {MAX_CONTENT_SIZE_BYTES}-byte limit",
+                retryable=True,
+            )
+        parsed.append((old_text, new_text, expected))
+
+    editable = _read_editable_file(workspace_root, path)
+    if isinstance(editable, ToolResult):
+        return editable
+
+    # Every edit is applied to an in-memory copy first. One rejection fails the whole
+    # call and the file on disk is never touched, so a patch is all or nothing.
+    working_text = editable.text
+    counts: list[int] = []
+    for index, (old_text, new_text, expected) in enumerate(parsed):
+        try:
+            working_text, applied = _apply_one_edit(working_text, old_text, new_text, expected)
+        except _EditRejected as rejected:
+            return ToolResult.failure(
+                rejected.code,
+                f"edit {index + 1} of {len(parsed)}: {rejected}",
+                retryable=True,
+                data={"path": editable.relative_path, "failed_edit": index + 1},
+            )
+        counts.append(applied)
+
+    return _commit_edited_text(
+        editable,
+        working_text,
+        replacement_count=sum(counts),
+        extra_data={"edit_replacements": counts},
+    )
+
+
+class _EditRejected(Exception):
+    """One replacement that cannot be applied, carrying its model-facing code."""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+@dataclass(frozen=True, slots=True)
+class _EditableFile:
+    """One workspace file read and validated once for editing."""
+
+    target: Path
+    relative_path: str
+    raw: bytes
+    text: str
+    has_bom: bool
+    snapshot: FileSnapshot
+    mode: int
+
+
+def _read_editable_file(workspace_root: Path, path: str) -> _EditableFile | ToolResult:
+    """Read one file with every check the editing tools share.
+
+    Both editing tools need the same guarantees before they may change anything: the
+    path is inside the workspace and not sensitive, the file is text within the size
+    limit, and its content was read consistently. Doing it once keeps the two tools
+    from drifting apart on any of them.
+    """
+
     try:
         target, relative_path = resolve_workspace_file(workspace_root, path)
         before_metadata = target.stat()
@@ -256,23 +498,39 @@ def _replace_in_file(workspace_root: Path, arguments: Mapping[str, object]) -> T
             "file changed while it was being read; read it again before retrying",
             retryable=True,
         )
+    return _EditableFile(
+        target=target,
+        relative_path=relative_path,
+        raw=raw,
+        text=before_text,
+        has_bom=has_bom,
+        snapshot=snapshot,
+        mode=before_metadata.st_mode,
+    )
+
+
+def _apply_one_edit(
+    before_text: str,
+    old_text: str,
+    new_text: str,
+    expected_replacements: int,
+) -> tuple[str, int]:
+    """Apply one exact replacement, preserving each match's own newline style."""
 
     normalized_text, original_boundaries = _normalize_with_boundaries(before_text)
     normalized_old = _normalize_newlines(old_text)
     match_spans = _find_non_overlapping(normalized_text, normalized_old)
     actual_replacements = len(match_spans)
     if actual_replacements == 0:
-        return ToolResult.failure(
+        raise _EditRejected(
             "MATCH_NOT_FOUND",
             "old_text did not match the current file content",
-            retryable=True,
         )
     if actual_replacements != expected_replacements:
-        return ToolResult.failure(
+        raise _EditRejected(
             "AMBIGUOUS_MATCH",
             f"old_text matched {actual_replacements} times; expected "
             f"{expected_replacements} replacements",
-            retryable=True,
         )
 
     dominant_newline = _dominant_newline(before_text)
@@ -288,10 +546,20 @@ def _replace_in_file(workspace_root: Path, arguments: Mapping[str, object]) -> T
         pieces.append(replacement)
         previous_original_end = original_end
     pieces.append(before_text[previous_original_end:])
-    after_text = _preserve_terminal_newline("".join(pieces), before_text)
+    return _preserve_terminal_newline("".join(pieces), before_text), actual_replacements
+
+
+def _commit_edited_text(
+    editable: _EditableFile,
+    after_text: str,
+    *,
+    replacement_count: int,
+    extra_data: dict[str, object] | None = None,
+) -> ToolResult:
+    """Encode, size-check, diff, and atomically publish one edited file."""
 
     body = after_text.encode("utf-8")
-    encoded = codecs.BOM_UTF8 + body if has_bom else body
+    encoded = codecs.BOM_UTF8 + body if editable.has_bom else body
     if len(encoded) > MAX_FILE_SIZE_BYTES:
         return ToolResult.failure(
             "CONTENT_TOO_LARGE",
@@ -300,67 +568,47 @@ def _replace_in_file(workspace_root: Path, arguments: Mapping[str, object]) -> T
         )
 
     diff, diff_stats, truncated = _build_diff(
-        relative_path=relative_path,
-        before_text=before_text,
+        relative_path=editable.relative_path,
+        before_text=editable.text,
         after_text=after_text,
-        before_bytes=len(raw),
+        before_bytes=len(editable.raw),
         after_bytes=len(encoded),
-        replacement_count=actual_replacements,
+        replacement_count=replacement_count,
         creating=False,
     )
-
-    if encoded == raw:
-        return ToolResult.success(
-            {
-                "path": relative_path,
-                "bytes_written": len(encoded),
-                "encoding": "utf-8-sig" if has_bom else "utf-8",
-                "replacements": actual_replacements,
-                "diff": diff,
-                "diff_stats": diff_stats,
-            },
-            truncated=truncated,
-        )
+    data: dict[str, object] = {
+        "path": editable.relative_path,
+        "bytes_written": len(encoded),
+        "encoding": "utf-8-sig" if editable.has_bom else "utf-8",
+        "replacements": replacement_count,
+        "diff": diff,
+        "diff_stats": diff_stats,
+        **(extra_data or {}),
+    }
+    if encoded == editable.raw:
+        return ToolResult.success(data, truncated=truncated)
 
     temporary: Path | None = None
     try:
-        temporary = stage_temporary_file(target, encoded, mode=before_metadata.st_mode)
-        if not snapshot_still_matches(target, snapshot):
+        temporary = stage_temporary_file(editable.target, encoded, mode=editable.mode)
+        if not snapshot_still_matches(editable.target, editable.snapshot):
             return ToolResult.failure(
                 "FILE_CHANGED",
-                "file changed after it was read and was not overwritten",
+                "file changed while the replacement was prepared; read it again",
                 retryable=True,
             )
-        try:
-            commit_replacement(temporary, target)
-        except OSError:
-            return ToolResult.failure(
-                "ATOMIC_WRITE_ERROR",
-                "could not atomically replace the original file",
-                retryable=True,
-            )
+        commit_replacement(temporary, editable.target)
         temporary = None
     except OSError:
         return ToolResult.failure(
             "ATOMIC_WRITE_ERROR",
-            "could not stage the complete replacement content",
+            "could not atomically publish the edited file",
             retryable=True,
         )
     finally:
         if temporary is not None:
             discard_temporary_file(temporary)
-
-    return ToolResult.success(
-        {
-            "path": relative_path,
-            "bytes_written": len(encoded),
-            "encoding": "utf-8-sig" if has_bom else "utf-8",
-            "replacements": actual_replacements,
-            "diff": diff,
-            "diff_stats": diff_stats,
-        },
-        truncated=truncated,
-    )
+    return ToolResult.success(data, truncated=truncated)
 
 
 def _normalize_newlines(text: str) -> str:

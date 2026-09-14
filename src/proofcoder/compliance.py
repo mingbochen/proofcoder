@@ -285,13 +285,26 @@ _CAPABILITIES = (
             ("src/proofcoder/tools/search.py", ("create_search_text_tool",)),
             (
                 "src/proofcoder/tools/edit.py",
-                ("create_create_file_tool", "create_replace_in_file_tool"),
+                (
+                    "create_create_file_tool",
+                    "create_replace_in_file_tool",
+                    "create_patch_file_tool",
+                ),
+            ),
+            (
+                "src/proofcoder/tools/paths.py",
+                (
+                    "create_delete_path_tool",
+                    "create_move_path_tool",
+                    "create_make_directory_tool",
+                ),
             ),
         ),
         (
             "tests/unit/test_read_file.py",
             "tests/unit/test_search_text.py",
             "tests/unit/test_edit_tools.py",
+            "tests/unit/test_path_tools.py",
         ),
     ),
     _Capability(

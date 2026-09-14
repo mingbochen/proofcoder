@@ -68,7 +68,7 @@ def _read_only_registry(workspace: Path) -> ToolRegistry:
 
 def _editable_registry(workspace: Path) -> ToolRegistry:
     registry = _read_only_registry(workspace)
-    registry.register(create_create_file_tool(workspace))
+    registry.register(create_create_file_tool(workspace, checkpoint_available=True))
     registry.register(create_replace_in_file_tool(workspace))
     return registry
 

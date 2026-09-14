@@ -65,7 +65,7 @@ def _registry(workspace: Path, *, probe: bool = False, create: bool = False) -> 
             )
         )
     if create:
-        registry.register(create_create_file_tool(workspace))
+        registry.register(create_create_file_tool(workspace, checkpoint_available=True))
     registry.register(create_finish_task_tool(workspace))
     return registry
 
@@ -520,7 +520,7 @@ def test_keyboard_interrupt_in_batch_completes_all_tool_ids(tmp_path: Path) -> N
 
 def test_keyboard_interrupt_preserves_prior_modification_as_unverified(tmp_path: Path) -> None:
     registry = ToolRegistry()
-    registry.register(create_create_file_tool(tmp_path))
+    registry.register(create_create_file_tool(tmp_path, checkpoint_available=True))
     registry.register(
         ToolDefinition(
             name="interrupt",
@@ -678,7 +678,7 @@ def test_compaction_then_modify_verify_finish_remains_locally_verified(tmp_path:
             ),
         )
     )
-    registry.register(create_create_file_tool(tmp_path))
+    registry.register(create_create_file_tool(tmp_path, checkpoint_available=True))
     registry.register(
         create_run_command_tool(
             tmp_path,

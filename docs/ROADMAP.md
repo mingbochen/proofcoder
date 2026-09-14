@@ -6,8 +6,8 @@
 
 - 规范版本：v3.1
 - 当前阶段：阶段 G（文件工具扩展）；阶段 F 的实现已全部合并，只等真实模型数据
-- 下一步：小项 G.2，实现新的文件工具与 `create_file` 的覆盖参数
-- 最近完成：小项 G.1，[ADR-0005](adr/0005-destructive-file-tools.md) 与规范 §10.5.6
+- 下一步：小项 G.3，删除与重命名的评测 fixture 及文档同步
+- 最近完成：小项 G.2，四个新文件工具、`create_file` 的覆盖参数，以及无检查点时的拒绝
 - 阻塞项：阶段 F 的通用退出条件要求"新增能力有对应的真实模型评测 fixture 和重复运行数据"。fixture 已就绪且有离线测试，重复运行数据需要真实 key，见 [EVAL_REPORT §11](EVAL_REPORT.md)
 
 状态取值：`已完成`、`进行中`、`未开始`、`阻塞`、`暂缓`。
@@ -61,9 +61,8 @@
 | 小项 | 内容 | 状态 | PR |
 | --- | --- | --- | --- |
 | G.1 | 阶段 ADR 与规范补全：删除边界、覆盖语义、多处修改形状、无检查点时的行为（[ADR-0005](adr/0005-destructive-file-tools.md)、规范 §10.5.6） | 已完成 | [#9](https://github.com/mingbochen/proofcoder/pull/9) |
-| G.2 | `delete_path`、`move_path`、`make_directory`、`patch_file` 与 `create_file` 的覆盖参数，含离线测试 | 未开始 | — |
-| G.3 | 无检查点时拒绝破坏性工具，含轨迹与错误码 | 未开始 | — |
-| G.4 | 删除与重命名的评测 fixture，以及文档同步 | 未开始 | — |
+| G.2 | `delete_path`、`move_path`、`make_directory`、`patch_file`、`create_file` 的覆盖参数，以及无检查点时的拒绝，含离线测试 | 已完成 | [#10](https://github.com/mingbochen/proofcoder/pull/10) |
+| G.3 | 删除与重命名的评测 fixture，以及文档同步 | 未开始 | — |
 
 ## 阶段 H–M
 

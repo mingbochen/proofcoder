@@ -57,7 +57,7 @@ future dependency, environment, configuration, or source changes remain complian
 | Command policy and execution | `proofcoder.safety.commands.prepare_command`; `proofcoder.tools.command.create_run_command_tool` | `tests/unit/test_command_policy.py`, `tests/unit/test_run_command.py` | Mechanical `PASS`; dynamic starts manually reviewed |
 | DeepSeek client | `proofcoder.llm.deepseek.DeepSeekClient` | `tests/unit/test_deepseek.py` | Mechanical `PASS`; dynamic request manually reviewed |
 | Evaluation pipeline | `proofcoder.eval_fixtures`, `proofcoder.eval_core`, `proofcoder.eval_runner` | `tests/unit/test_eval_fixtures.py`, `tests/unit/test_eval_core.py`, `tests/unit/test_eval_runner.py` | Mechanical `PASS` |
-| Local file tools | `proofcoder.tools.files`, `proofcoder.tools.search`, `proofcoder.tools.edit` | `tests/unit/test_read_file.py`, `tests/unit/test_search_text.py`, `tests/unit/test_edit_tools.py` | Mechanical `PASS`; ripgrep start manually reviewed |
+| Local file tools | `proofcoder.tools.files`, `proofcoder.tools.search`, `proofcoder.tools.edit`, `proofcoder.tools.paths` | `tests/unit/test_read_file.py`, `tests/unit/test_search_text.py`, `tests/unit/test_edit_tools.py`, `tests/unit/test_path_tools.py` | Mechanical `PASS`; ripgrep start manually reviewed |
 | History and context | `proofcoder.context.MessageHistory`; `proofcoder.context.ContextManager` | `tests/unit/test_context.py`, `tests/unit/test_context_manager.py` | Mechanical `PASS` |
 | No-progress termination | `proofcoder.progress.ProgressTracker`; `proofcoder.agent.AgentLoop` | `tests/unit/test_progress.py`, `tests/unit/test_agent_d2.py` | Mechanical `PASS` |
 | Tool registry and validation | `proofcoder.tools.registry.ToolRegistry` | `tests/unit/test_tools.py` | Mechanical `PASS` |
@@ -236,6 +236,9 @@ into automatic passes; their manual dispositions and limitations remain distinct
 - The `rollback-word-wrap` evaluation fixture has offline coverage of the rollback
   verification path but no real-model repeated-run data yet, so the stage F exit
   criterion that requires such data is not met. See `docs/EVAL_REPORT.md` section 11.
+- The tools that delete, move, or overwrite destroy content in one call. They refuse to
+  run without a checkpoint and never recurse, but within the captured scope their damage
+  is undone only when someone actually runs a rollback; outside it, nothing undoes it.
 - A run checkpoint records the workspace baseline before the first model call and can
   restore it afterwards, but only within its captured scope. Credential paths, files
   above the file-tool size limit, ignored directories, symbolic links, and everything

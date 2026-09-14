@@ -109,6 +109,89 @@ def resolve_workspace_new_file(workspace: Path, requested: str) -> tuple[Path, s
     return target, relative
 
 
+def resolve_workspace_new_directory(workspace: Path, requested: str) -> tuple[Path, str]:
+    """Resolve a directory target whose parents may not exist yet.
+
+    Creating a directory is the one write that legitimately names a path several
+    levels below anything that exists, so unlike ``resolve_workspace_new_file`` this
+    neither requires the parent nor rejects a target that is already there. Every
+    other check -- absolute paths, traversal, containment, sensitive and runtime
+    paths -- still applies.
+    """
+
+    workspace_root = workspace.resolve(strict=True)
+    if _is_absolute_or_drive_qualified(requested):
+        raise WorkspacePathError(
+            "PATH_OUTSIDE_WORKSPACE",
+            "path must be relative to the selected workspace",
+        )
+
+    requested_path = Path(requested.replace("\\", "/"))
+    if requested_path.name in {"", ".", ".."}:
+        raise WorkspacePathError(
+            "PATH_OUTSIDE_WORKSPACE",
+            "path must name one directory inside the selected workspace",
+        )
+    # The parent is resolved, the leaf is not: a symbolic link standing where the
+    # directory would go must be reported as occupying the path, not followed.
+    parent = (workspace_root / requested_path.parent).resolve(strict=False)
+    ensure_within_workspace(workspace_root, parent)
+    target = parent / requested_path.name
+    relative = target.relative_to(workspace_root).as_posix()
+    if (
+        is_sensitive_path(requested_path)
+        or is_sensitive_path(relative)
+        or is_internal_runtime_path(relative)
+    ):
+        raise WorkspacePathError(
+            "SENSITIVE_PATH",
+            "access to sensitive credential or key paths is blocked",
+        )
+    return target, relative
+
+
+def resolve_workspace_existing_path(workspace: Path, requested: str) -> tuple[Path, str]:
+    """Resolve one existing non-sensitive path without following its final component.
+
+    Deleting or moving a symbolic link must act on the link itself, so the leaf is
+    never resolved. Everything above it is, which is what keeps the path inside the
+    workspace even when a parent directory is a link.
+    """
+
+    workspace_root = workspace.resolve(strict=True)
+    if _is_absolute_or_drive_qualified(requested):
+        raise WorkspacePathError(
+            "PATH_OUTSIDE_WORKSPACE",
+            "path must be relative to the selected workspace",
+        )
+
+    requested_path = Path(requested.replace("\\", "/"))
+    if requested_path.name in {"", ".", ".."}:
+        raise WorkspacePathError(
+            "PATH_OUTSIDE_WORKSPACE",
+            "path must name one entry inside the selected workspace",
+        )
+    parent = (workspace_root / requested_path.parent).resolve(strict=False)
+    ensure_within_workspace(workspace_root, parent)
+    target = parent / requested_path.name
+    relative = target.relative_to(workspace_root).as_posix()
+    if (
+        is_sensitive_path(requested_path)
+        or is_sensitive_path(relative)
+        or is_internal_runtime_path(relative)
+    ):
+        raise WorkspacePathError(
+            "SENSITIVE_PATH",
+            "access to sensitive credential or key paths is blocked",
+        )
+    if not parent.is_dir():
+        raise WorkspacePathError("PATH_NOT_FOUND", "parent directory does not exist")
+    if not os.path.lexists(target):
+        raise WorkspacePathError("PATH_NOT_FOUND", "requested path does not exist")
+
+    return target, relative
+
+
 def _is_absolute_or_drive_qualified(requested: str) -> bool:
     """Recognize native, POSIX, and Windows absolute path forms on every host."""
 

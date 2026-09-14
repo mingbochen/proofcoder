@@ -137,7 +137,7 @@ def _golden_registry(root: Path) -> ToolRegistry:
     registry = ToolRegistry()
     registry.register(create_list_files_tool(root))
     registry.register(create_read_file_tool(root))
-    registry.register(create_create_file_tool(root))
+    registry.register(create_create_file_tool(root, checkpoint_available=True))
     registry.register(create_replace_in_file_tool(root))
     registry.register(_stub_run_command_tool())
     registry.register(create_finish_task_tool(root))

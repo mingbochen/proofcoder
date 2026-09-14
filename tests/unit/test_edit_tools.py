@@ -18,6 +18,7 @@ from proofcoder.tools.edit import (
     MAX_CONTENT_SIZE_BYTES,
     MAX_DIFF_CHARACTERS,
     create_create_file_tool,
+    create_patch_file_tool,
     create_replace_in_file_tool,
 )
 from proofcoder.tools.registry import ToolRegistry
@@ -35,7 +36,10 @@ def _dispatch(tool: ToolDefinition, arguments: dict[str, object]) -> ToolResult:
 
 
 def _create(workspace: Path, path: str, content: str) -> ToolResult:
-    return _dispatch(create_create_file_tool(workspace), {"path": path, "content": content})
+    return _dispatch(
+        create_create_file_tool(workspace, checkpoint_available=True),
+        {"path": path, "content": content},
+    )
 
 
 def _replace(
@@ -92,7 +96,7 @@ def test_create_file_writes_utf8_and_returns_diff(tmp_path: Path, content: str) 
 
 
 def test_create_tool_is_marked_as_workspace_write(tmp_path: Path) -> None:
-    tool = create_create_file_tool(tmp_path)
+    tool = create_create_file_tool(tmp_path, checkpoint_available=True)
 
     assert tool.modifies_workspace is True
     assert tool.risk_level is RiskLevel.WRITE
@@ -478,7 +482,9 @@ def test_replace_returns_unified_diff_and_bounded_diff_keeps_full_write(tmp_path
 @pytest.mark.parametrize(
     "arguments",
     [
-        {"path": "file.txt", "content": "x", "overwrite": True},
+        # overwrite is a real parameter now, so an unknown field needs another name.
+        {"path": "file.txt", "content": "x", "mode": "0644"},
+        {"path": "file.txt", "content": "x", "overwrite": "yes"},
         {"path": "", "content": "x"},
         {"path": "file.txt"},
     ],
@@ -487,9 +493,9 @@ def test_create_schema_rejects_unknown_empty_and_missing_arguments(
     tmp_path: Path,
     arguments: dict[str, object],
 ) -> None:
-    assert _error_code(_dispatch(create_create_file_tool(tmp_path), arguments)) == (
-        "INVALID_ARGUMENTS"
-    )
+    assert _error_code(
+        _dispatch(create_create_file_tool(tmp_path, checkpoint_available=True), arguments)
+    ) == ("INVALID_ARGUMENTS")
 
 
 @pytest.mark.parametrize(
@@ -514,3 +520,182 @@ def test_replace_schema_rejects_unknown_empty_and_boolean_arguments(
     assert _error_code(_dispatch(create_replace_in_file_tool(tmp_path), arguments)) == (
         "INVALID_ARGUMENTS"
     )
+
+
+def _patch(workspace: Path, path: str, edits: list[dict[str, object]]) -> ToolResult:
+    return _dispatch(create_patch_file_tool(workspace), {"path": path, "edits": edits})
+
+
+def test_patch_applies_every_edit_in_order_and_writes_once(tmp_path: Path) -> None:
+    source = tmp_path / "module.py"
+    source.write_text("alpha = 1\nbeta = 2\ngamma = 3\n", encoding="utf-8")
+
+    result = _patch(
+        tmp_path,
+        "module.py",
+        [
+            {"old_text": "alpha = 1", "new_text": "alpha = 10"},
+            {"old_text": "gamma = 3", "new_text": "gamma = 30"},
+        ],
+    )
+
+    assert result.ok
+    assert result.data is not None
+    assert result.data["replacements"] == 2
+    assert result.data["edit_replacements"] == [1, 1]
+    assert source.read_text(encoding="utf-8") == "alpha = 10\nbeta = 2\ngamma = 30\n"
+
+
+def test_each_edit_sees_the_result_of_the_previous_one(tmp_path: Path) -> None:
+    source = tmp_path / "module.py"
+    source.write_text("value = 1\n", encoding="utf-8")
+
+    result = _patch(
+        tmp_path,
+        "module.py",
+        [
+            {"old_text": "value = 1", "new_text": "value = 2"},
+            {"old_text": "value = 2", "new_text": "value = 3"},
+        ],
+    )
+
+    assert result.ok
+    assert source.read_text(encoding="utf-8") == "value = 3\n"
+
+
+def test_one_failed_edit_leaves_the_file_completely_untouched(tmp_path: Path) -> None:
+    source = tmp_path / "module.py"
+    original = "alpha = 1\nbeta = 2\n"
+    source.write_text(original, encoding="utf-8")
+
+    result = _patch(
+        tmp_path,
+        "module.py",
+        [
+            {"old_text": "alpha = 1", "new_text": "alpha = 10"},
+            {"old_text": "absent", "new_text": "x"},
+        ],
+    )
+
+    assert not result.ok
+    assert _error_code(result) == "MATCH_NOT_FOUND"
+    assert result.data is not None and result.data["failed_edit"] == 2
+    assert "edit 2 of 2" in str(result.error.message)
+    # The first edit succeeded in memory only; nothing reached the disk.
+    assert source.read_text(encoding="utf-8") == original
+
+
+def test_patch_enforces_expected_replacements_per_edit(tmp_path: Path) -> None:
+    source = tmp_path / "module.py"
+    original = "x = 1\nx = 1\n"
+    source.write_text(original, encoding="utf-8")
+
+    ambiguous = _patch(tmp_path, "module.py", [{"old_text": "x = 1", "new_text": "y = 1"}])
+    counted = _patch(
+        tmp_path,
+        "module.py",
+        [{"old_text": "x = 1", "new_text": "y = 1", "expected_replacements": 2}],
+    )
+
+    assert _error_code(ambiguous) == "AMBIGUOUS_MATCH"
+    assert counted.ok
+    assert counted.data is not None and counted.data["edit_replacements"] == [2]
+    assert source.read_text(encoding="utf-8") == "y = 1\ny = 1\n"
+
+
+def test_patch_preserves_crlf_and_a_missing_final_newline(tmp_path: Path) -> None:
+    source = tmp_path / "module.py"
+    source.write_bytes(b"alpha = 1\r\nbeta = 2")
+
+    result = _patch(
+        tmp_path,
+        "module.py",
+        [
+            {"old_text": "alpha = 1", "new_text": "alpha = 10"},
+            {"old_text": "beta = 2", "new_text": "beta = 20"},
+        ],
+    )
+
+    assert result.ok
+    assert source.read_bytes() == b"alpha = 10\r\nbeta = 20"
+
+
+@pytest.mark.parametrize(
+    "edits",
+    [
+        [],
+        [{"old_text": "a"}],
+        [{"old_text": "a", "new_text": "b", "unknown": 1}],
+        [{"old_text": "", "new_text": "b"}],
+        [{"old_text": "a", "new_text": "b", "expected_replacements": 0}],
+        "not-a-list",
+        [{"old_text": "a", "new_text": 5}],
+    ],
+)
+def test_patch_rejects_malformed_edit_lists(tmp_path: Path, edits: object) -> None:
+    source = tmp_path / "module.py"
+    source.write_text("a\n", encoding="utf-8")
+
+    result = _dispatch(create_patch_file_tool(tmp_path), {"path": "module.py", "edits": edits})
+
+    assert not result.ok
+    assert source.read_text(encoding="utf-8") == "a\n"
+
+
+def test_patch_refuses_sensitive_and_missing_paths(tmp_path: Path) -> None:
+    (tmp_path / ".env").write_text("TOKEN_NAME=never-real\n", encoding="utf-8")
+    edits = [{"old_text": "never-real", "new_text": "rotated"}]
+
+    sensitive = _patch(tmp_path, ".env", edits)
+    missing = _patch(tmp_path, "absent.py", edits)
+
+    assert _error_code(sensitive) == "SENSITIVE_PATH"
+    assert _error_code(missing) == "PATH_NOT_FOUND"
+    assert (tmp_path / ".env").read_text(encoding="utf-8") == "TOKEN_NAME=never-real\n"
+
+
+def test_overwrite_is_refused_by_default_and_applied_when_asked(tmp_path: Path) -> None:
+    target = tmp_path / "module.py"
+    target.write_text("old content\n", encoding="utf-8")
+    tool = create_create_file_tool(tmp_path, checkpoint_available=True)
+
+    refused = _dispatch(tool, {"path": "module.py", "content": "new content\n"})
+    applied = _dispatch(tool, {"path": "module.py", "content": "new content\n", "overwrite": True})
+
+    assert _error_code(refused) == "PATH_ALREADY_EXISTS"
+    assert applied.ok
+    assert applied.data is not None and applied.data["overwritten"] is True
+    assert "old content" in str(applied.data["diff"])
+    assert target.read_text(encoding="utf-8") == "new content\n"
+
+
+def test_overwrite_never_replaces_a_directory_or_a_link(tmp_path: Path) -> None:
+    (tmp_path / "folder").mkdir()
+    tool = create_create_file_tool(tmp_path, checkpoint_available=True)
+
+    result = _dispatch(tool, {"path": "folder", "content": "x", "overwrite": True})
+
+    assert not result.ok
+    assert (tmp_path / "folder").is_dir()
+
+
+def test_overwrite_requires_a_checkpoint_but_creation_does_not(tmp_path: Path) -> None:
+    from proofcoder.tools.paths import NO_CHECKPOINT_CODE
+
+    target = tmp_path / "module.py"
+    target.write_text("old content\n", encoding="utf-8")
+    tool = create_create_file_tool(tmp_path, checkpoint_available=False)
+
+    overwriting = _dispatch(
+        tool, {"path": "module.py", "content": "new content\n", "overwrite": True}
+    )
+    creating = _dispatch(tool, {"path": "fresh.py", "content": "fresh\n"})
+
+    # Not retryable: retrying cannot conjure a checkpoint this run never took.
+    assert overwriting.error is not None
+    assert overwriting.error.code == NO_CHECKPOINT_CODE
+    assert overwriting.error.retryable is False
+    assert target.read_text(encoding="utf-8") == "old content\n"
+    # Creating a new file destroys nothing, so it stays available.
+    assert creating.ok
+    assert (tmp_path / "fresh.py").read_text(encoding="utf-8") == "fresh\n"

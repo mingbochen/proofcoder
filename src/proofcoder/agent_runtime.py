@@ -28,9 +28,18 @@ from proofcoder.prompt import STAGE_B_SYSTEM_PROMPT
 from proofcoder.protocol import CompletionStatus, RunResult, TerminationReason
 from proofcoder.retry import DEFAULT_MAX_API_ATTEMPTS
 from proofcoder.tools.command import create_run_command_tool
-from proofcoder.tools.edit import create_create_file_tool, create_replace_in_file_tool
+from proofcoder.tools.edit import (
+    create_create_file_tool,
+    create_patch_file_tool,
+    create_replace_in_file_tool,
+)
 from proofcoder.tools.files import create_list_files_tool, create_read_file_tool
 from proofcoder.tools.finish import create_finish_task_tool
+from proofcoder.tools.paths import (
+    create_delete_path_tool,
+    create_make_directory_tool,
+    create_move_path_tool,
+)
 from proofcoder.tools.registry import ToolRegistry
 from proofcoder.tools.search import create_search_text_tool
 from proofcoder.trace import TraceRecorder
@@ -78,7 +87,7 @@ def create_agent_runtime_resources(
     checkpoint_enabled: bool = True,
     checkpoint_limits: CheckpointLimits = DEFAULT_CHECKPOINT_LIMITS,
 ) -> AgentRuntimeResources:
-    """Create one fresh seven-tool registry, trace recorder, and run checkpoint.
+    """Create one fresh tool registry, trace recorder, and run checkpoint.
 
     The checkpoint is captured here, before any tool exists to be called, so the
     baseline predates every write the run can perform. A capture failure is returned
@@ -89,14 +98,6 @@ def create_agent_runtime_resources(
     """
 
     workspace_root = workspace.resolve(strict=True)
-    registry = ToolRegistry()
-    registry.register(create_list_files_tool(workspace_root))
-    registry.register(create_search_text_tool(workspace_root))
-    registry.register(create_read_file_tool(workspace_root))
-    registry.register(create_create_file_tool(workspace_root))
-    registry.register(create_replace_in_file_tool(workspace_root))
-    registry.register(create_run_command_tool(workspace_root, environ=environ))
-    registry.register(create_finish_task_tool(workspace_root))
     run_id = run_id_factory()
     recorder = TraceRecorder(
         workspace_root,
@@ -110,6 +111,23 @@ def create_agent_runtime_resources(
             checkpoint = create_checkpoint(workspace_root, run_id, limits=checkpoint_limits)
         except CheckpointError as error:
             checkpoint_error = error
+
+    # The registry is built after the capture because the tools that destroy content
+    # are only admissible when a baseline exists, and that is a fact of this run rather
+    # than an argument the model can supply.
+    available = checkpoint is not None
+    registry = ToolRegistry()
+    registry.register(create_list_files_tool(workspace_root))
+    registry.register(create_search_text_tool(workspace_root))
+    registry.register(create_read_file_tool(workspace_root))
+    registry.register(create_create_file_tool(workspace_root, checkpoint_available=available))
+    registry.register(create_replace_in_file_tool(workspace_root))
+    registry.register(create_patch_file_tool(workspace_root))
+    registry.register(create_make_directory_tool(workspace_root))
+    registry.register(create_delete_path_tool(workspace_root, checkpoint_available=available))
+    registry.register(create_move_path_tool(workspace_root, checkpoint_available=available))
+    registry.register(create_run_command_tool(workspace_root, environ=environ))
+    registry.register(create_finish_task_tool(workspace_root))
     return AgentRuntimeResources(
         workspace=workspace_root,
         run_id=run_id,
