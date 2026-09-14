@@ -4,10 +4,11 @@
 
 ## 当前位置
 
-- 规范版本：v3.0.3
+- 规范版本：v3.0.4
 - 当前阶段：阶段 F（检查点与回滚）
-- 下一步：小项 F.5，评测 fixture 与文档同步（阶段 F 的最后一项）
-- 最近完成：小项 F.4，浏览器界面回滚入口，确认与所展示清单绑定
+- 下一步：为 `rollback-word-wrap` 补真实模型重复运行数据，然后关闭阶段 F
+- 最近完成：小项 F.5 的可离线部分，回滚评测 fixture 与评测流程的回滚验证
+- 阻塞项：阶段 F 的通用退出条件要求"新增能力有对应的真实模型评测 fixture 和重复运行数据"。fixture 已就绪且有离线测试，重复运行数据需要真实 key，见 [EVAL_REPORT §11](EVAL_REPORT.md)
 
 状态取值：`已完成`、`进行中`、`未开始`、`阻塞`、`暂缓`。
 
@@ -53,7 +54,7 @@
 | F.2 | 检查点创建与回滚核心，含轨迹事件和离线测试 | 已完成 | [#5](https://github.com/mingbochen/proofcoder/pull/5) |
 | F.3 | 命令行回滚入口 `proofcoder rollback`（list/show/apply/delete），含确认清单与操作轨迹 | 已完成 | [#6](https://github.com/mingbochen/proofcoder/pull/6) |
 | F.4 | 浏览器界面回滚入口：计划预览、与清单绑定的确认、检查点与回滚事件渲染 | 已完成 | [#7](https://github.com/mingbochen/proofcoder/pull/7) |
-| F.5 | 评测 fixture 与文档同步 | 未开始 | — |
+| F.5 | 评测 fixture 与文档同步：`rollback-word-wrap` fixture、评测流程的回滚验证、文档同步 | 阻塞（等待真实模型重复运行数据） | [#8](https://github.com/mingbochen/proofcoder/pull/8) |
 
 ## 阶段 G–M
 

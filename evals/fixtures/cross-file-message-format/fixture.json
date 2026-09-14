@@ -1,15 +1,32 @@
 {
-  "schema_version": 1,
-  "id": "cross-file-message-format",
+  "allowed_modified_files": [
+    "message.py",
+    "settings.py",
+    "tests/test_message.py"
+  ],
   "category": "cross_file_change",
+  "id": "cross-file-message-format",
+  "required_modified_files": [
+    "message.py",
+    "settings.py",
+    "tests/test_message.py"
+  ],
+  "schema_version": 2,
   "task": "Add a default message separator of ' | ' to settings, make format_message read that setting instead of embedding punctuation, and add coverage for an empty message.",
   "validation": {
-    "argv": ["python", "-m", "unittest", "discover", "-s", "tests", "-v"],
+    "argv": [
+      "python",
+      "-m",
+      "unittest",
+      "discover",
+      "-s",
+      "tests",
+      "-v"
+    ],
     "cwd": ".",
     "success_exit_code": 0,
     "initial_exit_code": 1,
     "initial_output_contains": "ERROR: test_declares_default_separator"
   },
-  "allowed_modified_files": ["message.py", "settings.py", "tests/test_message.py"],
-  "required_modified_files": ["message.py", "settings.py", "tests/test_message.py"]
+  "verify_rollback": false
 }

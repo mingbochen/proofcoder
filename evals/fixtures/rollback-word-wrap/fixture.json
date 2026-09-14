@@ -1,0 +1,29 @@
+{
+  "allowed_modified_files": [
+    "word_wrap.py",
+    "tests/test_word_wrap.py"
+  ],
+  "category": "bug_fix",
+  "id": "rollback-word-wrap",
+  "required_modified_files": [
+    "word_wrap.py"
+  ],
+  "schema_version": 2,
+  "task": "wrap_words drops the last line when the text fits without needing a split. Fix it so every word is returned, and keep the existing tests passing.",
+  "validation": {
+    "argv": [
+      "python",
+      "-m",
+      "unittest",
+      "discover",
+      "-s",
+      "tests",
+      "-v"
+    ],
+    "cwd": ".",
+    "success_exit_code": 0,
+    "initial_exit_code": 1,
+    "initial_output_contains": "FAIL: test_keeps_the_final_line"
+  },
+  "verify_rollback": true
+}

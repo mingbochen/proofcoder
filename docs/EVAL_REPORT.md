@@ -196,3 +196,25 @@ proofcoder trace show --workspace .proofcoder/evals/<eval-id>/<sequence>/w <run-
 | 干净提交正式评测 | `b6f7ae7f5c0549ca96b7c66971c55d7b` | 9/9 成功，成功率 100% |
 
 每个 eval 的证据范围均限定为其 `metadata.json`、`summary.json` 和 `attempts.jsonl`。本报告中的事实值来自这些文件；关于旧 0/9 的“基础设施 false negative”属于根据 attempt 文件范围、验证退出码和当前评分实现作出的诊断。
+
+---
+
+## 11. 阶段 F 新增：回滚 fixture（尚无真实模型数据）
+
+本节记录仓库当前的 fixture 集合，与上面第 1–10 节描述的 `b6f7ae7f5c0549ca96b7c66971c55d7b` 那次评测无关——那次评测运行时第四个 fixture 还不存在。
+
+阶段 F 增加了 `rollback-word-wrap`，它是唯一一个把 `verify_rollback` 设为 `true` 的 fixture。对这类 fixture，评测器在完成常规评分之后再做一步：为这次运行建立回滚计划并执行，然后把工作区与 agent 启动前的快照逐文件比对。因此它的成功判定在第 1 节的五条之外，还要求：
+
+6. 回滚执行完整，没有未能恢复的路径（否则记 `rollback_incomplete`）。
+7. 回滚之后的工作区快照与运行前完全一致（否则记 `rollback_mismatch`）。
+8. 这次运行确实留下了可用的检查点（否则记 `rollback_error`）。
+
+比对快照就是全部检查：两个文件摘要相同的工作区行为必然相同，再跑一次验证命令不会增加证据。运行产物（`.proofcoder/`）不参与比对，因为检查点和轨迹本来就应当在回滚后不同。
+
+**这个 fixture 目前没有真实模型的重复运行数据。** 它的离线行为由 `tests/unit/test_eval_core.py` 和 `tests/unit/test_eval_runner.py` 覆盖——包括成功回滚、缺少检查点、以及工作区未回到基线三种情况——但开发规范 §16「v3.0 阶段通用规则」要求的"真实模型评测 fixture 和重复运行数据"只完成了 fixture 这一半。补齐它需要配置真实 key 并运行：
+
+```text
+uv run --locked --env-file .env proofcoder eval --fixture rollback-word-wrap --repeat 3
+```
+
+结果产生后，应当在本报告中新增一节记录其 eval ID、日期、代码 revision、成功率和失败分析，并在 `docs/ROADMAP.md` 中把阶段 F 标记为完成。在那之前，阶段 F 的这条退出条件尚未满足。

@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
+from proofcoder.checkpoint import CheckpointError
 from proofcoder.errors import ProofCoderError
 from proofcoder.eval_fixtures import (
     EvalFixture,
@@ -18,6 +19,7 @@ from proofcoder.eval_fixtures import (
     materialize_fixture,
 )
 from proofcoder.protocol import CompletionStatus, RunResult, TerminationReason
+from proofcoder.rollback import build_rollback_plan, perform_rollback
 from proofcoder.tools.base import ToolResult
 from proofcoder.tools.command import create_run_command_tool
 
@@ -52,6 +54,9 @@ class EvaluationFailureReason(StrEnum):
     FINAL_VALIDATION_FAILED = "final_validation_failed"
     MISSING_REQUIRED_FILES = "missing_required_files"
     UNEXPECTED_FILES = "unexpected_files"
+    ROLLBACK_ERROR = "rollback_error"
+    ROLLBACK_INCOMPLETE = "rollback_incomplete"
+    ROLLBACK_MISMATCH = "rollback_mismatch"
 
 
 class WorkspaceSnapshotError(ProofCoderError):
@@ -150,6 +155,9 @@ class EvaluationAttemptResult:
     run_id: str = ""
     trace_path: str | None = None
     trace_complete: bool = False
+    rollback_checked: bool = False
+    rollback_restored_files: tuple[str, ...] = ()
+    rollback_unrestored_files: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -438,6 +446,9 @@ def run_evaluation_attempt(
         reasons.append(EvaluationFailureReason.TRACE_INCOMPLETE)
     reasons.extend(_final_validation_reasons(fixture, final_validation))
     _append_scope_reasons(reasons, missing_required, unexpected)
+    rollback = _verify_rollback(fixture, workspace, run_result, before)
+    if rollback is not None:
+        reasons.extend(rollback.reasons)
     return _attempt_result(
         fixture,
         attempt_index,
@@ -448,6 +459,65 @@ def run_evaluation_attempt(
         run_result=run_result,
         missing_required=missing_required,
         unexpected=unexpected,
+        rollback=rollback,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class _RollbackEvidence:
+    """What rolling this attempt back actually restored."""
+
+    restored_files: tuple[str, ...] = ()
+    unrestored_files: tuple[str, ...] = ()
+    reasons: tuple[EvaluationFailureReason, ...] = ()
+
+
+def _verify_rollback(
+    fixture: EvalFixture,
+    workspace: Path,
+    run_result: RunResult,
+    before: WorkspaceSnapshot,
+) -> _RollbackEvidence | None:
+    """Roll the attempt back and check the workspace against its pre-run snapshot.
+
+    Comparing snapshots is the whole check: two workspaces with identical file digests
+    behave identically, so re-running the validation command afterwards would add cost
+    without adding evidence. Runtime artifacts are excluded from the comparison because
+    the checkpoint and the traces are expected to differ afterwards.
+    """
+
+    if not fixture.verify_rollback or not run_result.run_id:
+        return None
+    try:
+        plan = build_rollback_plan(workspace, run_result.run_id)
+        recorded = perform_rollback(workspace, plan)
+    except CheckpointError:
+        return _RollbackEvidence(reasons=(EvaluationFailureReason.ROLLBACK_ERROR,))
+
+    try:
+        restored = snapshot_workspace(workspace)
+    except WorkspaceSnapshotError:
+        return _RollbackEvidence(reasons=(EvaluationFailureReason.SNAPSHOT_ERROR,))
+
+    remaining = compare_snapshots(before, restored)
+    reasons: list[EvaluationFailureReason] = []
+    if not recorded.result.complete:
+        reasons.append(EvaluationFailureReason.ROLLBACK_INCOMPLETE)
+    if remaining.changed_files:
+        reasons.append(EvaluationFailureReason.ROLLBACK_MISMATCH)
+    restored_files = tuple(
+        sorted(
+            (
+                *recorded.result.restored,
+                *recorded.result.recreated,
+                *recorded.result.deleted,
+            )
+        )
+    )
+    return _RollbackEvidence(
+        restored_files=restored_files,
+        unrestored_files=remaining.changed_files,
+        reasons=tuple(reasons),
     )
 
 
@@ -687,6 +757,7 @@ def _attempt_result(
     run_result: RunResult | None = None,
     missing_required: tuple[str, ...] = (),
     unexpected: tuple[str, ...] = (),
+    rollback: _RollbackEvidence | None = None,
 ) -> EvaluationAttemptResult:
     observed_changes = WorkspaceChanges() if changes is None else changes
     ordered_reasons = tuple(sorted(set(reasons), key=lambda reason: reason.value))
@@ -719,6 +790,9 @@ def _attempt_result(
         run_id="" if run_result is None else run_result.run_id,
         trace_path=None if run_result is None else run_result.trace_path,
         trace_complete=False if run_result is None else run_result.trace_complete,
+        rollback_checked=rollback is not None,
+        rollback_restored_files=() if rollback is None else rollback.restored_files,
+        rollback_unrestored_files=() if rollback is None else rollback.unrestored_files,
     )
 
 

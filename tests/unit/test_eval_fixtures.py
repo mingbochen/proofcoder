@@ -22,7 +22,10 @@ EXPECTED_FIXTURES = {
     "bugfix-inclusive-total": FixtureCategory.BUG_FIX,
     "cross-file-message-format": FixtureCategory.CROSS_FILE_CHANGE,
     "feature-available-items": FixtureCategory.FEATURE_ADDITION,
+    "rollback-word-wrap": FixtureCategory.BUG_FIX,
 }
+# Exactly one repository fixture verifies that a finished run can be undone.
+EXPECTED_ROLLBACK_FIXTURES = {"rollback-word-wrap"}
 FORBIDDEN_TASK_HINTS = {
     "create_file",
     "finish_task",
@@ -36,7 +39,7 @@ FORBIDDEN_TASK_HINTS = {
 
 def _metadata(fixture_id: str = "sample-fixture") -> dict[str, object]:
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "id": fixture_id,
         "category": "bug_fix",
         "task": "Correct the sample behavior and keep its tests passing.",
@@ -49,6 +52,7 @@ def _metadata(fixture_id: str = "sample-fixture") -> dict[str, object]:
         },
         "allowed_modified_files": ["sample.py"],
         "required_modified_files": ["sample.py"],
+        "verify_rollback": False,
     }
 
 
@@ -91,6 +95,9 @@ def test_repository_fixtures_load_in_deterministic_complete_order() -> None:
         not any(hint in fixture.task.casefold() for hint in FORBIDDEN_TASK_HINTS)
         for fixture in fixtures
     )
+    assert {
+        fixture.fixture_id for fixture in fixtures if fixture.verify_rollback
+    } == EXPECTED_ROLLBACK_FIXTURES
 
 
 @pytest.mark.parametrize("fixture_id", sorted(EXPECTED_FIXTURES))
@@ -209,7 +216,7 @@ def test_invalid_json_is_rejected(tmp_path: Path) -> None:
 
 def test_unknown_schema_version_is_rejected(tmp_path: Path) -> None:
     metadata = _metadata()
-    metadata["schema_version"] = 2
+    metadata["schema_version"] = 3
     _write_fixture(tmp_path, "fixture", metadata=metadata)
 
     _assert_code(tmp_path, "FIXTURE_METADATA_INVALID")
