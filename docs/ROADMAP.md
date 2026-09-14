@@ -4,10 +4,10 @@
 
 ## 当前位置
 
-- 规范版本：v3.0.4
-- 当前阶段：阶段 F（检查点与回滚）
-- 下一步：为 `rollback-word-wrap` 补真实模型重复运行数据，然后关闭阶段 F
-- 最近完成：小项 F.5 的可离线部分，回滚评测 fixture 与评测流程的回滚验证
+- 规范版本：v3.1
+- 当前阶段：阶段 G（文件工具扩展）；阶段 F 的实现已全部合并，只等真实模型数据
+- 下一步：小项 G.2，实现新的文件工具与 `create_file` 的覆盖参数
+- 最近完成：小项 G.1，[ADR-0005](adr/0005-destructive-file-tools.md) 与规范 §10.5.6
 - 阻塞项：阶段 F 的通用退出条件要求"新增能力有对应的真实模型评测 fixture 和重复运行数据"。fixture 已就绪且有离线测试，重复运行数据需要真实 key，见 [EVAL_REPORT §11](EVAL_REPORT.md)
 
 状态取值：`已完成`、`进行中`、`未开始`、`阻塞`、`暂缓`。
@@ -20,7 +20,7 @@
 | — | 本地浏览器界面（[ADR-0002](adr/0002-local-browser-interface.md)，PR #1） | A–E | 已完成 | 0.1.0 |
 | 0 | 治理基础 | — | 已完成 | — |
 | F | 检查点与回滚 | 0 | 进行中 | — |
-| G | 文件工具扩展 | F | 未开始 | — |
+| G | 文件工具扩展 | F | 进行中 | — |
 | H | 命令策略配置与人工审批 | F | 未开始 | — |
 | I | 多轮会话 | 0 | 未开始 | — |
 | J | 可替换模型提供方与流式响应 | 0 | 未开始 | — |
@@ -56,7 +56,16 @@
 | F.4 | 浏览器界面回滚入口：计划预览、与清单绑定的确认、检查点与回滚事件渲染 | 已完成 | [#7](https://github.com/mingbochen/proofcoder/pull/7) |
 | F.5 | 评测 fixture 与文档同步：`rollback-word-wrap` fixture、评测流程的回滚验证、文档同步 | 阻塞（等待真实模型重复运行数据） | [#8](https://github.com/mingbochen/proofcoder/pull/8) |
 
-## 阶段 G–M
+## 阶段 G：文件工具扩展
+
+| 小项 | 内容 | 状态 | PR |
+| --- | --- | --- | --- |
+| G.1 | 阶段 ADR 与规范补全：删除边界、覆盖语义、多处修改形状、无检查点时的行为（[ADR-0005](adr/0005-destructive-file-tools.md)、规范 §10.5.6） | 已完成 | [#9](https://github.com/mingbochen/proofcoder/pull/9) |
+| G.2 | `delete_path`、`move_path`、`make_directory`、`patch_file` 与 `create_file` 的覆盖参数，含离线测试 | 未开始 | — |
+| G.3 | 无检查点时拒绝破坏性工具，含轨迹与错误码 | 未开始 | — |
+| G.4 | 删除与重命名的评测 fixture，以及文档同步 | 未开始 | — |
+
+## 阶段 H–M
 
 这些阶段在开始时再拆分小项，统一按以下顺序：
 
