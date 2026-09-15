@@ -6,9 +6,9 @@
 
 - 规范版本：v3.2
 - 当前阶段：阶段 H（命令策略配置与人工审批）
-- 下一步：小项 H.4，非 Python 项目的评测 fixture 与文档同步
-- 最近完成：小项 H.3，命令行与浏览器的审批入口
-- 阻塞项：无
+- 下一步：阶段 I（多轮会话），先拆分小项，第一项是阶段 ADR 与规范补全（需要用户批准）
+- 最近完成：小项 H.4，非 Python 项目的评测 fixture `nodejs-word-count` 及文档同步
+- 阻塞项：阶段 H 的通用退出条件要求"新增能力有对应的真实模型评测 fixture 和重复运行数据"。fixture 已就绪且有离线测试，重复运行数据需要真实 key，见 [EVAL_REPORT §13](EVAL_REPORT.md)
 
 状态取值：`已完成`、`进行中`、`未开始`、`阻塞`、`暂缓`。
 
@@ -71,7 +71,7 @@
 | H.1 | 阶段 ADR 与规范补全：策略来源与显式授权、三值判定、审批语义、与证据判定的关系（[ADR-0006](adr/0006-command-policy-and-approval.md)、规范 §10.4 与 §13.5） | 已完成 | [#13](https://github.com/mingbochen/proofcoder/pull/13) |
 | H.2 | 三值判定、项目策略加载与冻结、同步主循环中的审批协议，含离线测试 | 已完成 | [#14](https://github.com/mingbochen/proofcoder/pull/14) |
 | H.3 | 命令行与浏览器的审批入口，含摘要绑定 | 已完成 | [#15](https://github.com/mingbochen/proofcoder/pull/15) |
-| H.4 | 非 Python 项目的评测 fixture，以及文档同步 | 未开始 | — |
+| H.4 | 非 Python 项目的评测 fixture `nodejs-word-count`，以及文档同步 | 阻塞（等待真实模型重复运行数据） | [#16](https://github.com/mingbochen/proofcoder/pull/16) |
 
 ## 阶段 I–M
 

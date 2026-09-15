@@ -36,6 +36,8 @@ from proofcoder.eval_fixtures import EvalFixture, EvalFixtureError, load_fixture
 from proofcoder.events import new_run_id
 from proofcoder.llm.base import LLMClient
 from proofcoder.protocol import RunResult, TerminationReason
+from proofcoder.safety.commands import load_project_command_policy
+from proofcoder.safety.policy import CommandPolicyFileError
 from proofcoder.safety.secrets import sensitive_environment_values
 from proofcoder.safety.writes import (
     commit_new_file,
@@ -237,10 +239,26 @@ def create_evaluation_agent_runner(
 
     def run_agent(fixture: EvalFixture, workspace: Path) -> RunResult:
         try:
+            # The fixture names its policy; the workspace never grants itself one.
+            # fixture.json is not materialized, so this naming is outside everything
+            # the agent can reach, which is what section 10.4.3 requires of a caller.
+            policy = (
+                None
+                if fixture.command_policy is None
+                else load_project_command_policy(
+                    workspace / fixture.command_policy, workspace=workspace
+                )
+            )
+        except CommandPolicyFileError as error:
+            raise EvaluationAttemptInfrastructureError(
+                error.code, "the fixture's command policy could not be loaded"
+            ) from None
+        try:
             resources = create_agent_runtime_resources(
                 workspace,
                 environ=environ,
                 sensitive_values=sensitive_values,
+                policy=policy,
             )
         except (OSError, TracePathError, ValueError) as error:
             code = getattr(error, "code", "AGENT_SETUP_FAILED")

@@ -4,12 +4,13 @@
     "tests/test_inventory.py"
   ],
   "category": "feature_addition",
+  "command_policy": null,
   "id": "feature-available-items",
   "required_modified_files": [
     "inventory.py",
     "tests/test_inventory.py"
   ],
-  "schema_version": 2,
+  "schema_version": 3,
   "task": "Update available_names to return only in-stock item names in their original order, and add an empty-inventory regression test without changing total_units.",
   "validation": {
     "argv": [

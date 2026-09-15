@@ -20,6 +20,8 @@ from proofcoder.eval_fixtures import (
 )
 from proofcoder.protocol import CompletionStatus, RunResult, TerminationReason
 from proofcoder.rollback import build_rollback_plan, perform_rollback
+from proofcoder.safety.commands import load_project_command_policy
+from proofcoder.safety.policy import CommandPolicyFileError
 from proofcoder.tools.base import ToolResult
 from proofcoder.tools.command import create_run_command_tool
 
@@ -334,7 +336,27 @@ def run_evaluation_attempt(
             missing_required=fixture.required_modified_files,
         )
 
-    command = create_run_command_tool(workspace, environ=environ)
+    # Independent validation runs the command the fixture declared, so it needs the
+    # policy the fixture declared it under. The approval mode stays `never` here, which
+    # is why a fixture's validation command must be an `allow` entry: a confirmable one
+    # would be refused with nobody to ask, exactly as an unattended run should be.
+    try:
+        policy = (
+            None
+            if fixture.command_policy is None
+            else load_project_command_policy(
+                workspace / fixture.command_policy, workspace=workspace
+            )
+        )
+    except CommandPolicyFileError:
+        return _attempt_result(
+            fixture,
+            attempt_index,
+            reasons=(EvaluationFailureReason.MATERIALIZATION_ERROR,),
+            missing_required=fixture.required_modified_files,
+        )
+
+    command = create_run_command_tool(workspace, environ=environ, policy=policy)
     initial_validation, initial_output = _run_validation(
         fixture,
         command.execute(

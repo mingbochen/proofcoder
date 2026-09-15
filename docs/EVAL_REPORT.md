@@ -1,6 +1,6 @@
 # ProofCoder Stage E 真实模型评测报告
 
-本报告记录 Stage E2a-4 的真实模型评测证据。第 1–10 节的结论基于仓库中已经保存的三个本地评测 artifact，这几节编写时没有重新运行 `proofcoder eval`，也没有调用模型 API。第 11–12 节记录的是阶段 F 与 G 之后另外运行的一次评测，有自己的 eval ID 和配置。
+本报告记录 Stage E2a-4 的真实模型评测证据。第 1–10 节的结论基于仓库中已经保存的三个本地评测 artifact，这几节编写时没有重新运行 `proofcoder eval`，也没有调用模型 API。第 11–12 节记录的是阶段 F 与 G 之后另外运行的一次评测，有自己的 eval ID 和配置；第 13 节记录阶段 H 新增的 fixture，它还没有真实模型数据。
 
 正式评测 `b6f7ae7f5c0549ca96b7c66971c55d7b` 在干净 revision `ef1ded6293229c11b70076b3cb7107b470fb6d43` 上完成了 3 个 fixture、每项 3 次的评测。记录结果为 9/9 成功，成功率 100%。这个结果只描述本报告中的任务集、模型配置和运行环境，不代表 ProofCoder 对任意仓库都可靠。
 
@@ -306,3 +306,32 @@ uv run --locked --env-file .env proofcoder eval --fixture rollback-word-wrap --f
 - 六次运行没有触发任何 API 重试、上下文压缩或工具错误，因此这组数据完全没有覆盖重试路径、压缩路径和工具错误恢复路径。
 - 六次运行全部以 `finish_task` 终止。阶段 F 退出条件里点名的中断和预算耗尽这两种终止方式，仍然只有离线测试覆盖，本节没有它们的真实模型证据。
 - 第 8 节列出的其余局限同样适用于本节。
+
+---
+
+## 13. 阶段 H 新增：非 Python 项目 fixture（尚无真实模型数据）
+
+本节记录 fixture 集合在阶段 H 的变化，与上面第 12 节那次评测无关——那次评测运行时第六个 fixture 还不存在。
+
+阶段 H 增加了 `nodejs-word-count`，它是 fixture 集合里第一个不是 Python 项目的条目：
+
+| Fixture | 类别 | 任务目标 | 必改文件 | 验证命令 |
+|---|---|---|---|---|
+| `nodejs-word-count` | `bug_fix` | 让 `countWords` 对大小写不敏感，同时保持首次出现的顺序和已有测试通过 | `word_count.js` | `node --test` |
+
+`node --test` 不在内置命令策略的范围内。这个 fixture 自带一份 `proofcoder.toml`，而它的 `fixture.json` 用 `command_policy` 字段指名这份策略——**指名本身就是授权**。`fixture.json` 从不被复制进 attempt 工作区（`materialize_fixture` 只复制 `workspace/`），所以这次指名来自 agent 完全够不着的地方，符合规范 §10.4.3 对「由调用方显式指定」的要求。工作区自己依然什么也授予不了。
+
+两处值得单独记的约束：
+
+- agent 的运行和独立验证用的是**同一份**策略。如果只给运行不给验证，非 Python 项目的 fixture 永远无法被判定成功。
+- 评测一律以审批模式 `never` 运行，因此 fixture 的验证命令必须声明为 `allow` 而不是 `confirm`：`confirm` 的命令在无人可问时会被拒绝，这正是无人值守运行应有的行为。
+
+这两条都有离线测试。其中一条是反向的：把 `command_policy` 置空、其余一切不变（策略文件仍然躺在工作区里），同一个 fixture 的初始验证就会失败。这证明起作用的是指名，而不是文件的存在。
+
+**这个 fixture 目前没有真实模型的重复运行数据。** 阶段 H 的能力（三值判定、项目策略、人工审批）同样如此。开发规范 §16「v3.0 阶段通用规则」要求「真实模型评测 fixture 和重复运行数据」，fixture 这一半已完成。补齐另一半需要配置真实 key 并运行：
+
+```text
+uv run --locked --env-file .env proofcoder eval --fixture nodejs-word-count --repeat 3
+```
+
+运行这个 fixture 需要机器上有 `node`。结果产生后，应当在本报告中新增一节记录其 eval ID、日期、代码 revision、成功率和失败分析，并在 `docs/ROADMAP.md` 中把阶段 H 标记为完成。在那之前，阶段 H 的这条退出条件尚未满足。

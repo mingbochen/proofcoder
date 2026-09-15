@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -23,12 +24,17 @@ EXPECTED_FIXTURES = {
     "cleanup-text-helpers": FixtureCategory.CROSS_FILE_CHANGE,
     "cross-file-message-format": FixtureCategory.CROSS_FILE_CHANGE,
     "feature-available-items": FixtureCategory.FEATURE_ADDITION,
+    "nodejs-word-count": FixtureCategory.BUG_FIX,
     "rollback-word-wrap": FixtureCategory.BUG_FIX,
 }
 # These repository fixtures verify that a finished run can be undone. The rename and
 # delete fixture is here because recreating a deleted file and removing a created one
 # are the rollback steps an edit-only fixture never reaches.
 EXPECTED_ROLLBACK_FIXTURES = {"cleanup-text-helpers", "rollback-word-wrap"}
+# The one fixture whose validation command the built-in policy does not know. Its
+# policy is named by fixture.json, which is never materialized, so the workspace still
+# grants itself nothing.
+EXPECTED_POLICY_FIXTURES = {"nodejs-word-count"}
 FORBIDDEN_TASK_HINTS = {
     "create_file",
     "finish_task",
@@ -42,7 +48,7 @@ FORBIDDEN_TASK_HINTS = {
 
 def _metadata(fixture_id: str = "sample-fixture") -> dict[str, object]:
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "id": fixture_id,
         "category": "bug_fix",
         "task": "Correct the sample behavior and keep its tests passing.",
@@ -56,6 +62,7 @@ def _metadata(fixture_id: str = "sample-fixture") -> dict[str, object]:
         "allowed_modified_files": ["sample.py"],
         "required_modified_files": ["sample.py"],
         "verify_rollback": False,
+        "command_policy": None,
     }
 
 
@@ -86,7 +93,10 @@ def test_repository_fixtures_load_in_deterministic_complete_order() -> None:
     assert [fixture.fixture_id for fixture in fixtures] == sorted(EXPECTED_FIXTURES)
     assert {fixture.fixture_id: fixture.category for fixture in fixtures} == EXPECTED_FIXTURES
     assert all(fixture.task.strip() == fixture.task for fixture in fixtures)
-    assert all(fixture.validation.argv[0] == "python" for fixture in fixtures)
+    assert {fixture.validation.argv[0] for fixture in fixtures} == {"python", "node"}
+    assert {
+        fixture.fixture_id for fixture in fixtures if fixture.command_policy is not None
+    } == EXPECTED_POLICY_FIXTURES
     assert all(fixture.validation.cwd == "." for fixture in fixtures)
     assert all(fixture.validation.success_exit_code == 0 for fixture in fixtures)
     assert all(fixture.validation.initial_exit_code != 0 for fixture in fixtures)
@@ -132,8 +142,17 @@ def test_each_initial_validation_fails_for_the_declared_reason(
     fixture = next(item for item in load_fixtures(FIXTURES_ROOT) if item.fixture_id == fixture_id)
     destination = tmp_path / fixture_id
     materialize_fixture(fixture, destination)
+    executable = shutil.which(fixture.validation.argv[0])
+    if executable is None:
+        pytest.skip(f"{fixture.validation.argv[0]} is not installed on this machine")
     environment = minimal_subprocess_environment(command_defaults=True)
-    environment["PATH"] = str(Path(os.sys.executable).resolve().parent)
+    # Each fixture declares its own command, so the sanitized PATH has to reach both
+    # this interpreter and whatever else the fixture validates with.
+    environment["PATH"] = os.pathsep.join(
+        dict.fromkeys(
+            [str(Path(os.sys.executable).resolve().parent), str(Path(executable).resolve().parent)]
+        )
+    )
 
     completed = subprocess.run(
         fixture.validation.argv,
@@ -219,7 +238,7 @@ def test_invalid_json_is_rejected(tmp_path: Path) -> None:
 
 def test_unknown_schema_version_is_rejected(tmp_path: Path) -> None:
     metadata = _metadata()
-    metadata["schema_version"] = 3
+    metadata["schema_version"] = 4
     _write_fixture(tmp_path, "fixture", metadata=metadata)
 
     _assert_code(tmp_path, "FIXTURE_METADATA_INVALID")

@@ -58,6 +58,7 @@ future dependency, environment, configuration, or source changes remain complian
 | DeepSeek client | `proofcoder.llm.deepseek.DeepSeekClient` | `tests/unit/test_deepseek.py` | Mechanical `PASS`; dynamic request manually reviewed |
 | Evaluation pipeline | `proofcoder.eval_fixtures`, `proofcoder.eval_core`, `proofcoder.eval_runner` | `tests/unit/test_eval_fixtures.py`, `tests/unit/test_eval_core.py`, `tests/unit/test_eval_runner.py` | Mechanical `PASS` |
 | Project command policy and approval | `proofcoder.safety.policy`, `proofcoder.approval` | `tests/unit/test_command_policy_file.py`, `tests/unit/test_approval.py` | Mechanical `PASS` |
+| Non-Python evaluation fixture | `evals/fixtures/nodejs-word-count` | `tests/unit/test_eval_core.py`, `tests/unit/test_eval_fixtures.py` | Manual review |
 | Local file tools | `proofcoder.tools.files`, `proofcoder.tools.search`, `proofcoder.tools.edit`, `proofcoder.tools.paths` | `tests/unit/test_read_file.py`, `tests/unit/test_search_text.py`, `tests/unit/test_edit_tools.py`, `tests/unit/test_path_tools.py` | Mechanical `PASS`; ripgrep start manually reviewed |
 | History and context | `proofcoder.context.MessageHistory`; `proofcoder.context.ContextManager` | `tests/unit/test_context.py`, `tests/unit/test_context_manager.py` | Mechanical `PASS` |
 | No-progress termination | `proofcoder.progress.ProgressTracker`; `proofcoder.agent.AgentLoop` | `tests/unit/test_progress.py`, `tests/unit/test_agent_d2.py` | Mechanical `PASS` |
@@ -252,8 +253,12 @@ into automatic passes; their manual dispositions and limitations remain distinct
   console read, so it waits until the operator answers or interrupts. The unattended
   case is covered by refusing outright when standard input is not a terminal; the
   browser prompt does enforce the protocol timeout.
-- A project command policy can only be named on the command line, so a run started from
-  the browser interface uses the built-in command set.
+- A project command policy is named either on the command line or by an evaluation
+  fixture's metadata. A run started from the browser interface has no way to name one, so
+  it uses the built-in command set.
+- The stage H capabilities have offline coverage and a non-Python evaluation fixture, but
+  no real-model repeated-run data yet, so the stage H exit criterion that requires such
+  data is not met. See `docs/EVAL_REPORT.md` section 13.
 - The tools that delete, move, or overwrite destroy content in one call. They refuse to
   run without a checkpoint and never recurse, but within the captured scope their damage
   is undone only when someone actually runs a rollback; outside it, nothing undoes it.

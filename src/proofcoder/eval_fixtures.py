@@ -13,7 +13,7 @@ from proofcoder.errors import ProofCoderError
 from proofcoder.safety.paths import is_internal_runtime_path
 from proofcoder.safety.secrets import is_sensitive_path
 
-FIXTURE_SCHEMA_VERSION = 2
+FIXTURE_SCHEMA_VERSION = 3
 MAX_METADATA_BYTES = 64 * 1024
 MAX_WORKSPACE_FILE_BYTES = 256 * 1024
 MAX_WORKSPACE_BYTES = 1024 * 1024
@@ -23,6 +23,7 @@ _METADATA_FIELDS = frozenset(
     {
         "allowed_modified_files",
         "category",
+        "command_policy",
         "id",
         "required_modified_files",
         "schema_version",
@@ -76,6 +77,10 @@ class EvalFixture:
     workspace_files: tuple[str, ...]
     source_workspace: Path
     verify_rollback: bool = False
+    # A workspace-relative policy file this fixture's validation command needs. Naming it
+    # here rather than discovering it in the workspace is what authorizes it: fixture.json
+    # is never materialized, so it is outside everything the agent can reach.
+    command_policy: str | None = None
 
 
 def load_fixtures(fixtures_root: Path) -> tuple[EvalFixture, ...]:
@@ -210,7 +215,26 @@ def _load_fixture(directory: Path) -> EvalFixture:
         workspace_files=workspace_files,
         source_workspace=workspace,
         verify_rollback=_required_bool(metadata["verify_rollback"], "verify_rollback"),
+        command_policy=_optional_policy_path(metadata["command_policy"], workspace_files),
     )
+
+
+def _optional_policy_path(value: object, workspace_files: tuple[str, ...]) -> str | None:
+    """Validate the declared policy path against the files this fixture ships."""
+
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value:
+        raise EvalFixtureError(
+            "FIXTURE_METADATA_INVALID", "command_policy must be null or a workspace path"
+        )
+    normalized = _relative_path(value)
+    if normalized not in workspace_files:
+        raise EvalFixtureError(
+            "FIXTURE_METADATA_INVALID",
+            "command_policy must name a file this fixture's workspace contains",
+        )
+    return normalized
 
 
 def _read_metadata(path: Path) -> dict[str, object]:

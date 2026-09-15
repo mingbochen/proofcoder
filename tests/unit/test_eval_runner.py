@@ -68,10 +68,21 @@ def _project(tmp_path: Path) -> Path:
     return root
 
 
+NODE_EXECUTABLE = shutil.which("node")
+needs_node = pytest.mark.skipif(
+    NODE_EXECUTABLE is None, reason="the Node.js fixture needs node on PATH"
+)
+
+
 def _environment(root: Path) -> dict[str, str]:
+    # One bundled fixture is not a Python project, so the evaluation's sanitized PATH
+    # has to reach its interpreter too.
+    search_path = [str(Path(sys.executable).resolve().parent)]
+    if NODE_EXECUTABLE is not None:
+        search_path.append(str(Path(NODE_EXECUTABLE).resolve().parent))
     environment = {
         "DEEPSEEK_API_KEY": SECRET,
-        "PATH": str(Path(sys.executable).resolve().parent),
+        "PATH": os.pathsep.join(dict.fromkeys(search_path)),
         "TEMP": str(root),
         "TMP": str(root),
     }
@@ -99,6 +110,19 @@ def _modify_fixture(fixture: EvalFixture, workspace: Path, *, valid: bool = True
             )
         source.write_text(text + "\n# fake runner source evidence\n", encoding="utf-8")
         test = workspace / "tests" / "test_inventory.py"
+    elif fixture.fixture_id == "nodejs-word-count":
+        # Its tests are the specification and are not in the allowed set, so this
+        # branch returns before the shared tail that appends to a test file.
+        source = workspace / "word_count.js"
+        text = source.read_text(encoding="utf-8")
+        if valid:
+            text = text.replace(
+                "for (const word of text.split(/\\s+/).filter((item) => item.length > 0)) {",
+                "for (const raw of text.split(/\\s+/).filter((item) => item.length > 0)) {\n"
+                "    const word = raw.toLowerCase();",
+            )
+        source.write_text(text + "\n// fake runner source evidence\n", encoding="utf-8")
+        return
     elif fixture.fixture_id == "cleanup-text-helpers":
         # This fixture forbids touching its tests, and its change is a rename plus a
         # delete rather than an edit, so this branch returns before the shared tail.
@@ -270,6 +294,7 @@ def _json(path: Path) -> dict[str, object]:
     return value
 
 
+@needs_node
 def test_every_fixture_repeat_two_is_ordered_isolated_and_fully_persisted(
     tmp_path: Path,
 ) -> None:
@@ -293,16 +318,18 @@ def test_every_fixture_repeat_two_is_ordered_isolated_and_fully_persisted(
         "cross-file-message-format",
         "feature-available-items",
         "feature-available-items",
+        "nodejs-word-count",
+        "nodejs-word-count",
         "rollback-word-wrap",
         "rollback-word-wrap",
     ]
     assert session.status is EvaluationStatus.COMPLETED
     assert session.exit_code == 0
     assert [fixture_id for fixture_id, _ in calls] == expected_order
-    assert len({workspace for _, workspace in calls}) == 10
+    assert len({workspace for _, workspace in calls}) == 12
     assert all(workspace.name == "w" for _, workspace in calls)
     assert all(workspace.is_dir() for _, workspace in calls)
-    assert len({attempt.run_id for attempt in session.attempts}) == 10
+    assert len({attempt.run_id for attempt in session.attempts}) == 12
     assert all(attempt.trace_complete for attempt in session.attempts)
 
     evaluation = session.evaluation_directory
@@ -316,10 +343,10 @@ def test_every_fixture_repeat_two_is_ordered_isolated_and_fully_persisted(
     assert metadata["code"] == {"dirty": None, "revision": None}
     assert metadata["warnings"] == ["GIT_REVISION_UNAVAILABLE", "GIT_DIRTY_UNAVAILABLE"]
     assert summary["status"] == "completed"
-    assert summary["recorded_attempts"] == summary["expected_attempts"] == 10
-    assert summary["overall"]["successes"] == 10
-    assert [item["sequence"] for item in attempts] == list(range(1, 11))
-    assert len({(item["fixture_id"], item["attempt"]) for item in attempts}) == 10
+    assert summary["recorded_attempts"] == summary["expected_attempts"] == 12
+    assert summary["overall"]["successes"] == 12
+    assert [item["sequence"] for item in attempts] == list(range(1, 13))
+    assert len({(item["fixture_id"], item["attempt"]) for item in attempts}) == 12
     assert [item["fixture_id"] for item in attempts] == expected_order
     assert all(not Path(item["workspace"]).is_absolute() for item in attempts)
     assert all(item["files"]["ignored_runtime"] for item in attempts)
@@ -1043,6 +1070,7 @@ def test_missing_fixture_and_invalid_project_roots_are_rejected(tmp_path: Path) 
     assert project.value.code == "PROJECT_ROOT_INVALID"
 
 
+@needs_node
 def test_rollback_evidence_is_persisted_for_the_fixture_that_asks_for_it(
     tmp_path: Path,
 ) -> None:
