@@ -14,6 +14,7 @@ import pytest
 
 from proofcoder.context import MessageHistory
 from proofcoder.eval_core import (
+    EvalRunRequest,
     EvaluationAttemptResult,
     EvaluationFailureReason,
     WorkspaceSnapshotError,
@@ -160,7 +161,7 @@ def test_success_records_independent_evidence_file_scope_and_run_statistics(
 ) -> None:
     fixture = _bug_fixture()
 
-    def runner(_fixture: EvalFixture, workspace: Path) -> RunResult:
+    def runner(_fixture: EvalFixture, workspace: Path, _request: EvalRunRequest) -> RunResult:
         _change_bug_workspace(workspace)
         return _run_result()
 
@@ -221,7 +222,7 @@ def test_changed_unittest_bytecode_is_ignored_without_masking_source_changes(
     fixture = _bug_fixture()
     changed_bytecode: tuple[str, ...] = ()
 
-    def runner(_fixture: EvalFixture, workspace: Path) -> RunResult:
+    def runner(_fixture: EvalFixture, workspace: Path, _request: EvalRunRequest) -> RunResult:
         nonlocal changed_bytecode
         before = {
             path.relative_to(workspace).as_posix(): path.read_bytes()
@@ -267,7 +268,7 @@ def test_changed_unittest_bytecode_is_ignored_without_masking_source_changes(
 
 
 def test_independent_validation_failure_overrides_verified_completion(tmp_path: Path) -> None:
-    def runner(_fixture: EvalFixture, workspace: Path) -> RunResult:
+    def runner(_fixture: EvalFixture, workspace: Path, _request: EvalRunRequest) -> RunResult:
         _change_bug_workspace(workspace, fix_source=False)
         return _run_result()
 
@@ -289,7 +290,7 @@ def test_independent_validation_failure_overrides_verified_completion(tmp_path: 
 def test_unverified_completion_fails_even_when_independent_validation_passes(
     tmp_path: Path,
 ) -> None:
-    def runner(_fixture: EvalFixture, workspace: Path) -> RunResult:
+    def runner(_fixture: EvalFixture, workspace: Path, _request: EvalRunRequest) -> RunResult:
         _change_bug_workspace(workspace)
         return _run_result(CompletionStatus.COMPLETED_UNVERIFIED)
 
@@ -308,7 +309,7 @@ def test_unverified_completion_fails_even_when_independent_validation_passes(
 
 
 def test_missing_required_file_is_reported_from_observed_changes(tmp_path: Path) -> None:
-    def runner(_fixture: EvalFixture, workspace: Path) -> RunResult:
+    def runner(_fixture: EvalFixture, workspace: Path, _request: EvalRunRequest) -> RunResult:
         _change_bug_workspace(workspace, change_test=False)
         return _run_result()
 
@@ -328,7 +329,7 @@ def test_missing_required_file_is_reported_from_observed_changes(tmp_path: Path)
 
 
 def test_unexpected_created_file_is_reported(tmp_path: Path) -> None:
-    def runner(_fixture: EvalFixture, workspace: Path) -> RunResult:
+    def runner(_fixture: EvalFixture, workspace: Path, _request: EvalRunRequest) -> RunResult:
         _change_bug_workspace(workspace, unexpected=True)
         return _run_result()
 
@@ -349,7 +350,7 @@ def test_unexpected_created_file_is_reported(tmp_path: Path) -> None:
 def test_created_and_deleted_required_files_can_succeed(tmp_path: Path) -> None:
     fixture = _transition_fixture(tmp_path)
 
-    def runner(_fixture: EvalFixture, workspace: Path) -> RunResult:
+    def runner(_fixture: EvalFixture, workspace: Path, _request: EvalRunRequest) -> RunResult:
         (workspace / "old.txt").unlink()
         (workspace / "new.txt").write_text("new\n", encoding="utf-8")
         return _run_result()
@@ -402,7 +403,7 @@ def test_bad_initial_fixture_state_stops_before_runner(
     fixture = replace(_bug_fixture(), validation=validation)
     called = False
 
-    def runner(_fixture: EvalFixture, _workspace: Path) -> RunResult:
+    def runner(_fixture: EvalFixture, _workspace: Path, _request: EvalRunRequest) -> RunResult:
         nonlocal called
         called = True
         return _run_result()
@@ -427,7 +428,7 @@ def test_workspace_symlink_created_by_runner_is_an_infrastructure_failure(
     outside = tmp_path / "outside.txt"
     outside.write_text("outside\n", encoding="utf-8")
 
-    def runner(_fixture: EvalFixture, workspace: Path) -> RunResult:
+    def runner(_fixture: EvalFixture, workspace: Path, _request: EvalRunRequest) -> RunResult:
         _change_bug_workspace(workspace)
         try:
             (workspace / "linked.txt").symlink_to(outside)
@@ -449,7 +450,7 @@ def test_workspace_symlink_created_by_runner_is_an_infrastructure_failure(
 
 
 def test_runner_exception_is_stable_and_does_not_run_final_validation(tmp_path: Path) -> None:
-    def runner(_fixture: EvalFixture, _workspace: Path) -> RunResult:
+    def runner(_fixture: EvalFixture, _workspace: Path, _request: EvalRunRequest) -> RunResult:
         raise RuntimeError("fake runner failure with internal detail")
 
     result = run_evaluation_attempt(
@@ -638,7 +639,7 @@ def test_nonempty_target_becomes_a_materialization_failure(tmp_path: Path) -> No
         _bug_fixture(),
         workspace,
         1,
-        lambda _fixture, _workspace: _run_result(),
+        lambda _fixture, _workspace, _request: _run_result(),
         environ=_environment(tmp_path),
     )
 
@@ -755,7 +756,7 @@ def test_attempt_index_must_be_positive(tmp_path: Path) -> None:
             _bug_fixture(),
             tmp_path / "workspace",
             0,
-            lambda _fixture, _workspace: _run_result(),
+            lambda _fixture, _workspace, _request: _run_result(),
         )
 
 
@@ -787,7 +788,7 @@ def _checkpointed_runner(
 
     from proofcoder.checkpoint import create_checkpoint
 
-    def runner(_fixture: EvalFixture, workspace: Path) -> RunResult:
+    def runner(_fixture: EvalFixture, workspace: Path, _request: EvalRunRequest) -> RunResult:
         if checkpoint:
             create_checkpoint(workspace, run_id)
         _fix_word_wrap(workspace)
@@ -854,7 +855,7 @@ def test_a_rename_and_delete_attempt_is_undone_file_for_file(tmp_path: Path) -> 
     workspace = tmp_path / "workspace"
     run_id = "c" * 32
 
-    def runner(_fixture: EvalFixture, materialized: Path) -> RunResult:
+    def runner(_fixture: EvalFixture, materialized: Path, _request: EvalRunRequest) -> RunResult:
         create_checkpoint(materialized, run_id)
         _rename_text_helpers(materialized)
         return _run_result(run_id=run_id)
@@ -884,7 +885,7 @@ def test_a_rename_and_delete_attempt_is_undone_file_for_file(tmp_path: Path) -> 
 def test_a_fixture_without_the_flag_is_never_rolled_back(tmp_path: Path) -> None:
     fixture = _bug_fixture()
 
-    def runner(_fixture: EvalFixture, workspace: Path) -> RunResult:
+    def runner(_fixture: EvalFixture, workspace: Path, _request: EvalRunRequest) -> RunResult:
         _change_bug_workspace(workspace)
         return _run_result()
 
@@ -971,7 +972,7 @@ def test_a_non_python_fixture_is_scored_through_its_declared_policy(tmp_path: Pa
 
     fixture = _node_fixture()
 
-    def runner(_fixture: EvalFixture, workspace: Path) -> RunResult:
+    def runner(_fixture: EvalFixture, workspace: Path, _request: EvalRunRequest) -> RunResult:
         _fix_word_count(workspace)
         return _run_result()
 
@@ -1003,7 +1004,7 @@ def test_the_same_fixture_cannot_validate_without_its_policy(tmp_path: Path) -> 
         fixture,
         tmp_path / "workspace",
         1,
-        lambda _fixture, workspace: _run_result(),
+        lambda _fixture, workspace, _request: _run_result(),
         environ=_environment(tmp_path),
     )
 

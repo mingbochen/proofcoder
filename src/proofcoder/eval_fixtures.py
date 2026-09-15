@@ -13,7 +13,7 @@ from proofcoder.errors import ProofCoderError
 from proofcoder.safety.paths import is_internal_runtime_path
 from proofcoder.safety.secrets import is_sensitive_path
 
-FIXTURE_SCHEMA_VERSION = 3
+FIXTURE_SCHEMA_VERSION = 4
 MAX_METADATA_BYTES = 64 * 1024
 MAX_WORKSPACE_FILE_BYTES = 256 * 1024
 MAX_WORKSPACE_BYTES = 1024 * 1024
@@ -24,6 +24,7 @@ _METADATA_FIELDS = frozenset(
         "allowed_modified_files",
         "category",
         "command_policy",
+        "follow_up_task",
         "id",
         "required_modified_files",
         "schema_version",
@@ -81,6 +82,18 @@ class EvalFixture:
     # here rather than discovering it in the workspace is what authorizes it: fixture.json
     # is never materialized, so it is outside everything the agent can reach.
     command_policy: str | None = None
+    # A second task run in the same workspace, in one session, after the first finishes.
+    # Success is judged once, after the last task, because the fixture describes one
+    # end state rather than one per task.
+    follow_up_task: str | None = None
+
+    @property
+    def tasks(self) -> tuple[str, ...]:
+        """Return this fixture's task sequence, in order."""
+
+        if self.follow_up_task is None:
+            return (self.task,)
+        return (self.task, self.follow_up_task)
 
 
 def load_fixtures(fixtures_root: Path) -> tuple[EvalFixture, ...]:
@@ -216,7 +229,16 @@ def _load_fixture(directory: Path) -> EvalFixture:
         source_workspace=workspace,
         verify_rollback=_required_bool(metadata["verify_rollback"], "verify_rollback"),
         command_policy=_optional_policy_path(metadata["command_policy"], workspace_files),
+        follow_up_task=_optional_task(metadata["follow_up_task"]),
     )
+
+
+def _optional_task(value: object) -> str | None:
+    """Validate the optional second task of a multi-run fixture."""
+
+    if value is None:
+        return None
+    return _required_string(value, "follow_up_task", limit=2000)
 
 
 def _optional_policy_path(value: object, workspace_files: tuple[str, ...]) -> str | None:

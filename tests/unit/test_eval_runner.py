@@ -24,6 +24,7 @@ from proofcoder.context import MessageHistory
 from proofcoder.errors import ProofCoderError
 from proofcoder.eval_core import (
     AgentRunner,
+    EvalRunRequest,
     EvaluationAttemptInfrastructureError,
     EvaluationFailureReason,
 )
@@ -137,6 +138,17 @@ def _modify_fixture(fixture: EvalFixture, workspace: Path, *, valid: bool = True
             encoding="utf-8",
         )
         return
+    elif fixture.fixture_id == "session-two-step-report":
+        # A two-task fixture: the fake fixes one function per task, so the sequence has
+        # to reach its second run for the tests to pass. Its tests are outside the
+        # allowed set, so this branch returns before the shared tail.
+        source = workspace / "report.py"
+        text = source.read_text(encoding="utf-8")
+        if valid:
+            # The first call fixes summarize, the second summarize_verbose.
+            text = text.replace("max(ordered[:-1])", "max(ordered)", 1)
+        source.write_text(text, encoding="utf-8")
+        return
     elif fixture.fixture_id == "rollback-word-wrap":
         source = workspace / "word_wrap.py"
         text = source.read_text(encoding="utf-8")
@@ -237,7 +249,7 @@ def _successful_runner(
     trace: bool = True,
     elapsed_seconds: float = 0.25,
 ) -> AgentRunner:
-    def runner(fixture: EvalFixture, workspace: Path) -> RunResult:
+    def runner(fixture: EvalFixture, workspace: Path, _request: EvalRunRequest) -> RunResult:
         run_number = len(calls) + 1
         calls.append((fixture.fixture_id, workspace))
         if fixture.verify_rollback:
@@ -322,14 +334,19 @@ def test_every_fixture_repeat_two_is_ordered_isolated_and_fully_persisted(
         "nodejs-word-count",
         "rollback-word-wrap",
         "rollback-word-wrap",
+        "session-two-step-report",
+        "session-two-step-report",
     ]
+    # The two-task fixture calls the runner twice per attempt, so the call order has two
+    # extra entries while the attempt records stay one per repeat.
+    expected_call_order = expected_order + ["session-two-step-report"] * 2
     assert session.status is EvaluationStatus.COMPLETED
     assert session.exit_code == 0
-    assert [fixture_id for fixture_id, _ in calls] == expected_order
-    assert len({workspace for _, workspace in calls}) == 12
+    assert [fixture_id for fixture_id, _ in calls] == expected_call_order
+    assert len({workspace for _, workspace in calls}) == 14
     assert all(workspace.name == "w" for _, workspace in calls)
     assert all(workspace.is_dir() for _, workspace in calls)
-    assert len({attempt.run_id for attempt in session.attempts}) == 12
+    assert len(session.attempts) == 14
     assert all(attempt.trace_complete for attempt in session.attempts)
 
     evaluation = session.evaluation_directory
@@ -343,10 +360,10 @@ def test_every_fixture_repeat_two_is_ordered_isolated_and_fully_persisted(
     assert metadata["code"] == {"dirty": None, "revision": None}
     assert metadata["warnings"] == ["GIT_REVISION_UNAVAILABLE", "GIT_DIRTY_UNAVAILABLE"]
     assert summary["status"] == "completed"
-    assert summary["recorded_attempts"] == summary["expected_attempts"] == 12
-    assert summary["overall"]["successes"] == 12
-    assert [item["sequence"] for item in attempts] == list(range(1, 13))
-    assert len({(item["fixture_id"], item["attempt"]) for item in attempts}) == 12
+    assert summary["recorded_attempts"] == summary["expected_attempts"] == 14
+    assert summary["overall"]["successes"] == 14
+    assert [item["sequence"] for item in attempts] == list(range(1, 15))
+    assert len({(item["fixture_id"], item["attempt"]) for item in attempts}) == 14
     assert [item["fixture_id"] for item in attempts] == expected_order
     assert all(not Path(item["workspace"]).is_absolute() for item in attempts)
     assert all(item["files"]["ignored_runtime"] for item in attempts)
@@ -529,7 +546,7 @@ def test_unknown_and_duplicate_fixture_ids_fail_before_runner(
     root = _project(tmp_path)
     called = False
 
-    def forbidden(_fixture: EvalFixture, _workspace: Path) -> RunResult:
+    def forbidden(_fixture: EvalFixture, _workspace: Path, _request: EvalRunRequest) -> RunResult:
         nonlocal called
         called = True
         raise AssertionError
@@ -547,7 +564,9 @@ def test_repeat_boundaries_fail_before_runner(tmp_path: Path, repeat: int) -> No
     root = _project(tmp_path)
 
     with pytest.raises(EvaluationInfrastructureError) as captured:
-        _run(root, lambda _fixture, _workspace: pytest.fail("runner called"), repeat=repeat)
+        _run(
+            root, lambda _fixture, _workspace, _request: pytest.fail("runner called"), repeat=repeat
+        )
 
     assert captured.value.code == "INVALID_REPEAT"
 
@@ -559,11 +578,13 @@ def test_keyboard_interrupt_preserves_completed_jsonl_and_current_workspace(
     calls: list[tuple[str, Path]] = []
     success = _successful_runner(calls)
 
-    def interrupt_second(fixture: EvalFixture, workspace: Path) -> RunResult:
+    def interrupt_second(
+        fixture: EvalFixture, workspace: Path, request: EvalRunRequest
+    ) -> RunResult:
         if len(calls) == 1:
             calls.append((fixture.fixture_id, workspace))
             raise KeyboardInterrupt
-        return success(fixture, workspace)
+        return success(fixture, workspace, request)
 
     session = _run(
         root,
@@ -668,12 +689,14 @@ def test_output_outside_project_and_file_target_are_rejected(tmp_path: Path) -> 
 
     with pytest.raises(EvaluationInfrastructureError) as outside:
         _run(
-            root, lambda _fixture, _workspace: pytest.fail("runner called"), output_root=Path("..")
+            root,
+            lambda _fixture, _workspace, _request: pytest.fail("runner called"),
+            output_root=Path(".."),
         )
     with pytest.raises(EvaluationInfrastructureError) as file_target:
         _run(
             root,
-            lambda _fixture, _workspace: pytest.fail("runner called"),
+            lambda _fixture, _workspace, _request: pytest.fail("runner called"),
             output_root=Path("result-file"),
         )
 
@@ -695,7 +718,7 @@ def test_output_symlink_is_rejected_before_runner(tmp_path: Path) -> None:
     with pytest.raises(EvaluationInfrastructureError) as captured:
         _run(
             root,
-            lambda _fixture, _workspace: pytest.fail("runner called"),
+            lambda _fixture, _workspace, _request: pytest.fail("runner called"),
             output_root=Path("linked-output"),
         )
 
@@ -942,8 +965,8 @@ def test_production_eval_runner_rebuilds_loop_registry_history_and_trace(
     workspaces = (root / "first", root / "second")
     for workspace in workspaces:
         workspace.mkdir()
-    first = runner(fixture, workspaces[0])
-    second = runner(fixture, workspaces[1])
+    first = runner(fixture, workspaces[0], EvalRunRequest(task=fixture.task, sequence=1))
+    second = runner(fixture, workspaces[1], EvalRunRequest(task=fixture.task, sequence=1))
 
     assert registries[0] is not registries[1]
     assert loops[0] is not loops[1]
@@ -985,7 +1008,7 @@ def test_production_runner_persists_client_setup_failures_without_network(
         environ=_environment(root),
         client_factory=fail_client,
     )
-    result = runner(fixture, workspace)
+    result = runner(fixture, workspace, EvalRunRequest(task=fixture.task, sequence=1))
 
     assert result.termination_reason is termination
     assert result.model_call_count == 0
@@ -1017,7 +1040,7 @@ def test_production_runner_converts_trace_setup_failure_to_infrastructure_error(
     )
 
     with pytest.raises(EvaluationAttemptInfrastructureError) as captured:
-        runner(fixture, workspace)
+        runner(fixture, workspace, EvalRunRequest(task=fixture.task, sequence=1))
     assert captured.value.code == "AGENT_SETUP_FAILED"
 
 
@@ -1054,14 +1077,14 @@ def test_missing_fixture_and_invalid_project_roots_are_rejected(tmp_path: Path) 
             project_root=root,
             fixtures_root=Path("missing-fixtures"),
             output_root=Path("o"),
-            agent_runner=lambda _fixture, _workspace: pytest.fail("runner called"),
+            agent_runner=lambda _fixture, _workspace, _request: pytest.fail("runner called"),
             model=MODEL,
             limits=LIMITS,
         )
     with pytest.raises(EvaluationInfrastructureError) as project:
         run_evaluation(
             project_root=project_file,
-            agent_runner=lambda _fixture, _workspace: pytest.fail("runner called"),
+            agent_runner=lambda _fixture, _workspace, _request: pytest.fail("runner called"),
             model=MODEL,
             limits=LIMITS,
         )

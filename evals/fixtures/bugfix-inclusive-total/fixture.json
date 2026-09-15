@@ -5,12 +5,13 @@
   ],
   "category": "bug_fix",
   "command_policy": null,
+  "follow_up_task": null,
   "id": "bugfix-inclusive-total",
   "required_modified_files": [
     "inclusive_total.py",
     "tests/test_inclusive_total.py"
   ],
-  "schema_version": 3,
+  "schema_version": 4,
   "task": "Fix inclusive_total so both ends of the interval are included, and add a regression test for a single-value interval while keeping the existing behavior intact.",
   "validation": {
     "argv": [
@@ -23,9 +24,9 @@
       "-v"
     ],
     "cwd": ".",
-    "success_exit_code": 0,
     "initial_exit_code": 1,
-    "initial_output_contains": "FAIL: test_includes_upper_bound"
+    "initial_output_contains": "FAIL: test_includes_upper_bound",
+    "success_exit_code": 0
   },
   "verify_rollback": false
 }

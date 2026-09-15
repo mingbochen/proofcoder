@@ -6,13 +6,14 @@
   ],
   "category": "cross_file_change",
   "command_policy": null,
+  "follow_up_task": null,
   "id": "cross-file-message-format",
   "required_modified_files": [
     "message.py",
     "settings.py",
     "tests/test_message.py"
   ],
-  "schema_version": 3,
+  "schema_version": 4,
   "task": "Add a default message separator of ' | ' to settings, make format_message read that setting instead of embedding punctuation, and add coverage for an empty message.",
   "validation": {
     "argv": [
@@ -25,9 +26,9 @@
       "-v"
     ],
     "cwd": ".",
-    "success_exit_code": 0,
     "initial_exit_code": 1,
-    "initial_output_contains": "ERROR: test_declares_default_separator"
+    "initial_output_contains": "ERROR: test_declares_default_separator",
+    "success_exit_code": 0
   },
   "verify_rollback": false
 }

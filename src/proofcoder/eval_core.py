@@ -6,7 +6,7 @@ import hashlib
 import math
 import stat
 from collections.abc import Callable, Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
@@ -22,6 +22,7 @@ from proofcoder.protocol import CompletionStatus, RunResult, TerminationReason
 from proofcoder.rollback import build_rollback_plan, perform_rollback
 from proofcoder.safety.commands import load_project_command_policy
 from proofcoder.safety.policy import CommandPolicyFileError
+from proofcoder.session import SessionError, create_session
 from proofcoder.tools.base import ToolResult
 from proofcoder.tools.command import create_run_command_tool
 
@@ -36,7 +37,21 @@ _COVERAGE_HTML_ROOT_DIRECTORY = "htmlcov"
 _COMMAND_TIMEOUT_CODE = "COMMAND_TIMEOUT"
 _AUDIT_WRITE_FAILURE = "AUDIT_WRITE_FAILED"
 
-AgentRunner = Callable[[EvalFixture, Path], RunResult]
+
+@dataclass(frozen=True, slots=True)
+class EvalRunRequest:
+    """One task of an attempt, and the session it belongs to.
+
+    A single-task fixture passes ``session_id`` as ``None``, so it runs exactly as it
+    did before sessions existed. Only a fixture that declares a follow-up gets one.
+    """
+
+    task: str
+    sequence: int
+    session_id: str | None = None
+
+
+AgentRunner = Callable[[EvalFixture, Path, EvalRunRequest], RunResult]
 
 
 class EvaluationFailureReason(StrEnum):
@@ -391,16 +406,41 @@ def run_evaluation_attempt(
 
     run_result: RunResult | None = None
     runner_failed = False
-    try:
-        candidate = agent_runner(fixture, workspace)
+    session_id: str | None = None
+    if len(fixture.tasks) > 1:
+        # A multi-task fixture is the only reason evaluation touches sessions. The
+        # session is created here, outside the workspace the agent can write, and the
+        # runner is told which one to join.
+        try:
+            session_id = create_session(workspace).session_id
+        except SessionError:
+            return _attempt_result(
+                fixture,
+                attempt_index,
+                reasons=(EvaluationFailureReason.MATERIALIZATION_ERROR,),
+                initial_validation=initial_validation,
+                missing_required=fixture.required_modified_files,
+            )
+
+    sequence_results: list[RunResult] = []
+    for sequence, task in enumerate(fixture.tasks, start=1):
+        try:
+            candidate = agent_runner(
+                fixture,
+                workspace,
+                EvalRunRequest(task=task, sequence=sequence, session_id=session_id),
+            )
+        except EvaluationAttemptInfrastructureError:
+            raise
+        except Exception:
+            runner_failed = True
+            break
         if not isinstance(candidate, RunResult):
             runner_failed = True
-        else:
-            run_result = candidate
-    except EvaluationAttemptInfrastructureError:
-        raise
-    except Exception:
-        runner_failed = True
+            break
+        sequence_results.append(candidate)
+    if sequence_results:
+        run_result = _combine_run_results(tuple(sequence_results))
 
     try:
         after = snapshot_workspace(workspace)
@@ -766,6 +806,32 @@ def _append_scope_reasons(
         reasons.append(EvaluationFailureReason.MISSING_REQUIRED_FILES)
     if unexpected:
         reasons.append(EvaluationFailureReason.UNEXPECTED_FILES)
+
+
+def _combine_run_results(results: tuple[RunResult, ...]) -> RunResult:
+    """Fold one attempt's task sequence into the single result that is scored.
+
+    Counters add, because the whole sequence is the attempt's cost. Everything that
+    describes an outcome -- completion status, termination, verification, trace --
+    comes from the last run alone: evidence does not accumulate across runs any more
+    inside evaluation than it does anywhere else.
+    """
+
+    if len(results) == 1:
+        return results[0]
+    last = results[-1]
+    return replace(
+        last,
+        model_call_count=sum(item.model_call_count for item in results),
+        tool_call_count=sum(item.tool_call_count for item in results),
+        tool_error_count=sum(item.tool_error_count for item in results),
+        api_attempt_count=sum(item.api_attempt_count for item in results),
+        api_retry_count=sum(item.api_retry_count for item in results),
+        context_compaction_count=sum(item.context_compaction_count for item in results),
+        input_token_count=sum(item.input_token_count for item in results),
+        output_token_count=sum(item.output_token_count for item in results),
+        elapsed_seconds=sum(item.elapsed_seconds for item in results),
+    )
 
 
 def _attempt_result(
