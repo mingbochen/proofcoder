@@ -372,6 +372,8 @@ def render_terminal_event(event: RunEvent) -> str | None:
         return _render_checkpoint(payload)
     if event.event_type is EventType.ROLLBACK:
         return _render_rollback(payload)
+    if event.event_type is EventType.APPROVAL:
+        return _render_approval(payload)
     if event.event_type is EventType.WARNING:
         message = payload.get("message")
         detail = "" if not message else f" ({message})"
@@ -401,6 +403,36 @@ def _render_checkpoint(payload: Mapping[str, object]) -> str:
     if type(pruned) is int and pruned > 0:
         parts.append(f"pruned={pruned}")
     return " ".join(parts)
+
+
+def _render_approval(payload: Mapping[str, object]) -> str | None:
+    """Render one approval phase: which policy governs, a request, or a decision."""
+
+    phase = payload.get("phase")
+    if phase == "policy":
+        source = payload.get("policy_source")
+        where = "none" if source is None else _token(source)
+        return (
+            f"APPROVAL: policy={where} entries={_token(payload.get('policy_entries'))} "
+            f"mode={_token(payload.get('approval_mode'))}"
+        )
+    if phase == "request":
+        argv = json.dumps(
+            payload.get("display_argv", []), ensure_ascii=False, separators=(",", ":")
+        )
+        return (
+            f"APPROVAL: needed argv={argv} cwd={_token(payload.get('cwd'))} "
+            f"kind={_token(payload.get('command_kind'))} "
+            f"source={_token(payload.get('decision_source'))}"
+        )
+    if phase == "decision":
+        return (
+            f"APPROVAL: {_token(payload.get('outcome'))} "
+            f"by={_token(payload.get('decided_by'))} "
+            f"executed={str(bool(payload.get('executed'))).lower()} "
+            f"waited_seconds={_token(payload.get('waited_seconds'))}"
+        )
+    return None
 
 
 def _render_rollback(payload: Mapping[str, object]) -> str:

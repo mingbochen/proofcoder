@@ -223,6 +223,25 @@ class ApprovalGate:
         return "timeout" if outcome is ApprovalOutcome.TIMED_OUT else "responder"
 
 
+def approval_policy_payload(
+    *,
+    mode: ApprovalMode,
+    source: str | None,
+    digest: str | None,
+    entry_count: int,
+) -> dict[str, object]:
+    """Describe which policy governs this run, so an audit can name it later."""
+
+    return {
+        "phase": "policy",
+        "approval_mode": mode.value,
+        "policy_loaded": source is not None,
+        "policy_source": source,
+        "policy_digest": digest,
+        "policy_entries": entry_count,
+    }
+
+
 def approval_request_payload(request: ApprovalRequest) -> dict[str, object]:
     """Build the trace payload for one approval request."""
 

@@ -13,6 +13,7 @@ from pathlib import Path
 from proofcoder.approval import (
     ApprovalGate,
     approval_decision_payload,
+    approval_policy_payload,
     approval_request_payload,
 )
 from proofcoder.checkpoint import CheckpointCapture, checkpoint_event_payload
@@ -38,6 +39,7 @@ from proofcoder.llm.base import LLMClient
 from proofcoder.progress import NoProgressTracker
 from proofcoder.protocol import ModelResponse, RunResult, TerminationReason, ToolCall
 from proofcoder.retry import DEFAULT_MAX_API_ATTEMPTS, retry_delay_seconds
+from proofcoder.safety.policy import CommandPolicy
 from proofcoder.safety.secrets import redact_text
 from proofcoder.state import RunState
 from proofcoder.tools.base import PreparedToolCall, ToolResult
@@ -104,6 +106,7 @@ class AgentLoop:
         cancel_requested: Callable[[], bool] | None = None,
         checkpoint: CheckpointCapture | None = None,
         approval: ApprovalGate | None = None,
+        policy: CommandPolicy | None = None,
     ) -> None:
         workspace_root = workspace.resolve(strict=True)
         if not workspace_root.is_dir():
@@ -143,6 +146,9 @@ class AgentLoop:
         # Owned by the command tool, read here for two things only: the records to emit,
         # and the time to exclude from the run budget.
         self._approval = approval
+        # Frozen before this loop existed. The loop only reports which policy governs
+        # the run; it never loads one, so nothing here can widen a decision.
+        self._policy = policy
         self._events: EventEmitter | None = None
 
     @property
@@ -172,6 +178,17 @@ class AgentLoop:
                 EventType.CHECKPOINT,
                 state,
                 checkpoint_event_payload(self._checkpoint),
+            )
+        if self._approval is not None:
+            self._emit(
+                EventType.APPROVAL,
+                state,
+                approval_policy_payload(
+                    mode=self._approval.mode,
+                    source=None if self._policy is None else self._policy.source,
+                    digest=None if self._policy is None else self._policy.digest,
+                    entry_count=0 if self._policy is None else len(self._policy.entries),
+                ),
             )
         try:
             return self._run(history, state, tracker)

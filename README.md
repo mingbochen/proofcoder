@@ -115,6 +115,15 @@ uv run --locked --env-file .env proofcoder run --workspace ../proofcoder-demo "C
 
 `--workspace` is the file authority boundary for ProofCoder's ordinary tools. Each run creates protected `.proofcoder` runtime artifacts inside that workspace for traces and command audits; these paths are unavailable to model file tools. The boundary is application policy, not process isolation, so do not experiment directly in an untrusted or irreplaceable workspace.
 
+Commands that need confirmation are refused unless you ask to be asked:
+
+```text
+uv run --locked --env-file .env proofcoder run --workspace ../proofcoder-demo \
+  --approval on-risk --command-policy ../proofcoder-demo/proofcoder.toml "..."
+```
+
+`--approval on-risk` prints the full argv, working directory and timeout and waits for an answer; anything but an explicit yes refuses, and standard input that is not a terminal refuses immediately rather than assuming. `--command-policy` is the only way a project policy takes effect: a `proofcoder.toml` sitting in the workspace is reported and ignored until you name it. The time spent waiting for you is not charged against `--max-seconds`.
+
 `run` defaults to 8 assistant responses, 600 seconds, a 262144-byte context budget, 5 consecutive failed batches, and up to 3 API attempts per model response. Use `proofcoder run --help` for their bounded overrides. Exit code `0` represents verified completion or a locally observed no-change completion, `3` unverified changes, and `4` an explicit blocked result. Other failures are nonzero; interruption returns `130`.
 
 ## Run Checkpoints
@@ -296,8 +305,8 @@ The lock check and dependency synchronization are separate from offline validati
 ## Security Boundaries
 
 - ProofCoder enforces an application policy, not an OS or kernel sandbox.
-- The command decision has three values. Most commands are allowed or refused outright; Git's local write subcommands are classified as needing confirmation, and until a confirmation entry point exists they are refused with `APPROVAL_DENIED` rather than executed. Git's network subcommands and `git config` are never confirmable: the first move repository content past anything a rollback reaches, and the second can set `core.hooksPath` or an alias that turns a later ordinary Git command into arbitrary execution.
-- A project may extend the default-deny command set through a policy file, but that file is repository content and never authorizes itself: it applies only when a caller names it, is frozen for the run once read, may not redeclare any executable the built-in policy already decides, and is refused by every write tool at any path named `proofcoder.toml`.
+- The command decision has three values. Most commands are allowed or refused outright; Git's local write subcommands are classified as needing confirmation. `proofcoder run --approval on-risk` asks at the terminal and the browser interface asks on the page; the default, `never`, refuses them without asking, which is also what evaluation uses. Git's network subcommands and `git config` are never confirmable: the first move repository content past anything a rollback reaches, and the second can set `core.hooksPath` or an alias that turns a later ordinary Git command into arbitrary execution.
+- A project may extend the default-deny command set through a policy file, but that file is repository content and never authorizes itself: it applies only when `proofcoder run --command-policy <path>` names it, is frozen for the run once read, may not redeclare any executable the built-in policy already decides, and is refused by every write tool at any path named `proofcoder.toml`.
 - The optional browser interface adds a local HTTP surface. Its loopback bind, session token, and Host/Origin checks are access controls on that surface, not isolation of the underlying file and command authority.
 - An allowed workspace Python script runs with the current user's authority and can act outside file-tool policy. A run checkpoint covers such writes inside the workspace; it cannot cover anything the script does outside it.
 - A checkpoint restores content within its captured scope. It is not a backup: credential paths, files over 1 MiB, ignored directories, and everything outside the workspace stay uncovered, and it protects nothing once `--no-checkpoint` is used.

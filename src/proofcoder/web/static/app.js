@@ -102,6 +102,20 @@ const TEXT = {
     rollbackFailedPaths: "未能恢复",
     rollbackBusy: "该工作区有运行在进行中，先停止它再回滚",
     rollbackMissing: "这次运行没有可用的检查点",
+    approvalTitle: "需要你确认后才会执行",
+    approvalApprove: "允许运行",
+    approvalDeny: "拒绝",
+    approvalWaiting: "等待你的决定…",
+    approvalStale: "待确认的命令已经变了，请重新查看后再决定",
+    approvalGone: "这条请求已经结束，无需再决定",
+    approvalPolicy: "命令策略",
+    approvalPolicyNone: "未加载项目策略",
+    approvalOutcome: {
+      approved: "已批准并执行",
+      denied: "已拒绝，命令未执行",
+      timed_out: "超时未决定，命令未执行",
+      interrupted: "运行被中断，命令未执行",
+    },
     actionRestore: "恢复",
     actionRecreate: "重建",
     actionDelete: "删除",
@@ -184,6 +198,20 @@ const TEXT = {
     startFailed: "Could not start the run",
     busy: "This workspace already has a run in progress",
     cancelSent: "Stop requested; the run ends at its next checkpoint",
+    approvalTitle: "This command runs only if you allow it",
+    approvalApprove: "Allow",
+    approvalDeny: "Refuse",
+    approvalWaiting: "Waiting for your decision…",
+    approvalStale: "The pending command changed; review it again before deciding",
+    approvalGone: "This request has already ended; no decision is needed",
+    approvalPolicy: "Command policy",
+    approvalPolicyNone: "no project policy loaded",
+    approvalOutcome: {
+      approved: "approved and executed",
+      denied: "refused; the command did not run",
+      timed_out: "no decision in time; the command did not run",
+      interrupted: "the run was interrupted; the command did not run",
+    },
     replayTitle: "Stored run",
     liveTitle: "Current run",
     checkpointTitle: "Pre-run checkpoint",
@@ -245,6 +273,7 @@ const state = {
   viewedRunId: null,
   polling: false,
   renderedSteps: new Set(),
+  approvalDigest: null,
   suggestionsShown: true,
 };
 
@@ -697,6 +726,11 @@ function renderEvent(event) {
     return;
   }
 
+  if (type === "approval") {
+    renderApprovalEvent(payload, body);
+    return;
+  }
+
   if (type === "checkpoint") {
     body.appendChild(renderCheckpoint(payload));
     return;
@@ -1039,6 +1073,136 @@ function setWorking(active) {
   scrollToEnd();
 }
 
+function renderApprovalEvent(payload, body) {
+  if (payload.phase === "policy") {
+    const where = payload.policy_source || t("approvalPolicyNone");
+    const detail = `${where} · ${payload.policy_entries || 0} · ${payload.approval_mode || ""}`;
+    const { card, body: cardBody } = collapsibleCard(t("approvalPolicy"), detail, ICONS.alert);
+    cardBody.appendChild(
+      keyValues([
+        ["policy_source", payload.policy_source],
+        ["policy_digest", payload.policy_digest],
+        ["policy_entries", payload.policy_entries],
+        ["approval_mode", payload.approval_mode],
+      ])
+    );
+    body.appendChild(card);
+    return;
+  }
+  if (payload.phase === "request") {
+    const argv = Array.isArray(payload.display_argv) ? payload.display_argv.join(" ") : "";
+    const { card, body: cardBody } = collapsibleCard(t("approvalTitle"), argv, ICONS.terminal);
+    cardBody.appendChild(
+      keyValues([
+        ["argv", argv],
+        ["cwd", payload.cwd],
+        ["command_kind", payload.command_kind],
+        ["decision_source", payload.decision_source],
+      ])
+    );
+    body.appendChild(card);
+    return;
+  }
+  if (payload.phase === "decision") {
+    const outcomes = t("approvalOutcome") || {};
+    const label = outcomes[payload.outcome] || String(payload.outcome || "");
+    const executed = payload.executed === true;
+    const card = node("div", "card");
+    const head = node("div", "card__head");
+    const mark = node("span", "card__icon");
+    mark.appendChild(icon(executed ? ICONS.terminal : ICONS.alert, 13));
+    head.appendChild(mark);
+    head.appendChild(node("span", "card__title", label));
+    head.appendChild(
+      node("span", "card__detail", `${payload.decided_by || ""} · ${payload.waited_seconds || 0}s`)
+    );
+    card.appendChild(head);
+    body.appendChild(card);
+  }
+}
+
+function syncApproval(run) {
+  const pending = run && run.pending_approval ? run.pending_approval : null;
+  if (!pending) {
+    if (state.approvalDigest) {
+      state.approvalDigest = null;
+      if (dom.approvalPanel) dom.approvalPanel.hidden = true;
+    }
+    return;
+  }
+  if (state.approvalDigest === pending.digest) return;
+  state.approvalDigest = pending.digest;
+  renderApprovalPanel(pending);
+}
+
+function approvalPanel() {
+  if (dom.approvalPanel) return dom.approvalPanel;
+  const panel = node("section", "rollback");
+  panel.id = "approval-panel";
+  panel.hidden = true;
+  dom.thread.appendChild(panel);
+  dom.approvalPanel = panel;
+  return panel;
+}
+
+function renderApprovalPanel(pending) {
+  const panel = approvalPanel();
+  panel.hidden = false;
+  panel.replaceChildren();
+  panel.appendChild(node("p", "rollback__title", t("approvalTitle")));
+  const argv = Array.isArray(pending.display_argv) ? pending.display_argv.join(" ") : "";
+  panel.appendChild(node("pre", "approval__argv", argv));
+  panel.appendChild(
+    keyValues([
+      ["cwd", pending.cwd],
+      ["timeout_seconds", pending.timeout_seconds],
+      ["command_kind", pending.command_kind],
+      ["decision_source", pending.decision_source],
+    ])
+  );
+  const actions = node("div", "rollback__actions");
+  const allow = node("button", "primary-button", t("approvalApprove"));
+  allow.type = "button";
+  const refuse = node("button", "text-button", t("approvalDeny"));
+  refuse.type = "button";
+  const answer = (decision) => {
+    allow.disabled = true;
+    refuse.disabled = true;
+    sendApproval(pending.digest, decision, panel);
+  };
+  allow.addEventListener("click", () => answer("approve"));
+  refuse.addEventListener("click", () => answer("deny"));
+  actions.appendChild(allow);
+  actions.appendChild(refuse);
+  panel.appendChild(actions);
+  scrollToEnd();
+}
+
+async function sendApproval(digest, decision, panel) {
+  if (!state.activeRunId) return;
+  try {
+    await api(`/api/runs/${encodeURIComponent(state.activeRunId)}/approval`, {
+      method: "POST",
+      json: { request_digest: digest, decision },
+    });
+    panel.replaceChildren(node("p", "rollback__title", t("approvalWaiting")));
+    panel.hidden = true;
+    state.approvalDigest = null;
+  } catch (error) {
+    if (error.code === "APPROVAL_CHANGED" && error.body && error.body.run) {
+      // The decision was for a command that is no longer the one waiting, so the
+      // caller reviews the current one instead of answering blind.
+      banner(t("approvalStale"), true);
+      state.approvalDigest = null;
+      syncApproval(error.body.run);
+      return;
+    }
+    banner(error.code === "NO_PENDING_APPROVAL" ? t("approvalGone") : error.message, true);
+    panel.hidden = true;
+    state.approvalDigest = null;
+  }
+}
+
 function scrollToEnd() {
   window.requestAnimationFrame(() => {
     dom.thread.scrollTop = dom.thread.scrollHeight;
@@ -1094,6 +1258,7 @@ async function pollRun(runId, cursor) {
         `/api/runs/${runId}/events?cursor=${nextCursor}&wait=${POLL_SECONDS}`
       );
       nextCursor = data.cursor;
+      syncApproval(data.run);
       if (data.events.length) {
         setWorking(false);
         data.events.forEach(renderEvent);
@@ -1102,6 +1267,7 @@ async function pollRun(runId, cursor) {
       }
       if (data.done) {
         state.activeRunId = null;
+        syncApproval(null);
         setRunning(false);
         await refreshHistory();
         break;

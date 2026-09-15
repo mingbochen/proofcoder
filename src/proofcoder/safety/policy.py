@@ -146,6 +146,25 @@ def is_command_policy_path(relative_path: str) -> bool:
     return name == POLICY_FILENAME
 
 
+def workspace_policy_path(workspace: Path) -> Path:
+    """Return the conventional policy path for one workspace."""
+
+    return workspace / POLICY_FILENAME
+
+
+def unloaded_policy_warning(source: str) -> dict[str, object]:
+    """Describe a policy file that was found but deliberately not applied."""
+
+    return {
+        "code": "COMMAND_POLICY_NOT_LOADED",
+        "message": (
+            f"COMMAND_POLICY_NOT_LOADED: a project command policy exists at {source} "
+            "but was not loaded; pass --command-policy to authorize it"
+        ),
+        "policy_source": source,
+    }
+
+
 def _display_source(resolved: Path, workspace_root: Path) -> str:
     try:
         return resolved.relative_to(workspace_root).as_posix()
