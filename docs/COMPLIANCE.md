@@ -256,9 +256,17 @@ into automatic passes; their manual dispositions and limitations remain distinct
 - A project command policy is named either on the command line or by an evaluation
   fixture's metadata. A run started from the browser interface has no way to name one, so
   it uses the built-in command set.
-- The stage H capabilities have offline coverage and a non-Python evaluation fixture, but
-  no real-model repeated-run data yet, so the stage H exit criterion that requires such
-  data is not met. See `docs/EVAL_REPORT.md` section 13.
+- The stage H capabilities now have real-model repeated-run data as well as offline
+  coverage: evaluation `2ed0188dfbb449a69d78bee13c538dbf` recorded 3 of 3 successful
+  attempts on the `nodejs-word-count` fixture, whose validation command exists only
+  because the project policy named by the fixture applied to both the agent's run and
+  the independent validation. Three runs on one small fixture is a weaker observation
+  than section 12's six; the Wilson 95% interval for 3/3 starts at 0.44. The run also
+  covers only the allow side of the three-valued decision: evaluation always runs with
+  approval mode `never` and the fixture's command is declared `allow`, so no approval
+  request was raised, and the confirm side, the approval timeout, the interruption path
+  and the browser digest binding still have offline coverage only.
+  See `docs/EVAL_REPORT.md` section 14.
 - The tools that delete, move, or overwrite destroy content in one call. They refuse to
   run without a checkpoint and never recurse, but within the captured scope their damage
   is undone only when someone actually runs a rollback; outside it, nothing undoes it.

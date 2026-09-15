@@ -1,6 +1,6 @@
 # ProofCoder Stage E 真实模型评测报告
 
-本报告记录 Stage E2a-4 的真实模型评测证据。第 1–10 节的结论基于仓库中已经保存的三个本地评测 artifact，这几节编写时没有重新运行 `proofcoder eval`，也没有调用模型 API。第 11–12 节记录的是阶段 F 与 G 之后另外运行的一次评测，有自己的 eval ID 和配置；第 13 节记录阶段 H 新增的 fixture，它还没有真实模型数据。
+本报告记录 Stage E2a-4 的真实模型评测证据。第 1–10 节的结论基于仓库中已经保存的三个本地评测 artifact，这几节编写时没有重新运行 `proofcoder eval`，也没有调用模型 API。第 11–12 节记录的是阶段 F 与 G 之后另外运行的一次评测，第 13–14 节记录的是阶段 H 之后又一次评测；这两次各有自己的 eval ID 和配置。
 
 正式评测 `b6f7ae7f5c0549ca96b7c66971c55d7b` 在干净 revision `ef1ded6293229c11b70076b3cb7107b470fb6d43` 上完成了 3 个 fixture、每项 3 次的评测。记录结果为 9/9 成功，成功率 100%。这个结果只描述本报告中的任务集、模型配置和运行环境，不代表 ProofCoder 对任意仓库都可靠。
 
@@ -309,7 +309,7 @@ uv run --locked --env-file .env proofcoder eval --fixture rollback-word-wrap --f
 
 ---
 
-## 13. 阶段 H 新增：非 Python 项目 fixture（尚无真实模型数据）
+## 13. 阶段 H 新增：非 Python 项目 fixture
 
 本节记录 fixture 集合在阶段 H 的变化，与上面第 12 节那次评测无关——那次评测运行时第六个 fixture 还不存在。
 
@@ -328,10 +328,90 @@ uv run --locked --env-file .env proofcoder eval --fixture rollback-word-wrap --f
 
 这两条都有离线测试。其中一条是反向的：把 `command_policy` 置空、其余一切不变（策略文件仍然躺在工作区里），同一个 fixture 的初始验证就会失败。这证明起作用的是指名，而不是文件的存在。
 
-**这个 fixture 目前没有真实模型的重复运行数据。** 阶段 H 的能力（三值判定、项目策略、人工审批）同样如此。开发规范 §16「v3.0 阶段通用规则」要求「真实模型评测 fixture 和重复运行数据」，fixture 这一半已完成。补齐另一半需要配置真实 key 并运行：
+开发规范 §16「v3.0 阶段通用规则」要求「真实模型评测 fixture 和重复运行数据」。fixture 这一半由本节记录，重复运行数据这一半记录在第 14 节。
 
-```text
+---
+
+## 14. 阶段 H 非 Python fixture 的真实模型结果（2026-09-15）
+
+本节补上第 13 节缺的另一半。它与第 12 节那次评测相互独立：不同的 eval ID、不同的 fixture、不同的代码 revision。字段来自 `.proofcoder/evals/2ed0188dfbb449a69d78bee13c538dbf/` 下的 `metadata.json`、`summary.json` 和 `attempts.jsonl`。
+
+### 14.1 可复现配置
+
+| 配置项 | 值 |
+|---|---|
+| UTC 开始时间 | `2026-09-15T08:07:31.273654Z` |
+| UTC 完成时间 | `2026-09-15T08:07:57.403455Z` |
+| 代码 revision | `f5c13184ed0f88b0b1ba8611bdf25b2e390b2a9f` |
+| `code.dirty` | `true`（见 14.4） |
+| 模型 | `deepseek-v4-flash` |
+| API base URL | `https://api.deepseek.com` |
+| reasoning effort | `high` |
+| 选中的 fixture | `nodejs-word-count` |
+| 每项重复次数 | 3 |
+| 每个 attempt 最大模型步数 | 8 |
+| 每个 attempt 最大运行时间 | 600 秒 |
+| context budget | 262144 bytes |
+| 最大连续失败批次 | 5 |
+| 每个模型响应最大 API attempts | 3 |
+| 独立验证超时 | 60 秒 |
+| `metadata.warnings` | 空 |
+
+运行命令如下；命令本身不包含凭据。这个 fixture 要求机器上有 `node`：
+
+```powershell
 uv run --locked --env-file .env proofcoder eval --fixture nodejs-word-count --repeat 3
 ```
 
-运行这个 fixture 需要机器上有 `node`。结果产生后，应当在本报告中新增一节记录其 eval ID、日期、代码 revision、成功率和失败分析，并在 `docs/ROADMAP.md` 中把阶段 H 标记为完成。在那之前，阶段 H 的这条退出条件尚未满足。
+### 14.2 结果
+
+下表转录 `summary.json` 的聚合值。API retries 为 0，因此 API attempts 与 model calls 相同。
+
+| Fixture | Attempts | Successes | Success rate | Model calls（API attempts） | Tool calls | API retries | Tool errors | Context compactions | Input tokens | Output tokens | Elapsed (s) |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| `nodejs-word-count` | 3 | 3 | 100% | 15（15） | 24 | 0 | 0 | 0 | 66471 | 2080 | 23.031 |
+
+三次 attempt 的形状完全一致，逐次转录 `attempts.jsonl`：
+
+| Attempt | run ID | 模型步数 | 工具调用 | Elapsed (s) | 终止原因 | `completion_status` | 改动文件 |
+|---:|---|---:|---:|---:|---|---|---|
+| 1 | `a6addebde29d477b8e6eaddb0bd35ab0` | 5 | 8 | 9.328 | `finish_task` | `completed_verified` | `word_count.js` |
+| 2 | `76fcf6fec1eb4556a28947af2306c682` | 5 | 8 | 5.859 | `finish_task` | `completed_verified` | `word_count.js` |
+| 3 | `b3b0e0d4d4a8401b8d4301f1f88ab0a8` | 5 | 8 | 7.844 | `finish_task` | `completed_verified` | `word_count.js` |
+
+三次的 `trace_complete` 均为 `true`，`failure_reasons` 均为空，`added`、`deleted`、`unexpected`、`missing_required` 也都为空——模型三次都只改了任务允许改的那一个文件，没有一次通过放松测试来让自己通过（测试文件不在 `allowed_modified_files` 里）。
+
+### 14.3 策略证据
+
+这是本节存在的理由：阶段 H 的能力在真实运行里是否真的生效，而不只是在离线测试里生效。
+
+`node --test` 不在内置命令策略的范围内。如果 fixture 指名的项目策略没有生效，这次评测根本不会有结果——它会在 agent 启动之前就失败在初始验证上。三处可核对的记录：
+
+- 三次 attempt 的初始独立验证 `node --test` 退出码为 1、最终为 0，`error_code` 均为 `null`，`timed_out` 均为 `false`。独立验证由评测器执行，与 agent 的运行是两条不同的代码路径，这说明两条路径拿到的是同一份策略。
+- 24 次工具调用的 `tool_errors` 为 0。被策略或审批拒绝的命令返回 `ok: false`，会计入 `tool_errors`；退出码非 0 的命令则不会（它成功执行了，只是测试没过）。所以这个 0 说明 agent 自己执行 `node --test` 时没有一次被拒。
+- 三次 attempt 的 `ignored_runtime` 里都有一份命令审计记录（`.proofcoder/runtime/commands/`），说明模型在声明完成之前确实自己跑过测试。
+
+审批那一侧，评测一律以模式 `never` 运行，且 fixture 的验证命令声明为 `allow`，因此这次运行不产生任何审批请求。**本节的数据覆盖三值判定的 allow 一侧、项目策略的加载与应用，不覆盖 confirm 一侧和审批协议本身**；后者仍然只有离线测试覆盖。
+
+### 14.4 关于 `code.dirty`
+
+与第 12.4 节是同样的情况，用同样的方式核对。`metadata.json` 记录 revision 为 `f5c1318`（PR #17 的合并提交），`code.dirty` 为 `true`。
+
+三次 attempt 的检查点 blob 摘要完全相同；把仓库中已合并的 fixture 工作区文件按 LF→CRLF 转换后重新求 sha256，三个摘要与 blob 集合**逐一相等**：
+
+| 文件 | blob sha256（前 16 位） |
+|---|---|
+| `word_count.js` | `4b67086e907aabb3` |
+| `word_count.test.js` | `7290704cef8bd83a` |
+| `proofcoder.toml` | `81e032aaf7cd9e82` |
+
+这三个文件就是 fixture 工作区的全部内容，所以这次核对覆盖了整个 fixture，而不像第 12.4 节那样只覆盖其中一部分文件。它同时说明检查点把 `proofcoder.toml` 一起纳入了基线：策略文件对所有写工具是拒绝的，但并不因此被排除在检查点覆盖之外。与第 12.4 节一样，这条核对不涉及 `src/` 等其余文件，那部分仍然只能以 `code.dirty` 为准。
+
+### 14.5 这组数据不能说明什么
+
+- 三次运行、一个小型 fixture，比第 12 节那组更弱。3/3 的 Wilson 95% 置信区间是 `[0.44, 1.0]`，按 rule of three，真实失败率的 95% 上界是 100%——这个区间不排除任何失败率。100% 是这三次的观测值，不是可靠性声明。
+- 如 14.3 所说，审批协议本身没有真实模型数据：confirm 判定、审批超时、中断、浏览器的摘要绑定，覆盖它们的是离线测试。
+- 三次运行没有触发任何 API 重试、上下文压缩或工具错误，因此重试路径、压缩路径和工具错误恢复路径完全没有被覆盖。
+- 三次运行全部以 `finish_task` 终止，中断和预算耗尽两种终止方式仍然只有离线测试覆盖。
+- 这个 fixture 的 `verify_rollback` 为 `false`，三次的 `rollback.checked` 都是 `false`，所以本节不提供任何回滚证据。回滚证据在第 12.3 节。
+- 只有一个模型、一种 reasoning effort、一次运行环境。第 8 节列出的其余局限同样适用于本节。

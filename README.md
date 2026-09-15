@@ -285,7 +285,7 @@ One fixture, `nodejs-word-count`, is not a Python project: its tests run under N
 
 The default repeat count is 3, and the default fixture selection is all fixtures under `evals/fixtures`. Repeat `--fixture <fixture-id>` to select one or more fixtures. Each attempt uses an isolated workspace, initial-failure evidence, independent final validation, exact change-scope checks, and a complete trace requirement. Results are written below the ignored `.proofcoder/evals` directory.
 
-The dated real-model results and failure analysis are in the [Evaluation Report](docs/EVAL_REPORT.md), whose section 12 covers the two rollback fixtures. Those small-fixture results are bounded evidence, not a general success-rate claim. Real evaluation is opt-in and is not run by CI; CI configures no provider key and runs only offline validation and scanning after dependency synchronization.
+The dated real-model results and failure analysis are in the [Evaluation Report](docs/EVAL_REPORT.md), whose section 12 covers the two rollback fixtures and section 14 the Node fixture. Those small-fixture results are bounded evidence, not a general success-rate claim. Real evaluation is opt-in and is not run by CI; CI configures no provider key and runs only offline validation and scanning after dependency synchronization.
 
 ## Development and Verification
 
