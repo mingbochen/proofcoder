@@ -233,11 +233,14 @@ into automatic passes; their manual dispositions and limitations remain distinct
 - ProofCoder's command policy constrains model-selected commands but does not provide
   kernel isolation. Allowed workspace Python scripts execute with the current user's
   OS permissions.
-- The `rollback-word-wrap` and `cleanup-text-helpers` evaluation fixtures have offline
-  coverage of the rollback verification path, including the rename-and-delete shape whose
-  undo recreates deleted files and removes created ones, but neither has real-model
-  repeated-run data yet, so the stage F and stage G exit criteria that require such data
-  are not met. See `docs/EVAL_REPORT.md` section 11.
+- The `rollback-word-wrap` and `cleanup-text-helpers` evaluation fixtures now have both
+  offline coverage and real-model repeated-run data: evaluation
+  `812e545045eb4f9ab3fa51ae2e109d7e` recorded 6 of 6 successful attempts with no
+  unrestored path in any rollback. Six runs on two small fixtures is a bounded
+  observation, not a reliability claim; the Wilson 95% interval for 6/6 starts at 0.61.
+  All six terminated with `finish_task`, so the interrupted and budget-exhausted
+  terminations that the stage F exit criteria name still have offline coverage only.
+  See `docs/EVAL_REPORT.md` section 12.
 - The tools that delete, move, or overwrite destroy content in one call. They refuse to
   run without a checkpoint and never recurse, but within the captured scope their damage
   is undone only when someone actually runs a rollback; outside it, nothing undoes it.

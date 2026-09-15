@@ -5,10 +5,10 @@
 ## 当前位置
 
 - 规范版本：v3.1
-- 当前阶段：阶段 G（文件工具扩展）；阶段 F 与 G 的实现均已全部合并，只等真实模型数据
-- 下一步：阶段 H（命令策略配置与人工审批）的小项 H.1
-- 最近完成：小项 G.3，删除与重命名的评测 fixture `cleanup-text-helpers` 及文档同步
-- 阻塞项：阶段 F 与阶段 G 的通用退出条件都要求"新增能力有对应的真实模型评测 fixture 和重复运行数据"。两个 fixture 都已就绪且有离线测试，重复运行数据需要真实 key，见 [EVAL_REPORT §11](EVAL_REPORT.md)
+- 当前阶段：阶段 F 与 G 已全部完成，阶段 H（命令策略配置与人工审批）尚未开始
+- 下一步：开始阶段 H，先拆分小项，第一项是阶段 ADR 与规范补全（需要用户批准）
+- 最近完成：阶段 F 与 G 的真实模型重复运行数据，eval `812e545045eb4f9ab3fa51ae2e109d7e`，6/6 成功且六次回滚均无未恢复路径，见 [EVAL_REPORT §12](EVAL_REPORT.md)
+- 阻塞项：无
 
 状态取值：`已完成`、`进行中`、`未开始`、`阻塞`、`暂缓`。
 
@@ -19,8 +19,8 @@
 | A–E | 骨架、Agent 闭环、核心工具、鲁棒性、可观测性与评测 | — | 已完成 | 0.1.0 |
 | — | 本地浏览器界面（[ADR-0002](adr/0002-local-browser-interface.md)，PR #1） | A–E | 已完成 | 0.1.0 |
 | 0 | 治理基础 | — | 已完成 | — |
-| F | 检查点与回滚 | 0 | 进行中 | — |
-| G | 文件工具扩展 | F | 进行中 | — |
+| F | 检查点与回滚 | 0 | 已完成 | — |
+| G | 文件工具扩展 | F | 已完成 | — |
 | H | 命令策略配置与人工审批 | F | 未开始 | — |
 | I | 多轮会话 | 0 | 未开始 | — |
 | J | 可替换模型提供方与流式响应 | 0 | 未开始 | — |
@@ -54,7 +54,7 @@
 | F.2 | 检查点创建与回滚核心，含轨迹事件和离线测试 | 已完成 | [#5](https://github.com/mingbochen/proofcoder/pull/5) |
 | F.3 | 命令行回滚入口 `proofcoder rollback`（list/show/apply/delete），含确认清单与操作轨迹 | 已完成 | [#6](https://github.com/mingbochen/proofcoder/pull/6) |
 | F.4 | 浏览器界面回滚入口：计划预览、与清单绑定的确认、检查点与回滚事件渲染 | 已完成 | [#7](https://github.com/mingbochen/proofcoder/pull/7) |
-| F.5 | 评测 fixture 与文档同步：`rollback-word-wrap` fixture、评测流程的回滚验证、文档同步 | 阻塞（等待真实模型重复运行数据） | [#8](https://github.com/mingbochen/proofcoder/pull/8) |
+| F.5 | 评测 fixture 与文档同步：`rollback-word-wrap` fixture、评测流程的回滚验证、文档同步 | 已完成 | [#8](https://github.com/mingbochen/proofcoder/pull/8) |
 
 ## 阶段 G：文件工具扩展
 
@@ -62,7 +62,7 @@
 | --- | --- | --- | --- |
 | G.1 | 阶段 ADR 与规范补全：删除边界、覆盖语义、多处修改形状、无检查点时的行为（[ADR-0005](adr/0005-destructive-file-tools.md)、规范 §10.5.6） | 已完成 | [#9](https://github.com/mingbochen/proofcoder/pull/9) |
 | G.2 | `delete_path`、`move_path`、`make_directory`、`patch_file`、`create_file` 的覆盖参数，以及无检查点时的拒绝，含离线测试 | 已完成 | [#10](https://github.com/mingbochen/proofcoder/pull/10) |
-| G.3 | 删除与重命名的评测 fixture `cleanup-text-helpers`，以及文档同步 | 阻塞（等待真实模型重复运行数据） | [#11](https://github.com/mingbochen/proofcoder/pull/11) |
+| G.3 | 删除与重命名的评测 fixture `cleanup-text-helpers`，以及文档同步 | 已完成 | [#11](https://github.com/mingbochen/proofcoder/pull/11) |
 
 ## 阶段 H–M
 
