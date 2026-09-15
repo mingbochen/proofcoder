@@ -469,9 +469,9 @@ def test_an_explicit_port_is_honoured(tmp_path: Path) -> None:
 
 
 def test_a_supplied_token_and_session_manager_are_used(tmp_path: Path) -> None:
-    from proofcoder.web.sessions import SessionManager
+    from proofcoder.web.runs import BrowserRunManager
 
-    manager = SessionManager(environ=ENVIRON, client_factory=lambda config: ScriptedClient([]))
+    manager = BrowserRunManager(environ=ENVIRON, client_factory=lambda config: ScriptedClient([]))
     bound = create_server(
         host="127.0.0.1",
         port=0,

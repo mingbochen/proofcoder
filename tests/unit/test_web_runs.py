@@ -1,6 +1,6 @@
 """Offline tests for the browser-facing run sessions.
 
-Every test drives the real ``SessionManager`` with a scripted or deliberately
+Every test drives the real ``BrowserRunManager`` with a scripted or deliberately
 failing client, so the buffering, cancellation, retention, and termination paths
 are exercised against the same agent runtime the command line uses.
 """
@@ -28,13 +28,13 @@ from proofcoder.protocol import (
     ToolCall,
 )
 from proofcoder.trace import list_traces, read_trace
-from proofcoder.web.sessions import (
+from proofcoder.web.runs import (
     MAX_BUFFERED_EVENTS,
     MAX_TASK_BYTES,
-    RunSession,
-    SessionError,
-    SessionManager,
-    SessionStatus,
+    BrowserRun,
+    BrowserRunError,
+    BrowserRunManager,
+    BrowserRunStatus,
 )
 
 SENSITIVE_SENTINEL = "never-echo-this-session-value"
@@ -75,10 +75,10 @@ def _create_and_finish() -> list[ModelResponse]:
     ]
 
 
-def _wait_finished(session: RunSession, timeout: float = 15.0) -> None:
+def _wait_finished(session: BrowserRun, timeout: float = 15.0) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        if session.summary().status is SessionStatus.FINISHED:
+        if session.summary().status is BrowserRunStatus.FINISHED:
             return
         time.sleep(0.01)
     raise AssertionError("the session did not finish within the test timeout")
@@ -95,9 +95,9 @@ def _event(sequence: int) -> RunEvent:
     )
 
 
-def _manager(responses: Sequence[ModelResponse], **kwargs: object) -> SessionManager:
+def _manager(responses: Sequence[ModelResponse], **kwargs: object) -> BrowserRunManager:
     scripted = ScriptedClient(list(responses))
-    return SessionManager(
+    return BrowserRunManager(
         environ=ENVIRON,
         client_factory=lambda config: scripted,
         **kwargs,  # type: ignore[arg-type]
@@ -108,7 +108,7 @@ def _manager(responses: Sequence[ModelResponse], **kwargs: object) -> SessionMan
 
 
 def test_events_after_returns_only_newer_events() -> None:
-    session = RunSession(
+    session = BrowserRun(
         run_id="b" * 32,
         workspace=Path("."),
         task="buffer",
@@ -127,7 +127,7 @@ def test_events_after_returns_only_newer_events() -> None:
 
 
 def test_buffer_overflow_counts_drops_and_keeps_the_cursor_monotonic() -> None:
-    session = RunSession(
+    session = BrowserRun(
         run_id="c" * 32,
         workspace=Path("."),
         task="overflow",
@@ -147,7 +147,7 @@ def test_buffer_overflow_counts_drops_and_keeps_the_cursor_monotonic() -> None:
 
 
 def test_wait_for_events_returns_immediately_when_the_cursor_is_behind() -> None:
-    session = RunSession(
+    session = BrowserRun(
         run_id="d" * 32,
         workspace=Path("."),
         task="wait",
@@ -166,7 +166,7 @@ def test_wait_for_events_returns_immediately_when_the_cursor_is_behind() -> None
 
 
 def test_wait_for_events_wakes_on_completion() -> None:
-    session = RunSession(
+    session = BrowserRun(
         run_id="e" * 32,
         workspace=Path("."),
         task="wait",
@@ -189,7 +189,7 @@ def test_wait_for_events_wakes_on_completion() -> None:
 
 
 def test_complete_is_recorded_once_and_maps_the_exit_code() -> None:
-    session = RunSession(
+    session = BrowserRun(
         run_id="f" * 32,
         workspace=Path("."),
         task="complete",
@@ -205,7 +205,7 @@ def test_complete_is_recorded_once_and_maps_the_exit_code() -> None:
     session.complete(termination_reason=TerminationReason.MAX_STEPS)
     summary = session.summary()
 
-    assert summary.status is SessionStatus.FINISHED
+    assert summary.status is BrowserRunStatus.FINISHED
     assert summary.termination_reason == "finish_task"
     assert summary.exit_code == 3
     assert summary.changed_files == ("made.py",)
@@ -213,7 +213,7 @@ def test_complete_is_recorded_once_and_maps_the_exit_code() -> None:
 
 
 def test_cancel_is_reported_once_while_running() -> None:
-    session = RunSession(
+    session = BrowserRun(
         run_id="0" * 32,
         workspace=Path("."),
         task="cancel",
@@ -233,7 +233,7 @@ def test_cancel_is_reported_once_while_running() -> None:
 def test_blank_tasks_are_rejected(tmp_path: Path, task: str) -> None:
     manager = _manager([])
 
-    with pytest.raises(SessionError) as error:
+    with pytest.raises(BrowserRunError) as error:
         manager.start(workspace=tmp_path, task=task, limits=AgentRunLimits())
 
     assert error.value.code == "EMPTY_TASK"
@@ -242,7 +242,7 @@ def test_blank_tasks_are_rejected(tmp_path: Path, task: str) -> None:
 def test_oversized_tasks_are_rejected(tmp_path: Path) -> None:
     manager = _manager([])
 
-    with pytest.raises(SessionError) as error:
+    with pytest.raises(BrowserRunError) as error:
         manager.start(
             workspace=tmp_path,
             task="x" * (MAX_TASK_BYTES + 1),
@@ -255,7 +255,7 @@ def test_oversized_tasks_are_rejected(tmp_path: Path) -> None:
 def test_missing_workspace_is_rejected(tmp_path: Path) -> None:
     manager = _manager([])
 
-    with pytest.raises(SessionError) as error:
+    with pytest.raises(BrowserRunError) as error:
         manager.start(workspace=tmp_path / "absent", task="task", limits=AgentRunLimits())
 
     assert error.value.code == "INVALID_WORKSPACE"
@@ -266,7 +266,7 @@ def test_file_workspace_is_rejected(tmp_path: Path) -> None:
     target.write_text("not a directory", encoding="utf-8")
     manager = _manager([])
 
-    with pytest.raises(SessionError) as error:
+    with pytest.raises(BrowserRunError) as error:
         manager.start(workspace=target, task="task", limits=AgentRunLimits())
 
     assert error.value.code == "INVALID_WORKSPACE"
@@ -275,7 +275,7 @@ def test_file_workspace_is_rejected(tmp_path: Path) -> None:
 def test_cancelling_an_unknown_run_is_reported(tmp_path: Path) -> None:
     manager = _manager([])
 
-    with pytest.raises(SessionError) as error:
+    with pytest.raises(BrowserRunError) as error:
         manager.cancel("1" * 32)
 
     assert error.value.code == "RUN_NOT_FOUND"
@@ -284,9 +284,9 @@ def test_cancelling_an_unknown_run_is_reported(tmp_path: Path) -> None:
 
 def test_invalid_manager_bounds_are_rejected() -> None:
     with pytest.raises(ValueError):
-        SessionManager(max_active_runs=0)
+        BrowserRunManager(max_active_runs=0)
     with pytest.raises(ValueError):
-        SessionManager(max_retained_sessions=0)
+        BrowserRunManager(max_retained_sessions=0)
 
 
 # ---------- full runs ----------
@@ -329,10 +329,10 @@ def test_a_second_run_in_the_same_workspace_is_refused_while_one_is_active(
             release.wait(10)
             return _response(content="released")
 
-    manager = SessionManager(environ=ENVIRON, client_factory=lambda config: _BlockingClient())
+    manager = BrowserRunManager(environ=ENVIRON, client_factory=lambda config: _BlockingClient())
     session = manager.start(workspace=tmp_path, task="first", limits=AgentRunLimits(max_steps=1))
     try:
-        with pytest.raises(SessionError) as error:
+        with pytest.raises(BrowserRunError) as error:
             manager.start(workspace=tmp_path, task="second", limits=AgentRunLimits())
         assert error.value.code == "WORKSPACE_BUSY"
     finally:
@@ -354,14 +354,14 @@ def test_concurrent_run_limit_is_enforced_across_workspaces(tmp_path: Path) -> N
             release.wait(10)
             return _response(content="released")
 
-    manager = SessionManager(
+    manager = BrowserRunManager(
         environ=ENVIRON,
         client_factory=lambda config: _BlockingClient(),
         max_active_runs=1,
     )
     session = manager.start(workspace=first, task="first", limits=AgentRunLimits(max_steps=1))
     try:
-        with pytest.raises(SessionError) as error:
+        with pytest.raises(BrowserRunError) as error:
             manager.start(workspace=second, task="second", limits=AgentRunLimits())
         assert error.value.code == "TOO_MANY_ACTIVE_RUNS"
     finally:
@@ -379,7 +379,7 @@ def test_cancel_stops_a_running_session(tmp_path: Path) -> None:
             release.wait(10)
             return _response(content="no tool calls")
 
-    manager = SessionManager(environ=ENVIRON, client_factory=lambda config: _GatedClient())
+    manager = BrowserRunManager(environ=ENVIRON, client_factory=lambda config: _GatedClient())
     session = manager.start(workspace=tmp_path, task="cancel me", limits=AgentRunLimits())
     assert started.wait(10)
     assert manager.cancel(session.run_id) is True
@@ -400,7 +400,7 @@ def test_shutdown_cancels_and_joins_running_sessions(tmp_path: Path) -> None:
             started.set()
             return _response(content="no tool calls")
 
-    manager = SessionManager(environ=ENVIRON, client_factory=lambda config: _PollingClient())
+    manager = BrowserRunManager(environ=ENVIRON, client_factory=lambda config: _PollingClient())
     session = manager.start(workspace=tmp_path, task="shut down", limits=AgentRunLimits())
     assert started.wait(10)
     manager.shutdown(timeout=10.0)
@@ -412,7 +412,7 @@ def test_shutdown_cancels_and_joins_running_sessions(tmp_path: Path) -> None:
 def test_missing_credentials_end_the_run_with_a_configuration_termination(
     tmp_path: Path,
 ) -> None:
-    manager = SessionManager(environ={}, client_factory=lambda config: ScriptedClient([]))
+    manager = BrowserRunManager(environ={}, client_factory=lambda config: ScriptedClient([]))
 
     session = manager.start(workspace=tmp_path, task="no key", limits=AgentRunLimits())
     _wait_finished(session)
@@ -431,7 +431,7 @@ def test_a_failing_client_factory_ends_the_run_with_an_api_termination(tmp_path:
     def failing_factory(config: ProofCoderConfig) -> object:
         raise DeepSeekAPIError("client construction failed")
 
-    manager = SessionManager(environ=ENVIRON, client_factory=failing_factory)  # type: ignore[arg-type]
+    manager = BrowserRunManager(environ=ENVIRON, client_factory=failing_factory)  # type: ignore[arg-type]
 
     session = manager.start(workspace=tmp_path, task="bad client", limits=AgentRunLimits())
     _wait_finished(session)
@@ -445,7 +445,7 @@ def test_an_unexpected_loop_failure_is_reported_as_an_incomplete_trace(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import proofcoder.web.sessions as sessions_module
+    import proofcoder.web.runs as sessions_module
 
     def exploding_loop(**kwargs: object) -> object:
         class _Loop:
@@ -471,7 +471,7 @@ def test_a_failing_trace_recorder_still_streams_a_termination(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import proofcoder.web.sessions as sessions_module
+    import proofcoder.web.runs as sessions_module
 
     def exploding_resources(*args: object, **kwargs: object) -> object:
         raise OSError("no runtime directory")
@@ -490,7 +490,7 @@ def test_a_failing_trace_recorder_still_streams_a_termination(
 
 
 def test_finished_sessions_are_evicted_once_retention_is_exceeded(tmp_path: Path) -> None:
-    manager = SessionManager(
+    manager = BrowserRunManager(
         environ=ENVIRON,
         client_factory=lambda config: ScriptedClient([_response(content="stop")] * 3),
         max_retained_sessions=2,
@@ -516,7 +516,7 @@ def test_finished_sessions_are_evicted_once_retention_is_exceeded(tmp_path: Path
 
 def test_duplicate_run_identifiers_are_rejected(tmp_path: Path) -> None:
     fixed = "9" * 32
-    manager = SessionManager(
+    manager = BrowserRunManager(
         environ=ENVIRON,
         client_factory=lambda config: ScriptedClient([_response(content="stop")] * 4),
         run_id_factory=lambda: fixed,
@@ -528,7 +528,7 @@ def test_duplicate_run_identifiers_are_rejected(tmp_path: Path) -> None:
     session = manager.start(workspace=first, task="one", limits=AgentRunLimits(max_steps=1))
     _wait_finished(session)
 
-    with pytest.raises(SessionError) as error:
+    with pytest.raises(BrowserRunError) as error:
         manager.start(workspace=second, task="two", limits=AgentRunLimits(max_steps=1))
 
     assert error.value.code == "DUPLICATE_RUN_ID"

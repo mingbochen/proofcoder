@@ -33,6 +33,15 @@ from proofcoder.rollback import (
     plan_digest,
 )
 from proofcoder.safety.secrets import sensitive_environment_values
+from proofcoder.session import (
+    Session,
+    SessionError,
+    create_session,
+    delete_session,
+    end_session,
+    list_sessions,
+    load_session,
+)
 from proofcoder.tools.files import DEFAULT_IGNORED_DIRECTORIES
 from proofcoder.trace import (
     TracePathError,
@@ -41,7 +50,7 @@ from proofcoder.trace import (
     read_trace,
     validate_run_id,
 )
-from proofcoder.web.sessions import SessionError, SessionManager, SessionStatus
+from proofcoder.web.runs import BrowserRunError, BrowserRunManager, BrowserRunStatus
 
 MAX_AGENT_STEPS = 64
 MAX_AGENT_SECONDS = 3600.0
@@ -95,7 +104,7 @@ class ApiRouter:
     def __init__(
         self,
         *,
-        sessions: SessionManager,
+        sessions: BrowserRunManager,
         environ: Mapping[str, str] | None = None,
         cwd: Path | None = None,
         default_workspace: Path | None = None,
@@ -118,13 +127,16 @@ class ApiRouter:
         route = segments[1:]
         try:
             return self._dispatch(request, route)
-        except SessionError as error:
-            return error_response(_session_error_status(error.code), error.code, str(error))
+        except BrowserRunError as error:
+            return error_response(_browser_run_error_status(error.code), error.code, str(error))
         except TracePathError as error:
             status = 404 if error.code in {"TRACE_NOT_FOUND", "INVALID_RUN_ID"} else 400
             return error_response(status, error.code, str(error))
         except CheckpointError as error:
             status = 404 if error.code in {"CHECKPOINT_NOT_FOUND", "INVALID_RUN_ID"} else 400
+            return error_response(status, error.code, str(error))
+        except SessionError as error:
+            status = 404 if error.code in {"SESSION_NOT_FOUND", "INVALID_SESSION_ID"} else 400
             return error_response(status, error.code, str(error))
 
     def _dispatch(self, request: ApiRequest, route: tuple[str, ...]) -> ApiResponse:
@@ -153,6 +165,16 @@ class ApiRouter:
             return self._rollback_plan(request, route[1])
         if _matches(route, "checkpoints", "rollback") and method == "POST":
             return self._apply_rollback(request, route[1])
+        if route == ("sessions",) and method == "GET":
+            return self._list_sessions(request)
+        if route == ("sessions",) and method == "POST":
+            return self._create_session(request)
+        if len(route) == 2 and route[0] == "sessions" and method == "GET":
+            return self._session_detail(request, route[1])
+        if _matches(route, "sessions", "end") and method == "POST":
+            return self._end_session(request, route[1])
+        if _matches(route, "sessions", "delete") and method == "POST":
+            return self._delete_session(request, route[1])
         if route == ("traces",) and method == "GET":
             return self._list_traces(request)
         if len(route) == 2 and route[0] == "traces" and method == "GET":
@@ -369,10 +391,14 @@ class ApiRouter:
             limits = _parse_limits(request.body)
         except ValueError as error:
             return error_response(400, "INVALID_LIMIT", str(error))
+        session_value = request.body.get("session_id")
+        if session_value is not None and not isinstance(session_value, str):
+            return error_response(400, "INVALID_SESSION_ID", "session_id must be a string")
         session = self._sessions.start(
             workspace=self._absolute(workspace_value.strip()),
             task=task,
             limits=limits,
+            session_id=None if session_value in (None, "") else str(session_value),
         )
         return ApiResponse(201, {"run": session.summary().to_dict()})
 
@@ -409,7 +435,7 @@ class ApiRouter:
                 "cursor": next_cursor,
                 "events": events,
                 "run": summary.to_dict(),
-                "done": summary.status is SessionStatus.FINISHED
+                "done": summary.status is BrowserRunStatus.FINISHED
                 and next_cursor >= summary.event_count,
             },
         )
@@ -626,11 +652,101 @@ class ApiRouter:
             )
         return workspace
 
+    def _list_sessions(self, request: ApiRequest) -> ApiResponse:
+        """List the stored cross-run sessions of one workspace.
+
+        This endpoint is what recovers sessions after the service restarts: they live on
+        disk, so a new process lists exactly what the previous one wrote.
+        """
+
+        workspace = self._session_workspace(request.query.get("workspace"))
+        if workspace is None:
+            return error_response(400, "INVALID_WORKSPACE", "a workspace path is required")
+        return ApiResponse(
+            200,
+            {
+                "sessions": [
+                    {
+                        "session_id": item.session_id,
+                        "created_at": item.created_at,
+                        "ended_at": item.ended_at,
+                        "run_count": item.run_count,
+                        "byte_count": item.byte_count,
+                    }
+                    for item in list_sessions(workspace)
+                ]
+            },
+        )
+
+    def _create_session(self, request: ApiRequest) -> ApiResponse:
+        workspace = self._session_workspace(request.body.get("workspace"))
+        if workspace is None:
+            return error_response(400, "INVALID_WORKSPACE", "a workspace path is required")
+        session = create_session(workspace)
+        return ApiResponse(201, {"session": _session_payload(session)})
+
+    def _session_detail(self, request: ApiRequest, session_id: str) -> ApiResponse:
+        workspace = self._session_workspace(request.query.get("workspace"))
+        if workspace is None:
+            return error_response(400, "INVALID_WORKSPACE", "a workspace path is required")
+        return ApiResponse(200, {"session": _session_payload(load_session(workspace, session_id))})
+
+    def _end_session(self, request: ApiRequest, session_id: str) -> ApiResponse:
+        workspace = self._session_workspace(request.body.get("workspace"))
+        if workspace is None:
+            return error_response(400, "INVALID_WORKSPACE", "a workspace path is required")
+        return ApiResponse(200, {"session": _session_payload(end_session(workspace, session_id))})
+
+    def _delete_session(self, request: ApiRequest, session_id: str) -> ApiResponse:
+        workspace = self._session_workspace(request.body.get("workspace"))
+        if workspace is None:
+            return error_response(400, "INVALID_WORKSPACE", "a workspace path is required")
+        delete_session(workspace, session_id)
+        return ApiResponse(200, {"deleted": session_id})
+
+    def _session_workspace(self, value: object) -> Path | None:
+        if not isinstance(value, str) or not value.strip():
+            return None
+        return self._absolute(value.strip())
+
     def _absolute(self, value: str) -> Path:
         candidate = Path(value).expanduser()
         if not candidate.is_absolute():
             candidate = self._cwd / candidate
         return candidate.resolve(strict=False)
+
+
+def _session_payload(session: Session) -> dict[str, object]:
+    """Render one cross-run session for the browser.
+
+    The carried verification is reported expired here as it is everywhere else: a bare
+    exit code on a page would read as evidence the next run inherits.
+    """
+
+    return {
+        "session_id": session.session_id,
+        "created_at": session.created_at,
+        "ended_at": session.ended_at,
+        "runs": [
+            {
+                "run_id": record.run_id,
+                "task": record.task,
+                "recorded_at": record.recorded_at,
+                "termination_reason": record.termination_reason,
+                "completion_status": record.completion_status,
+                "changed_files": list(record.changed_files),
+                "verification": None
+                if record.verification is None
+                else {
+                    "argv": list(record.verification.argv),
+                    "cwd": record.verification.cwd,
+                    "exit_code": record.verification.exit_code,
+                    "expired": True,
+                },
+            }
+            for record in session.runs
+        ],
+    }
 
 
 def _matches(route: tuple[str, ...], prefix: str, suffix: str) -> bool:
@@ -730,7 +846,7 @@ def _all_ok(checks: Sequence[Mapping[str, object]]) -> bool:
     return all(bool(check.get("ok")) for check in checks)
 
 
-def _session_error_status(code: str) -> int:
+def _browser_run_error_status(code: str) -> int:
     if code == "RUN_NOT_FOUND":
         return 404
     if code in {"WORKSPACE_BUSY", "TOO_MANY_ACTIVE_RUNS", "DUPLICATE_RUN_ID"}:

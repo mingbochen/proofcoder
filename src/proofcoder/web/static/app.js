@@ -15,6 +15,14 @@ const TEXT = {
     newTask: "新任务",
     workspace: "工作区",
     history: "运行历史",
+    session: "会话",
+    sessionNew: "新建",
+    sessionNone: "不使用会话",
+    sessionOpen: "进行中",
+    sessionEnded: "已结束",
+    sessionRuns: "次运行",
+    sessionNote: "会话把前几次运行的程序记录带进下一次运行。验证证据不会被继承：本次运行仍需自己取得验证。",
+    sessionFailed: "会话操作失败",
     checking: "正在检查…",
     runDoctor: "自检",
     theme: "主题",
@@ -131,6 +139,14 @@ const TEXT = {
     newTask: "New task",
     workspace: "Workspace",
     history: "Run history",
+    session: "Session",
+    sessionNew: "New",
+    sessionNone: "No session",
+    sessionOpen: "open",
+    sessionEnded: "ended",
+    sessionRuns: "runs",
+    sessionNote: "A session carries the program's record of earlier runs into the next one. Verification is never inherited: this run must still earn its own.",
+    sessionFailed: "Session request failed",
     checking: "Checking…",
     runDoctor: "Doctor",
     theme: "Theme",
@@ -275,6 +291,8 @@ const state = {
   renderedSteps: new Set(),
   approvalDigest: null,
   suggestionsShown: true,
+  sessions: [],
+  sessionId: "",
 };
 
 const el = (id) => document.getElementById(id);
@@ -504,6 +522,9 @@ async function setWorkspace(path, announce) {
     }
     if (announce) toast(info.path);
     await refreshHistory();
+    // Sessions live on disk beside the workspace, so this listing is also what
+    // recovers them after the service restarts.
+    await refreshSessions();
   } catch (error) {
     banner(error.message, true);
   }
@@ -1227,6 +1248,9 @@ async function startRun() {
     return;
   }
   const request = Object.assign({ workspace: state.workspace, task }, state.limits);
+  if (state.sessionId) {
+    request.session_id = state.sessionId;
+  }
   let payload;
   try {
     payload = await api("/api/runs", { method: "POST", json: request });
@@ -1246,6 +1270,70 @@ async function startRun() {
   appendUserTurn(task);
   setRunning(true);
   pollRun(payload.run.run_id, 0);
+}
+
+/* ---------- sessions ---------- */
+
+function renderSessions() {
+  const select = dom.sessionSelect;
+  if (!select) return;
+  select.textContent = "";
+  const none = document.createElement("option");
+  none.value = "";
+  none.textContent = t("sessionNone");
+  select.appendChild(none);
+  for (const item of state.sessions) {
+    const option = document.createElement("option");
+    option.value = item.session_id;
+    const state_label = item.ended_at ? t("sessionEnded") : t("sessionOpen");
+    option.textContent = `${item.session_id.slice(0, 8)} · ${item.run_count} ${t(
+      "sessionRuns",
+    )} · ${state_label}`;
+    option.disabled = Boolean(item.ended_at);
+    select.appendChild(option);
+  }
+  if (!state.sessions.some((item) => item.session_id === state.sessionId)) {
+    state.sessionId = "";
+  }
+  select.value = state.sessionId;
+  dom.sessionNote.textContent = state.sessionId ? t("sessionNote") : "";
+}
+
+async function refreshSessions() {
+  if (!state.workspace) {
+    state.sessions = [];
+    state.sessionId = "";
+    renderSessions();
+    return;
+  }
+  try {
+    const data = await api(
+      `/api/sessions?workspace=${encodeURIComponent(state.workspace)}`,
+    );
+    state.sessions = Array.isArray(data.sessions) ? data.sessions : [];
+  } catch (error) {
+    state.sessions = [];
+  }
+  renderSessions();
+}
+
+async function createSession() {
+  if (!state.workspace) {
+    banner(t("workspaceMissing"), true);
+    openModal("workspace-modal");
+    return;
+  }
+  try {
+    const data = await api("/api/sessions", {
+      method: "POST",
+      json: { workspace: state.workspace },
+    });
+    await refreshSessions();
+    state.sessionId = data.session.session_id;
+    renderSessions();
+  } catch (error) {
+    banner(error.message || t("sessionFailed"), true);
+  }
 }
 
 async function pollRun(runId, cursor) {
@@ -1270,6 +1358,8 @@ async function pollRun(runId, cursor) {
         syncApproval(null);
         setRunning(false);
         await refreshHistory();
+        // The finished run was just appended to its session, so the counts moved.
+        await refreshSessions();
         break;
       }
     }
@@ -1495,6 +1585,9 @@ function cacheDom() {
     ["statusDot", "status-dot"],
     ["statusText", "status-text"],
     ["historyList", "history-list"],
+    ["sessionSelect", "session-select"],
+    ["sessionNew", "session-new"],
+    ["sessionNote", "session-note"],
     ["workspaceName", "workspace-name"],
     ["workspacePath", "workspace-path"],
     ["workspaceInput", "workspace-input"],
@@ -1516,6 +1609,11 @@ function cacheDom() {
 }
 
 function bindEvents() {
+  dom.sessionSelect.addEventListener("change", () => {
+    state.sessionId = dom.sessionSelect.value;
+    dom.sessionNote.textContent = state.sessionId ? t("sessionNote") : "";
+  });
+  dom.sessionNew.addEventListener("click", createSession);
   dom.sendButton.addEventListener("click", startRun);
   dom.stopButton.addEventListener("click", stopRun);
   dom.taskInput.addEventListener("input", autoGrow);

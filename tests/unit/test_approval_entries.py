@@ -13,7 +13,7 @@ from proofcoder.approval import ApprovalMode, ApprovalOutcome, ApprovalRequest
 from proofcoder.cli import main
 from proofcoder.safety.policy import POLICY_FILENAME
 from proofcoder.web.api import ApiRequest, ApiRouter
-from proofcoder.web.sessions import RunSession, SessionManager, SessionStatus
+from proofcoder.web.runs import BrowserRun, BrowserRunManager, BrowserRunStatus
 
 SENSITIVE_SENTINEL = "never-a-real-approval-credential"
 POLICY_BODY = """
@@ -55,10 +55,10 @@ def _request(digest_seed: str = "wip") -> ApprovalRequest:
     )
 
 
-def _session() -> RunSession:
+def _session() -> BrowserRun:
     from proofcoder.agent_runtime import AgentRunLimits
 
-    return RunSession(
+    return BrowserRun(
         run_id="a" * 32,
         workspace=Path.cwd(),
         task="commit the change",
@@ -237,7 +237,7 @@ def test_answering_when_nothing_is_pending_reports_it() -> None:
     assert session.answer_approval("whatever", ApprovalOutcome.APPROVED) == "none"
 
 
-def _spin_until_pending(session: RunSession) -> dict[str, object] | None:
+def _spin_until_pending(session: BrowserRun) -> dict[str, object] | None:
     for _ in range(500):
         pending = session.pending_approval
         if pending is not None:
@@ -249,10 +249,10 @@ def _spin_until_pending(session: RunSession) -> dict[str, object] | None:
 # --- the HTTP surface ----------------------------------------------------
 
 
-def _router(session: RunSession | None) -> ApiRouter:
+def _router(session: BrowserRun | None) -> ApiRouter:
     """Build a real router over a manager holding exactly the session under test."""
 
-    manager = SessionManager(environ=_environment())
+    manager = BrowserRunManager(environ=_environment())
     if session is not None:
         manager._sessions[session.run_id] = session
     return ApiRouter(sessions=manager, environ=_environment())
@@ -316,6 +316,6 @@ def test_the_http_route_reports_when_nothing_is_pending() -> None:
 
 def test_a_finished_session_reports_no_pending_approval() -> None:
     session = _session()
-    session.status = SessionStatus.FINISHED
+    session.status = BrowserRunStatus.FINISHED
 
     assert session.summary().to_dict()["pending_approval"] is None

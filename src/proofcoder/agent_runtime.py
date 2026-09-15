@@ -29,6 +29,7 @@ from proofcoder.prompt import STAGE_B_SYSTEM_PROMPT
 from proofcoder.protocol import CompletionStatus, RunResult, TerminationReason
 from proofcoder.retry import DEFAULT_MAX_API_ATTEMPTS
 from proofcoder.safety.policy import CommandPolicy
+from proofcoder.session import SessionCarry
 from proofcoder.tools.command import create_run_command_tool
 from proofcoder.tools.edit import (
     create_create_file_tool,
@@ -70,6 +71,7 @@ class AgentRuntimeResources:
     checkpoint_error: CheckpointError | None = None
     policy: CommandPolicy | None = None
     approval: ApprovalGate | None = None
+    carry: SessionCarry | None = None
 
     def event_sink(self, additional_sinks: Sequence[EventSink] = ()) -> CompositeSink:
         """Combine optional presentation sinks with the mandatory local trace."""
@@ -92,6 +94,7 @@ def create_agent_runtime_resources(
     checkpoint_limits: CheckpointLimits = DEFAULT_CHECKPOINT_LIMITS,
     policy: CommandPolicy | None = None,
     approval: ApprovalGate | None = None,
+    carry: SessionCarry | None = None,
 ) -> AgentRuntimeResources:
     """Create one fresh tool registry, trace recorder, and run checkpoint.
 
@@ -153,6 +156,7 @@ def create_agent_runtime_resources(
         checkpoint_error=checkpoint_error,
         policy=policy,
         approval=gate,
+        carry=carry,
     )
 
 
@@ -185,6 +189,7 @@ def build_agent_loop(
         checkpoint=resources.checkpoint,
         approval=resources.approval,
         policy=resources.policy,
+        carry=resources.carry,
     )
 
 

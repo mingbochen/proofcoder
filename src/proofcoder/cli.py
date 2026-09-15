@@ -69,6 +69,18 @@ from proofcoder.safety.policy import (
     workspace_policy_path,
 )
 from proofcoder.safety.secrets import redact_text, sensitive_environment_values
+from proofcoder.session import (
+    SessionCarry,
+    SessionError,
+    append_run_record,
+    build_session_carry,
+    create_session,
+    delete_session,
+    end_session,
+    list_sessions,
+    load_session,
+    run_record_from_result,
+)
 from proofcoder.trace import (
     TracePathError,
     final_trace_report,
@@ -178,6 +190,14 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "path to a project command policy file to authorize for this run; "
             "a policy is never loaded unless it is named here"
+        ),
+    )
+    run.add_argument(
+        "--session",
+        default=None,
+        help=(
+            "continue the named session, or start one with 'new'; without this the run "
+            "reads and writes no session data"
         ),
     )
     run.add_argument("task", help="task for the local coding agent loop")
@@ -312,6 +332,25 @@ def build_parser() -> argparse.ArgumentParser:
     )
     rollback_delete.add_argument("--workspace", required=True, help="existing workspace directory")
     rollback_delete.add_argument("run_id", help="32-character lowercase hexadecimal run ID")
+    session = commands.add_parser(
+        "session",
+        help="inspect and manage cross-run sessions in one workspace",
+    )
+    session_commands = session.add_subparsers(dest="session_command", required=True)
+    session_list = session_commands.add_parser("list", help="list stored sessions")
+    session_list.add_argument("--workspace", required=True, help="existing workspace directory")
+    session_show = session_commands.add_parser("show", help="show one session and its runs")
+    session_show.add_argument("--workspace", required=True, help="existing workspace directory")
+    session_show.add_argument("session_id", help="32-character lowercase hexadecimal session ID")
+    session_end = session_commands.add_parser(
+        "end",
+        help="end one session; its records stay readable but it accepts no further runs",
+    )
+    session_end.add_argument("--workspace", required=True, help="existing workspace directory")
+    session_end.add_argument("session_id", help="32-character lowercase hexadecimal session ID")
+    session_delete = session_commands.add_parser("delete", help="delete one stored session")
+    session_delete.add_argument("--workspace", required=True, help="existing workspace directory")
+    session_delete.add_argument("session_id", help="32-character lowercase hexadecimal session ID")
     trace = commands.add_parser("trace", help="inspect safe workspace JSONL traces")
     trace_commands = trace.add_subparsers(dest="trace_command", required=True)
     trace_list = trace_commands.add_parser("list", help="list workspace run traces")
@@ -365,6 +404,7 @@ def main(
                 checkpoint_enabled=not bool(args.no_checkpoint),
                 approval_mode=ApprovalMode(str(args.approval)),
                 policy_argument=(None if args.command_policy is None else str(args.command_policy)),
+                session_argument=(None if args.session is None else str(args.session)),
             )
         except KeyboardInterrupt:
             _print(output, "DONE: termination=interrupted completion=none")
@@ -446,6 +486,8 @@ def main(
         except KeyboardInterrupt:
             _print(output, "ROLLBACK interrupted: nothing further was changed")
             return 130
+    if args.command == "session":
+        return _run_session_command(args, cwd=base_cwd, console=output)
     if args.command == "trace":
         return _run_trace(
             trace_command=str(args.trace_command),
@@ -610,6 +652,99 @@ def _terminal_responder(console: Console) -> ApprovalResponder:
     return respond
 
 
+def _resolve_workspace(workspace_argument: str, cwd: Path) -> Path | None:
+    """Resolve one workspace argument, or return None when it is not a directory."""
+
+    workspace_input = Path(workspace_argument)
+    workspace = (
+        workspace_input.resolve(strict=False)
+        if workspace_input.is_absolute()
+        else (cwd / workspace_input).resolve(strict=False)
+    )
+    if not workspace.exists() or not workspace.is_dir():
+        return None
+    return workspace
+
+
+def _run_session_command(args: argparse.Namespace, *, cwd: Path, console: Console) -> int:
+    """Run one `proofcoder session` subcommand."""
+
+    workspace = _resolve_workspace(str(args.workspace), cwd)
+    if workspace is None:
+        _print(console, "FAIL session: INVALID_WORKSPACE (must be an existing directory)")
+        return 2
+    command = str(args.session_command)
+    try:
+        if command == "list":
+            summaries = list_sessions(workspace)
+            if not summaries:
+                _print(console, "SESSIONS: none")
+                return 0
+            for summary in summaries:
+                state = "ended" if summary.ended_at is not None else "open"
+                _print(
+                    console,
+                    f"SESSION {summary.session_id} state={state} runs={summary.run_count} "
+                    f"bytes={summary.byte_count} created={summary.created_at}",
+                )
+            return 0
+        if command == "show":
+            session = load_session(workspace, str(args.session_id))
+            state = "ended" if session.ended_at is not None else "open"
+            _print(
+                console,
+                f"SESSION {session.session_id} state={state} runs={len(session.runs)} "
+                f"created={session.created_at}",
+            )
+            for index, record in enumerate(session.runs, start=1):
+                status = "none" if record.completion_status is None else record.completion_status
+                _print(
+                    console,
+                    f"  RUN {index} {record.run_id} {record.termination_reason}/{status} "
+                    f"changed={len(record.changed_files)} recorded={record.recorded_at}",
+                )
+                if record.verification is not None:
+                    # Reported expired here too: a listing is an audit surface, and a bare
+                    # exit code would read like evidence the next run inherits.
+                    _print(
+                        console,
+                        f"    verification(expired) {' '.join(record.verification.argv)} "
+                        f"exit={record.verification.exit_code}",
+                    )
+            return 0
+        if command == "end":
+            session = end_session(workspace, str(args.session_id))
+            _print(console, f"SESSION {session.session_id} ended={session.ended_at}")
+            return 0
+        delete_session(workspace, str(args.session_id))
+        _print(console, f"SESSION {args.session_id} deleted")
+        return 0
+    except SessionError as error:
+        _print(console, f"FAIL session: {error.code} ({error})")
+        return 2
+
+
+def _open_session_carry(
+    workspace: Path,
+    session_argument: str,
+    *,
+    context_budget_bytes: int,
+) -> tuple[str, SessionCarry]:
+    """Resolve the named session and assemble what this run carries from it."""
+
+    if session_argument == "new":
+        session = create_session(workspace)
+    else:
+        session = load_session(workspace, session_argument)
+        if session.ended:
+            raise SessionError(
+                "SESSION_ENDED", "this session has ended and accepts no further runs"
+            )
+    return session.session_id, build_session_carry(
+        session, context_budget_bytes=context_budget_bytes
+    )
+
+
 def _run_agent(
     *,
     task: str,
@@ -627,20 +762,17 @@ def _run_agent(
     approval_mode: ApprovalMode = ApprovalMode.NEVER,
     policy_argument: str | None = None,
     approval_responder: ApprovalResponder | None = None,
+    session_argument: str | None = None,
 ) -> int:
-    workspace_input = Path(workspace_argument)
-    workspace = (
-        workspace_input.resolve(strict=False)
-        if workspace_input.is_absolute()
-        else (cwd / workspace_input).resolve(strict=False)
-    )
-    if not workspace.exists() or not workspace.is_dir():
+    resolved = _resolve_workspace(workspace_argument, cwd)
+    if resolved is None:
         _print(
             console,
             "DONE: termination=invalid_workspace completion=none\n"
             "  workspace must be an existing directory",
         )
         return 2
+    workspace = resolved
 
     secret: str | None = None
     sensitive_values = sensitive_environment_values(environ)
@@ -651,6 +783,22 @@ def _run_agent(
         try:
             policy = load_project_command_policy(policy_path, workspace=workspace)
         except CommandPolicyFileError as error:
+            _print(
+                console,
+                "DONE: termination=configuration_error completion=none\n"
+                f"  error_code={error.code}\n  {error}",
+            )
+            return 1
+    session_id: str | None = None
+    carry: SessionCarry | None = None
+    if session_argument is not None:
+        try:
+            session_id, carry = _open_session_carry(
+                workspace,
+                session_argument,
+                context_budget_bytes=context_budget_bytes,
+            )
+        except SessionError as error:
             _print(
                 console,
                 "DONE: termination=configuration_error completion=none\n"
@@ -671,6 +819,7 @@ def _run_agent(
             checkpoint_enabled=checkpoint_enabled,
             policy=policy,
             approval=gate,
+            carry=carry,
         )
     except TracePathError as error:
         _print(
@@ -749,6 +898,20 @@ def _run_agent(
         ).run(task)
     finally:
         resources.close()
+
+    if session_id is not None:
+        # Recorded after the run, from the finished result, so what the session carries
+        # forward is what the program observed rather than anything the model asserted.
+        try:
+            append_run_record(
+                workspace,
+                session_id,
+                run_record_from_result(result, task=task, sensitive_values=sensitive_values),
+            )
+        except SessionError as error:
+            _safe_print(console, f"WARN: SESSION_NOT_RECORDED {error.code}", secret)
+        else:
+            _safe_print(console, f"SESSION: {session_id} recorded this run", secret)
 
     if result.final_report is not None:
         _safe_print(console, "REPORT:", secret)
