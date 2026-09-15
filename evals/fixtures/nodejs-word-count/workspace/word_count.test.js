@@ -9,7 +9,14 @@ test("counts every repeated word", () => {
 });
 
 test("treats differing case as the same word", () => {
-  assert.deepStrictEqual([...countWords("Alpha alpha beta")], [["alpha", 2], ["beta", 1]]);
+  // The message is the fixture's initial-failure evidence. Node's default test
+  // reporter differs by version and by whether output is a terminal, but every
+  // reporter prints an assertion message, and only when the assertion fails.
+  assert.deepStrictEqual(
+    [...countWords("Alpha alpha beta")],
+    [["alpha", 2], ["beta", 1]],
+    "countWords must fold case before counting",
+  );
 });
 
 test("ignores surrounding whitespace", () => {

@@ -172,6 +172,44 @@ def test_each_initial_validation_fails_for_the_declared_reason(
     assert fixture.validation.initial_output_contains in output
 
 
+@pytest.mark.parametrize("reporter", ["tap", "spec"])
+def test_the_node_fixture_reports_its_failure_under_every_reporter(
+    tmp_path: Path, reporter: str
+) -> None:
+    """Its initial-failure evidence must not depend on which reporter Node picks.
+
+    The default differs by Node version and by whether stdout is a terminal, and a
+    fixture that cannot recognize its own failing state refuses to run at all.
+    """
+
+    executable = shutil.which("node")
+    if executable is None:
+        pytest.skip("node is not installed on this machine")
+    fixture = next(
+        item for item in load_fixtures(FIXTURES_ROOT) if item.fixture_id == "nodejs-word-count"
+    )
+    destination = tmp_path / "materialized"
+    materialize_fixture(fixture, destination)
+    environment = minimal_subprocess_environment(command_defaults=True)
+    environment["PATH"] = str(Path(executable).resolve().parent)
+
+    completed = subprocess.run(
+        [*fixture.validation.argv, f"--test-reporter={reporter}"],
+        cwd=destination,
+        env=environment,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=30,
+        check=False,
+        shell=False,
+    )
+
+    assert completed.returncode == fixture.validation.initial_exit_code
+    assert fixture.validation.initial_output_contains in completed.stdout + completed.stderr
+
+
 @pytest.mark.parametrize("unsafe_path", ["../outside.py", "/outside.py", "C:/outside.py"])
 def test_absolute_and_traversal_metadata_paths_are_rejected(
     tmp_path: Path, unsafe_path: str
