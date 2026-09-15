@@ -158,6 +158,27 @@ A rollback is a separate operation against a finished run, so it records its own
 
 The browser interface offers the same thing on the card that closes a run; see below.
 
+### Sessions across runs
+
+Several runs in one workspace can belong to one session, so a later run starts with a record of what the earlier ones did instead of with nothing:
+
+```text
+uv run --offline --env-file .env proofcoder run --workspace ../proofcoder-demo --session new "first task"
+uv run --offline proofcoder session list --workspace ../proofcoder-demo
+uv run --offline --env-file .env proofcoder run --workspace ../proofcoder-demo --session <session_id> "next task"
+uv run --offline proofcoder session show --workspace ../proofcoder-demo <session_id>
+uv run --offline proofcoder session end --workspace ../proofcoder-demo <session_id>
+uv run --offline proofcoder session delete --workspace ../proofcoder-demo <session_id>
+```
+
+Without `--session` a run reads and writes no session data at all, and behaves exactly as it did before sessions existed. There is no implicit continuation: a run's inputs are the ones you chose.
+
+What a later run receives is a program-generated summary, not the earlier run's messages. Each carried run appears as two labelled blocks — what ProofCoder recorded, and what that run said about itself — because the changed-file list is program-recorded while the summary is the model's own claim. The text is prefixed to your task, never added to the system instruction, and is trimmed to a fraction of the context budget before the run starts, dropping the oldest run's account first and then the oldest run entirely.
+
+**Verification is never inherited.** A run counts as `completed_verified` only from a command that run executed. The earlier run's verification is carried and marked expired rather than hidden, so the model knows which check to repeat but cannot claim it as this run's evidence.
+
+Sessions are stored under the workspace's ignored `.proofcoder/sessions` directory. The file tools refuse that directory, but an allowed workspace command runs with your authority and is not bound by them, so a session file can be planted. It carries no command policy, approval state, verification, or path grant — nothing that changes a decision — and its model-authored half is treated as untrusted text, so the worst case is a misleading paragraph rather than a widened capability.
+
 ## Browser Interface
 
 `proofcoder serve` presents the same bounded run in a local web page, so a task can be
@@ -170,7 +191,8 @@ uv run --locked --env-file .env proofcoder serve --workspace ../proofcoder-demo 
 The command prints the loopback URL it bound. The page offers a workspace picker, an
 example-task composer, live rendering of model messages, tool calls, diffs, verification
 results and the final completion badge, a per-workspace run history that replays stored
-traces, an environment self-check, and the same bounded run overrides `run` accepts. It
+traces, a session selector that carries earlier runs into the next one, an environment
+self-check, and the same bounded run overrides `run` accepts. It
 is bilingual (Chinese and English) and follows the browser's light or dark theme.
 
 The interface is presentation only. It adds no agent behaviour, no new runtime
@@ -188,6 +210,13 @@ matches the plan that would run now, returning the new plan to be reviewed inste
 workspace with a run in progress refuses outright. The run's own checkpoint coverage is
 shown while the run streams, so what is recoverable is visible before anything needs
 recovering.
+
+The sidebar carries a session selector, and a run started with one selected joins that
+session exactly as `run --session` does. Sessions are stored beside the workspace rather
+than in the server process, so restarting `serve` loses nothing: the new process lists
+the same sessions and their recorded runs. A run that was still executing when the
+service stopped is not recovered — it ends with the process, and its partial trace stays
+on disk for `trace show`.
 
 | Option | Purpose |
 | --- | --- |

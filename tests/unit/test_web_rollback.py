@@ -9,7 +9,7 @@ import pytest
 from proofcoder.checkpoint import create_checkpoint
 from proofcoder.rollback import build_rollback_plan, plan_digest
 from proofcoder.web.api import ApiRequest, ApiResponse, ApiRouter
-from proofcoder.web.sessions import SessionManager, SessionStatus
+from proofcoder.web.runs import BrowserRunManager, BrowserRunStatus
 
 TARGET_RUN = "a" * 32
 # Written into a workspace .env so the tests can prove no response surface shows it.
@@ -17,8 +17,8 @@ SENSITIVE_SENTINEL = "never-echo-this-value"
 ENVIRON = {"DEEPSEEK_API_KEY": SENSITIVE_SENTINEL}
 
 
-def _router(sessions: SessionManager | None = None) -> ApiRouter:
-    manager = sessions or SessionManager(environ=ENVIRON, client_factory=lambda config: None)
+def _router(sessions: BrowserRunManager | None = None) -> ApiRouter:
+    manager = sessions or BrowserRunManager(environ=ENVIRON, client_factory=lambda config: None)
     return ApiRouter(sessions=manager, environ=ENVIRON)
 
 
@@ -141,7 +141,7 @@ def test_a_live_run_blocks_rolling_its_workspace_back(tmp_path: Path) -> None:
     _workspace(tmp_path)
     _change(tmp_path)
 
-    class _BusyManager(SessionManager):
+    class _BusyManager(BrowserRunManager):
         def workspace_busy(self, workspace: Path) -> bool:
             return True
 
@@ -155,7 +155,7 @@ def test_a_live_run_blocks_rolling_its_workspace_back(tmp_path: Path) -> None:
 
 
 def test_workspace_busy_tracks_only_running_sessions(tmp_path: Path) -> None:
-    manager = SessionManager(environ=ENVIRON, client_factory=lambda config: None)
+    manager = BrowserRunManager(environ=ENVIRON, client_factory=lambda config: None)
 
     assert manager.workspace_busy(tmp_path) is False
 
@@ -165,7 +165,7 @@ def test_workspace_busy_tracks_only_running_sessions(tmp_path: Path) -> None:
         limits=__import__("proofcoder.agent_runtime", fromlist=["AgentRunLimits"]).AgentRunLimits(),
     )
     for _ in range(200):
-        if session.status is not SessionStatus.RUNNING:
+        if session.status is not BrowserRunStatus.RUNNING:
             break
         __import__("time").sleep(0.02)
     manager.shutdown(timeout=10.0)

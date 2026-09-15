@@ -25,7 +25,7 @@ from proofcoder.web.api import (
     ApiResponse,
     ApiRouter,
 )
-from proofcoder.web.sessions import SessionManager, SessionStatus
+from proofcoder.web.runs import BrowserRunManager, BrowserRunStatus
 
 SENSITIVE_SENTINEL = "never-echo-this-api-value"
 REASONING = "hidden-reasoning-must-stay-private"
@@ -68,9 +68,9 @@ def _router(
     environ: Mapping[str, str] | None = None,
     connectivity: object | None = None,
     allow_browse: bool = True,
-) -> tuple[ApiRouter, SessionManager]:
+) -> tuple[ApiRouter, BrowserRunManager]:
     scripted = ScriptedClient(responses or [])
-    manager = SessionManager(
+    manager = BrowserRunManager(
         environ=ENVIRON if environ is None else environ,
         client_factory=lambda config: scripted,
     )
@@ -94,12 +94,12 @@ def _post(router: ApiRouter, path: str, body: Mapping[str, object] | None = None
     return router.handle(ApiRequest("POST", path, {}, dict(body or {})))
 
 
-def _finish_run(manager: SessionManager, run_id: str, timeout: float = 15.0) -> None:
+def _finish_run(manager: BrowserRunManager, run_id: str, timeout: float = 15.0) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         session = manager.get(run_id)
         assert session is not None
-        if session.summary().status is SessionStatus.FINISHED:
+        if session.summary().status is BrowserRunStatus.FINISHED:
             return
         time.sleep(0.01)
     raise AssertionError("the run did not finish within the test timeout")

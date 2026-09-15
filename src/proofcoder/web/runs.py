@@ -12,6 +12,7 @@ import threading
 import time
 from collections import OrderedDict, deque
 from collections.abc import Callable, Mapping
+from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -45,6 +46,14 @@ from proofcoder.llm.base import LLMClient
 from proofcoder.llm.deepseek import DeepSeekClient
 from proofcoder.protocol import CompletionStatus, RunResult, TerminationReason
 from proofcoder.safety.secrets import sensitive_environment_values
+from proofcoder.session import (
+    SessionCarry,
+    SessionError,
+    append_run_record,
+    build_session_carry,
+    load_session,
+    run_record_from_result,
+)
 from proofcoder.trace import TracePathError
 
 MAX_BUFFERED_EVENTS = 4096
@@ -56,14 +65,14 @@ ClientFactory = Callable[[ProofCoderConfig], LLMClient]
 _DEFAULT_CLIENT_FACTORY: ClientFactory = DeepSeekClient
 
 
-class SessionStatus(StrEnum):
+class BrowserRunStatus(StrEnum):
     """Lifecycle of one browser-visible run."""
 
     RUNNING = "running"
     FINISHED = "finished"
 
 
-class SessionError(Exception):
+class BrowserRunError(Exception):
     """A stable, user-safe reason one run could not be started or addressed."""
 
     def __init__(self, code: str, message: str) -> None:
@@ -72,13 +81,13 @@ class SessionError(Exception):
 
 
 @dataclass(frozen=True, slots=True)
-class SessionSummary:
+class BrowserRunSummary:
     """Compact, JSON-ready facts about one run without its event bodies."""
 
     run_id: str
     workspace: str
     task: str
-    status: SessionStatus
+    status: BrowserRunStatus
     started_at: str
     finished_at: str | None
     termination_reason: str | None
@@ -91,6 +100,7 @@ class SessionSummary:
     trace_path: str | None
     trace_complete: bool | None
     final_report: str | None
+    session_id: str | None = None
     pending_approval: dict[str, object] | None = None
 
     def to_dict(self) -> dict[str, object]:
@@ -113,12 +123,13 @@ class SessionSummary:
             "trace_path": self.trace_path,
             "trace_complete": self.trace_complete,
             "final_report": self.final_report,
+            "session_id": self.session_id,
             "pending_approval": self.pending_approval,
         }
 
 
 @dataclass(slots=True)
-class RunSession:
+class BrowserRun:
     """One bounded run plus the buffered events a browser has not yet read."""
 
     run_id: str
@@ -126,7 +137,8 @@ class RunSession:
     task: str
     limits: AgentRunLimits
     started_at: str
-    status: SessionStatus = SessionStatus.RUNNING
+    session_id: str | None = None
+    status: BrowserRunStatus = BrowserRunStatus.RUNNING
     finished_at: str | None = None
     termination_reason: str | None = None
     completion_status: str | None = None
@@ -163,7 +175,7 @@ class RunSession:
         """Ask the loop to stop at its next bounded checkpoint."""
 
         with self._condition:
-            if self.status is SessionStatus.FINISHED:
+            if self.status is BrowserRunStatus.FINISHED:
                 return False
             already = self._cancel
             self._cancel = True
@@ -252,17 +264,17 @@ class RunSession:
         """Block until new events, completion, or ``timeout`` elapses."""
 
         with self._condition:
-            if cursor >= self._appended and self.status is SessionStatus.RUNNING:
+            if cursor >= self._appended and self.status is BrowserRunStatus.RUNNING:
                 self._condition.wait(timeout)
             next_cursor, events = self._events_after_locked(cursor)
-            finished = self.status is SessionStatus.FINISHED
+            finished = self.status is BrowserRunStatus.FINISHED
             return next_cursor, events, finished and next_cursor >= self._appended
 
-    def summary(self) -> SessionSummary:
+    def summary(self) -> BrowserRunSummary:
         """Return one consistent snapshot taken under the session lock."""
 
         with self._condition:
-            return SessionSummary(
+            return BrowserRunSummary(
                 run_id=self.run_id,
                 workspace=str(self.workspace),
                 task=self.task,
@@ -279,6 +291,7 @@ class RunSession:
                 trace_path=self.trace_path,
                 trace_complete=self.trace_complete,
                 final_report=self.final_report,
+                session_id=self.session_id,
                 pending_approval=(
                     None if self._pending_approval is None else dict(self._pending_approval)
                 ),
@@ -298,9 +311,9 @@ class RunSession:
         """Record the terminal outcome exactly once and release every reader."""
 
         with self._condition:
-            if self.status is SessionStatus.FINISHED:
+            if self.status is BrowserRunStatus.FINISHED:
                 return
-            self.status = SessionStatus.FINISHED
+            self.status = BrowserRunStatus.FINISHED
             self.finished_at = finished_at or _timestamp()
             self.termination_reason = termination_reason.value
             self.completion_status = None if completion_status is None else completion_status.value
@@ -318,10 +331,10 @@ class RunSession:
         return self._appended, list(self._events)[start:]
 
 
-class _SessionSink:
+class _BrowserRunSink:
     """Deliver already sanitized events into one session buffer."""
 
-    def __init__(self, session: RunSession) -> None:
+    def __init__(self, session: BrowserRun) -> None:
         self._session = session
 
     def emit(self, event: RunEvent) -> None:
@@ -330,7 +343,7 @@ class _SessionSink:
         self._session.append_event(event)
 
 
-class SessionManager:
+class BrowserRunManager:
     """Own every browser-started run, its worker thread, and its retention bound."""
 
     def __init__(
@@ -359,52 +372,74 @@ class SessionManager:
         self._approval_mode = approval_mode
         self._approval_timeout_seconds = approval_timeout_seconds
         self._lock = threading.Lock()
-        self._sessions: OrderedDict[str, RunSession] = OrderedDict()
+        self._sessions: OrderedDict[str, BrowserRun] = OrderedDict()
         self._threads: dict[str, threading.Thread] = {}
 
-    def start(self, *, workspace: Path, task: str, limits: AgentRunLimits) -> RunSession:
-        """Validate one request, register the session, and start its worker thread."""
+    def start(
+        self,
+        *,
+        workspace: Path,
+        task: str,
+        limits: AgentRunLimits,
+        session_id: str | None = None,
+    ) -> BrowserRun:
+        """Validate one request, register the run, and start its worker thread."""
 
         cleaned = task.strip()
         if not cleaned:
-            raise SessionError("EMPTY_TASK", "a task description is required")
+            raise BrowserRunError("EMPTY_TASK", "a task description is required")
         if len(cleaned.encode("utf-8")) > MAX_TASK_BYTES:
-            raise SessionError(
+            raise BrowserRunError(
                 "TASK_TOO_LARGE",
                 f"the task description must be at most {MAX_TASK_BYTES} bytes",
             )
         try:
             workspace_root = workspace.resolve(strict=True)
         except (OSError, RuntimeError):
-            raise SessionError(
+            raise BrowserRunError(
                 "INVALID_WORKSPACE", "workspace must be an existing directory"
             ) from None
         if not workspace_root.is_dir():
-            raise SessionError("INVALID_WORKSPACE", "workspace must be an existing directory")
+            raise BrowserRunError("INVALID_WORKSPACE", "workspace must be an existing directory")
 
-        session = RunSession(
+        if session_id is not None:
+            # Validated before the worker starts so a bad session fails the request
+            # instead of failing a run the browser is already watching.
+            try:
+                stored = load_session(workspace_root, session_id)
+            except SessionError as error:
+                raise BrowserRunError(error.code, str(error)) from None
+            if stored.ended:
+                raise BrowserRunError(
+                    "SESSION_ENDED", "this session has ended and accepts no further runs"
+                )
+
+        session = BrowserRun(
             run_id=self._run_id_factory(),
             workspace=workspace_root,
             task=cleaned,
             limits=limits,
             started_at=_timestamp(),
+            session_id=session_id,
         )
         with self._lock:
             active = [
-                item for item in self._sessions.values() if item.status is SessionStatus.RUNNING
+                item for item in self._sessions.values() if item.status is BrowserRunStatus.RUNNING
             ]
             if any(item.workspace == workspace_root for item in active):
-                raise SessionError(
+                raise BrowserRunError(
                     "WORKSPACE_BUSY",
                     "another run is already using this workspace; wait for it or stop it",
                 )
             if len(active) >= self._max_active_runs:
-                raise SessionError(
+                raise BrowserRunError(
                     "TOO_MANY_ACTIVE_RUNS",
                     f"at most {self._max_active_runs} runs may execute at the same time",
                 )
             if session.run_id in self._sessions:
-                raise SessionError("DUPLICATE_RUN_ID", "a run with this identifier already exists")
+                raise BrowserRunError(
+                    "DUPLICATE_RUN_ID", "a run with this identifier already exists"
+                )
             self._sessions[session.run_id] = session
             self._prune_locked()
             thread = threading.Thread(
@@ -417,13 +452,13 @@ class SessionManager:
         thread.start()
         return session
 
-    def get(self, run_id: str) -> RunSession | None:
+    def get(self, run_id: str) -> BrowserRun | None:
         """Return one retained session, or None when it is unknown or evicted."""
 
         with self._lock:
             return self._sessions.get(run_id)
 
-    def summaries(self) -> tuple[SessionSummary, ...]:
+    def summaries(self) -> tuple[BrowserRunSummary, ...]:
         """Return newest-first snapshots of every retained session."""
 
         with self._lock:
@@ -435,7 +470,7 @@ class SessionManager:
 
         with self._lock:
             return any(
-                item.workspace == workspace and item.status is SessionStatus.RUNNING
+                item.workspace == workspace and item.status is BrowserRunStatus.RUNNING
                 for item in self._sessions.values()
             )
 
@@ -444,7 +479,7 @@ class SessionManager:
 
         with self._lock:
             return sum(
-                1 for item in self._sessions.values() if item.status is SessionStatus.RUNNING
+                1 for item in self._sessions.values() if item.status is BrowserRunStatus.RUNNING
             )
 
     def cancel(self, run_id: str) -> bool:
@@ -452,7 +487,7 @@ class SessionManager:
 
         session = self.get(run_id)
         if session is None:
-            raise SessionError("RUN_NOT_FOUND", "no retained run has this identifier")
+            raise BrowserRunError("RUN_NOT_FOUND", "no retained run has this identifier")
         return session.request_cancel()
 
     def shutdown(self, timeout: float = 5.0) -> None:
@@ -474,17 +509,17 @@ class SessionManager:
 
         while len(self._sessions) > self._max_retained_sessions:
             for run_id, session in self._sessions.items():
-                if session.status is SessionStatus.FINISHED:
+                if session.status is BrowserRunStatus.FINISHED:
                     del self._sessions[run_id]
                     self._threads.pop(run_id, None)
                     break
             else:
                 return
 
-    def _execute(self, session: RunSession) -> None:
+    def _execute(self, session: BrowserRun) -> None:
         """Run one bounded agent loop and always record a terminal outcome."""
 
-        sink = _SessionSink(session)
+        sink = _BrowserRunSink(session)
         sensitive_values = sensitive_environment_values(self._environ)
         timeout = float(self._approval_timeout_seconds)
         gate = ApprovalGate(
@@ -493,12 +528,14 @@ class SessionManager:
             timeout_seconds=self._approval_timeout_seconds,
         )
         try:
+            carry = _load_carry(session)
             resources = create_agent_runtime_resources(
                 session.workspace,
                 environ=self._environ,
                 sensitive_values=sensitive_values,
                 run_id_factory=lambda: session.run_id,
                 approval=gate,
+                carry=carry,
             )
         except (TracePathError, OSError, ValueError):
             _stream_termination(
@@ -576,13 +613,14 @@ class SessionManager:
         finally:
             resources.close()
 
+        _record_in_session(session, result, sensitive_values=sensitive_values)
         _complete_from_result(session, result)
 
     def _fail_before_loop(
         self,
         *,
-        session: RunSession,
-        sink: _SessionSink,
+        session: BrowserRun,
+        sink: _BrowserRunSink,
         resources: AgentRuntimeResources,
         termination_reason: TerminationReason,
         sensitive_values: tuple[str, ...],
@@ -603,7 +641,7 @@ class SessionManager:
         )
 
 
-def _complete_from_result(session: RunSession, result: RunResult) -> None:
+def _complete_from_result(session: BrowserRun, result: RunResult) -> None:
     """Copy one terminated run result onto its session snapshot."""
 
     session.complete(
@@ -618,8 +656,8 @@ def _complete_from_result(session: RunSession, result: RunResult) -> None:
 
 def _stream_termination(
     *,
-    session: RunSession,
-    sink: _SessionSink,
+    session: BrowserRun,
+    sink: _BrowserRunSink,
     termination_reason: TerminationReason,
     sensitive_values: tuple[str, ...],
     include_task: bool,
@@ -656,6 +694,42 @@ def _stream_termination(
             "warning_count": 0,
         },
     )
+
+
+def _load_carry(session: BrowserRun) -> SessionCarry | None:
+    """Assemble what this run carries, reading the session as late as possible.
+
+    The session is read here rather than at request time so a run started while an
+    earlier one was still finishing carries that earlier run's record too.
+    """
+
+    if session.session_id is None:
+        return None
+    try:
+        stored = load_session(session.workspace, session.session_id)
+    except SessionError:
+        # A session that became unreadable between the request and the worker must not
+        # take the run down with it: the run simply carries nothing.
+        return None
+    return build_session_carry(stored, context_budget_bytes=session.limits.context_budget_bytes)
+
+
+def _record_in_session(
+    session: BrowserRun,
+    result: RunResult,
+    *,
+    sensitive_values: tuple[str, ...],
+) -> None:
+    """Append this finished run to its session, if it belongs to one."""
+
+    if session.session_id is None:
+        return
+    with suppress(SessionError):
+        append_run_record(
+            session.workspace,
+            session.session_id,
+            run_record_from_result(result, task=session.task, sensitive_values=sensitive_values),
+        )
 
 
 def _timestamp() -> str:

@@ -35,7 +35,7 @@ from proofcoder.web.api import (
     ConnectivityClientFactory,
     error_response,
 )
-from proofcoder.web.sessions import ClientFactory, SessionManager
+from proofcoder.web.runs import BrowserRunManager, ClientFactory
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
@@ -96,7 +96,7 @@ class WebServer:
     """One bound local server plus the values its caller needs to open a browser."""
 
     http: _ProofCoderHTTPServer
-    sessions: SessionManager
+    sessions: BrowserRunManager
     token: str
     host: str
     port: int
@@ -141,7 +141,7 @@ def create_server(
     workspace: Path | None = None,
     client_factory: ClientFactory | None = None,
     connectivity_factory: ConnectivityClientFactory | None = None,
-    sessions: SessionManager | None = None,
+    sessions: BrowserRunManager | None = None,
     token: str | None = None,
     allow_browse: bool = True,
     request_logger: Callable[[str], None] | None = None,
@@ -151,9 +151,9 @@ def create_server(
     manager = sessions
     if manager is None:
         manager = (
-            SessionManager(environ=environ)
+            BrowserRunManager(environ=environ)
             if client_factory is None
-            else SessionManager(environ=environ, client_factory=client_factory)
+            else BrowserRunManager(environ=environ, client_factory=client_factory)
         )
     router_kwargs: dict[str, object] = {
         "sessions": manager,

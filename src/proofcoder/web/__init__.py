@@ -6,6 +6,12 @@ local browser page, and reads existing workspace traces. Every decision about
 tools, safety, verification, and termination stays in the core modules.
 """
 
+from proofcoder.web.runs import (
+    BrowserRun,
+    BrowserRunError,
+    BrowserRunManager,
+    BrowserRunStatus,
+)
 from proofcoder.web.server import (
     DEFAULT_HOST,
     DEFAULT_PORT,
@@ -13,21 +19,15 @@ from proofcoder.web.server import (
     WebServer,
     create_server,
 )
-from proofcoder.web.sessions import (
-    RunSession,
-    SessionError,
-    SessionManager,
-    SessionStatus,
-)
 
 __all__ = [
     "DEFAULT_HOST",
     "DEFAULT_PORT",
-    "RunSession",
+    "BrowserRun",
+    "BrowserRunError",
+    "BrowserRunManager",
+    "BrowserRunStatus",
     "ServerAddressError",
-    "SessionError",
-    "SessionManager",
-    "SessionStatus",
     "WebServer",
     "create_server",
 ]

@@ -238,6 +238,35 @@ h3 {
   flex: none;
 }
 
+.session {
+  margin-top: 18px;
+}
+
+.session__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.session__select {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 6px 8px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-muted);
+  background: var(--bg-sunken);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.session__note {
+  margin: 6px 4px 0;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-faint);
+}
+
 .workspace__path {
   margin: 6px 4px 0;
   font-family: var(--mono);
