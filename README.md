@@ -229,7 +229,7 @@ stage in the [roadmap](docs/ROADMAP.md).
 | `make_directory` | Create a directory and any missing parents | Refused when the path exists as a file or a link; an existing directory is reported, not recreated |
 | `delete_path` | Delete one file, one empty directory, or one link | Never recursive; a non-empty directory is refused, and a link is removed without following it |
 | `move_path` | Move or rename one file or directory | The destination must not exist; nothing is ever overwritten |
-| `run_command` | Run an approved local check or workspace script | argv-only, `shell=False`, default-deny policy, filtered environment, timeout, and bounded output |
+| `run_command` | Run an approved local check or workspace script | argv-only, `shell=False`, default-deny policy with an allow/confirm/deny decision, filtered environment, timeout, and bounded output |
 | `finish_task` | Request completion or report a blocker | Runs no claimed verification and cannot override local evidence |
 
 All eleven tools are implemented and executed locally. Expected failures return structured results so the model can change its approach; valid calls in a fully valid batch execute synchronously in model-provided order.
@@ -296,6 +296,8 @@ The lock check and dependency synchronization are separate from offline validati
 ## Security Boundaries
 
 - ProofCoder enforces an application policy, not an OS or kernel sandbox.
+- The command decision has three values. Most commands are allowed or refused outright; Git's local write subcommands are classified as needing confirmation, and until a confirmation entry point exists they are refused with `APPROVAL_DENIED` rather than executed. Git's network subcommands and `git config` are never confirmable: the first move repository content past anything a rollback reaches, and the second can set `core.hooksPath` or an alias that turns a later ordinary Git command into arbitrary execution.
+- A project may extend the default-deny command set through a policy file, but that file is repository content and never authorizes itself: it applies only when a caller names it, is frozen for the run once read, may not redeclare any executable the built-in policy already decides, and is refused by every write tool at any path named `proofcoder.toml`.
 - The optional browser interface adds a local HTTP surface. Its loopback bind, session token, and Host/Origin checks are access controls on that surface, not isolation of the underlying file and command authority.
 - An allowed workspace Python script runs with the current user's authority and can act outside file-tool policy. A run checkpoint covers such writes inside the workspace; it cannot cover anything the script does outside it.
 - A checkpoint restores content within its captured scope. It is not a backup: credential paths, files over 1 MiB, ignored directories, and everything outside the workspace stay uncovered, and it protects nothing once `--no-checkpoint` is used.

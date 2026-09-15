@@ -16,6 +16,12 @@ from proofcoder.safety.paths import (
     resolve_workspace_directory,
     resolve_workspace_file,
 )
+from proofcoder.safety.policy import (
+    CommandDecision,
+    CommandPolicy,
+    PolicyEntry,
+    load_command_policy,
+)
 from proofcoder.safety.secrets import (
     minimal_subprocess_environment,
     sensitive_environment_values,
@@ -108,6 +114,22 @@ _GIT_WRITE_SUBCOMMANDS = frozenset(
         "worktree",
     }
 )
+# Git write subcommands that only touch this workspace. They are the first commands to
+# become "needs confirmation": the damage they do is local, and the run checkpoint can
+# undo it, so a person looking at the full argv can judge the risk.
+_GIT_CONFIRM_SUBCOMMANDS = _GIT_WRITE_SUBCOMMANDS - {
+    "clone",
+    "config",
+    "fetch",
+    "pull",
+    "push",
+    "remote",
+}
+# The two carve-outs above stay refused outright rather than becoming confirmable.
+# Network subcommands send or fetch repository content across a boundary no rollback
+# reaches, and section 7.6 blocks network transfer by default. `git config` can set
+# core.hooksPath or an alias, which turns the next ordinary git command into arbitrary
+# execution -- privilege escalation, which section 10.4.5 makes non-overridable.
 _GIT_BLOCKED_OPTIONS = frozenset(
     {
         "--config-env",
@@ -167,6 +189,25 @@ _RUFF_VALUE_OPTIONS = frozenset(
 _RUFF_BLOCKED_OPTIONS = frozenset({"--fix", "--fix-only", "--unsafe-fixes"})
 
 
+# Every executable name the built-in policy already decides, whether it allows it or
+# refuses it. A project policy may extend default deny with new names; it may never
+# redeclare one of these, because that is the one way a policy could relax rather than
+# extend the decision this module makes.
+BUILTIN_EXECUTABLE_NAMES = frozenset(
+    {"g++", "python", "python3", "py", *_KNOWN_EXECUTABLES, *_BLOCKED_EXECUTABLES}
+)
+
+
+def load_project_command_policy(path: Path, *, workspace: Path) -> CommandPolicy:
+    """Load one user-named policy file against this module's reserved names."""
+
+    return load_command_policy(
+        path,
+        workspace=workspace,
+        reserved_executables=BUILTIN_EXECUTABLE_NAMES,
+    )
+
+
 class CommandPolicyError(Exception):
     """A stable command argument or policy failure safe to return to the model."""
 
@@ -187,6 +228,8 @@ class PreparedCommand:
     command_kind: str
     environment: dict[str, str]
     sensitive_values: tuple[str, ...]
+    decision: CommandDecision = CommandDecision.ALLOW
+    decision_source: str = "builtin"
 
 
 def prepare_command(
@@ -194,8 +237,14 @@ def prepare_command(
     arguments: Mapping[str, object],
     *,
     environ: Mapping[str, str] | None = None,
+    policy: CommandPolicy | None = None,
 ) -> PreparedCommand:
-    """Validate, classify, resolve, and normalize one command without side effects."""
+    """Validate, classify, resolve, and normalize one command without side effects.
+
+    There is exactly one decision entry point, and it returns one of three values. A
+    command that needs confirmation is not executed here either: this function only
+    says what it is, and the caller decides whether anyone gets asked.
+    """
 
     workspace_root = workspace.resolve(strict=True)
     argv = _validated_argv(arguments.get("argv"))
@@ -225,8 +274,12 @@ def prepare_command(
         workspace_root,
         argv[0],
         environment,
+        policy=policy,
     )
+    entry = None if policy is None else policy.entry_for(canonical_name)
     tail = list(argv[1:])
+    decision = CommandDecision.ALLOW
+    decision_source = "builtin"
     if canonical_name == "python":
         command_kind, execution_tail, display_tail = _validate_python(
             workspace_root,
@@ -243,13 +296,20 @@ def prepare_command(
         execution_tail = tail
         display_tail = tail
     elif canonical_name == "git":
-        _validate_git(workspace_root, cwd, tail)
-        command_kind = "git_read"
+        decision = _validate_git(workspace_root, cwd, tail)
+        command_kind = "git_read" if decision is CommandDecision.ALLOW else "git_write"
         execution_tail = tail
         display_tail = tail
     elif canonical_name == "g++":
         execution_tail, display_tail = _validate_gxx(workspace_root, cwd, tail)
         command_kind = "build"
+    elif entry is not None:
+        _validate_policy_entry(workspace_root, cwd, entry, tail)
+        command_kind = entry.kind
+        decision = entry.decision
+        decision_source = "policy"
+        execution_tail = tail
+        display_tail = tail
     else:
         raise CommandPolicyError("COMMAND_BLOCKED", "executable is not in the command allowlist")
 
@@ -262,6 +322,8 @@ def prepare_command(
         command_kind=command_kind,
         environment=environment,
         sensitive_values=secrets,
+        decision=decision,
+        decision_source=decision_source,
     )
 
 
@@ -336,6 +398,8 @@ def _resolve_executable(
     workspace: Path,
     requested: str,
     environment: Mapping[str, str],
+    *,
+    policy: CommandPolicy | None = None,
 ) -> tuple[str, str]:
     requested_path = Path(requested.replace("\\", "/"))
     if requested_path.suffix.casefold() in _FORBIDDEN_EXECUTABLE_SUFFIXES:
@@ -365,7 +429,9 @@ def _resolve_executable(
         raise CommandPolicyError("COMMAND_BLOCKED", "executable category is blocked by policy")
     if executable_name in _GXX_EXECUTABLE_NAMES:
         return _resolve_gxx_executable(workspace, requested, environment), "g++"
-    if name_without_exe not in _KNOWN_EXECUTABLES:
+    if name_without_exe not in _KNOWN_EXECUTABLES and (
+        policy is None or policy.entry_for(name_without_exe) is None
+    ):
         raise CommandPolicyError("COMMAND_BLOCKED", "executable is not in the command allowlist")
 
     if resolved_explicit is not None:
@@ -720,14 +786,20 @@ def _validate_ruff(workspace: Path, cwd: Path, arguments: Sequence[str]) -> str:
     return "static_check"
 
 
-def _validate_git(workspace: Path, cwd: Path, arguments: Sequence[str]) -> None:
+def _validate_git(workspace: Path, cwd: Path, arguments: Sequence[str]) -> CommandDecision:
     if not arguments:
-        raise CommandPolicyError("INVALID_ARGUMENTS", "git requires a read-only subcommand")
+        raise CommandPolicyError("INVALID_ARGUMENTS", "git requires a subcommand")
     subcommand = arguments[0].casefold()
-    if subcommand in _GIT_WRITE_SUBCOMMANDS:
-        raise CommandPolicyError("COMMAND_BLOCKED", "Git write and network operations are blocked")
-    if subcommand not in _GIT_READ_SUBCOMMANDS:
-        raise CommandPolicyError("COMMAND_BLOCKED", "Git subcommand is not in the read allowlist")
+    decision = CommandDecision.ALLOW
+    if subcommand in _GIT_CONFIRM_SUBCOMMANDS:
+        decision = CommandDecision.CONFIRM
+    elif subcommand in _GIT_WRITE_SUBCOMMANDS:
+        raise CommandPolicyError(
+            "COMMAND_BLOCKED",
+            "Git network and configuration operations are blocked",
+        )
+    elif subcommand not in _GIT_READ_SUBCOMMANDS:
+        raise CommandPolicyError("COMMAND_BLOCKED", "Git subcommand is not in the allowlist")
 
     after_separator = False
     for argument in arguments[1:]:
@@ -747,6 +819,51 @@ def _validate_git(workspace: Path, cwd: Path, arguments: Sequence[str]) -> None:
             )
         if after_separator or (not argument.startswith("-") and _looks_path_like(argument)):
             _validate_path_value(workspace, cwd, argument, option="git path")
+    return decision
+
+
+def _validate_policy_entry(
+    workspace: Path,
+    cwd: Path,
+    entry: PolicyEntry,
+    arguments: Sequence[str],
+) -> None:
+    """Check one declared command against exactly what its entry permits.
+
+    A declaration is never a blanket allowance for a program name: section 7.6 requires
+    the subcommand and the options to be checked too, and three-valued decisions do not
+    relax that. Anything the entry did not name is refused.
+    """
+
+    remaining = list(arguments)
+    if entry.subcommands:
+        if not remaining:
+            raise CommandPolicyError(
+                "COMMAND_BLOCKED",
+                f"'{entry.executable}' requires a subcommand declared by the project policy",
+            )
+        if remaining[0].casefold() not in {item.casefold() for item in entry.subcommands}:
+            raise CommandPolicyError(
+                "COMMAND_BLOCKED",
+                f"'{entry.executable}' subcommand is not declared by the project policy",
+            )
+        remaining = remaining[1:]
+
+    allowed_options = {item.casefold() for item in entry.options}
+    after_separator = False
+    for argument in remaining:
+        if argument == "--":
+            after_separator = True
+            continue
+        if not after_separator and argument.startswith("-"):
+            if _option_name(argument).casefold() not in allowed_options:
+                raise CommandPolicyError(
+                    "COMMAND_BLOCKED",
+                    f"'{entry.executable}' option is not declared by the project policy",
+                )
+            continue
+        if after_separator or _looks_path_like(argument):
+            _validate_path_value(workspace, cwd, argument, option="project policy path")
 
 
 def _validate_path_options(

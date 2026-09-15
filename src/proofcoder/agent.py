@@ -10,6 +10,11 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+from proofcoder.approval import (
+    ApprovalGate,
+    approval_decision_payload,
+    approval_request_payload,
+)
 from proofcoder.checkpoint import CheckpointCapture, checkpoint_event_payload
 from proofcoder.context import (
     DEFAULT_CONTEXT_BUDGET_BYTES,
@@ -98,6 +103,7 @@ class AgentLoop:
         trace_path: str | None = None,
         cancel_requested: Callable[[], bool] | None = None,
         checkpoint: CheckpointCapture | None = None,
+        approval: ApprovalGate | None = None,
     ) -> None:
         workspace_root = workspace.resolve(strict=True)
         if not workspace_root.is_dir():
@@ -134,6 +140,9 @@ class AgentLoop:
         # Captured before this loop was built, so the baseline predates every tool
         # call. The loop only reports it; it never captures or rolls back itself.
         self._checkpoint = checkpoint
+        # Owned by the command tool, read here for two things only: the records to emit,
+        # and the time to exclude from the run budget.
+        self._approval = approval
         self._events: EventEmitter | None = None
 
     @property
@@ -315,6 +324,7 @@ class AgentLoop:
                     history=history,
                     state=state,
                 ),
+                on_approval=lambda: self._record_approvals(state),
             )
 
             if batch.interrupted:
@@ -452,6 +462,7 @@ class AgentLoop:
         tracker: VerificationTracker,
         *,
         on_result: Callable[[ToolCall, ToolResult], None],
+        on_approval: Callable[[], None] = lambda: None,
     ) -> _BatchOutcome:
         if len(calls) != 1 and any(call.function.name == FINISH_TASK_NAME for call in calls):
             results = tuple(
@@ -544,6 +555,7 @@ class AgentLoop:
                         on_result(item.call, request)
                     continue
                 result = self._registry.execute(item)
+                on_approval()
                 modified_workspace = modified_workspace or (
                     item.definition.modifies_workspace and result.ok
                 )
@@ -551,6 +563,7 @@ class AgentLoop:
                 results.append(result)
                 on_result(item.call, result)
             except KeyboardInterrupt:
+                on_approval()
                 interrupted_result = _interrupted_result(True)
                 results.append(interrupted_result)
                 on_result(item.call, interrupted_result)
@@ -570,6 +583,15 @@ class AgentLoop:
             finish=finish,
             modified_workspace=modified_workspace,
         )
+
+    def _record_approvals(self, state: RunState) -> None:
+        """Emit every approval this batch produced, request then decision."""
+
+        if self._approval is None:
+            return
+        for record in self._approval.drain():
+            self._emit(EventType.APPROVAL, state, approval_request_payload(record.request))
+            self._emit(EventType.APPROVAL, state, approval_decision_payload(record))
 
     def _record_result(
         self,
@@ -683,7 +705,14 @@ class AgentLoop:
         return self._cancel_requested is not None and self._cancel_requested()
 
     def _observe_time(self, state: RunState) -> None:
-        state.elapsed_seconds = max(0.0, self._clock() - state.started_at)
+        # max_seconds bounds how long the agent may work, and waiting on a person is not
+        # the agent working: a run must not die because someone supervised it carefully.
+        state.approval_wait_seconds = (
+            0.0 if self._approval is None else self._approval.waited_seconds
+        )
+        state.elapsed_seconds = max(
+            0.0, self._clock() - state.started_at - state.approval_wait_seconds
+        )
 
     def _emit(
         self,

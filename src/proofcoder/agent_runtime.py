@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from proofcoder.agent import AgentLoop
+from proofcoder.approval import ApprovalGate
 from proofcoder.checkpoint import (
     DEFAULT_CHECKPOINT_LIMITS,
     CheckpointCapture,
@@ -27,6 +28,7 @@ from proofcoder.llm.base import LLMClient
 from proofcoder.prompt import STAGE_B_SYSTEM_PROMPT
 from proofcoder.protocol import CompletionStatus, RunResult, TerminationReason
 from proofcoder.retry import DEFAULT_MAX_API_ATTEMPTS
+from proofcoder.safety.policy import CommandPolicy
 from proofcoder.tools.command import create_run_command_tool
 from proofcoder.tools.edit import (
     create_create_file_tool,
@@ -66,6 +68,8 @@ class AgentRuntimeResources:
     recorder: TraceRecorder
     checkpoint: CheckpointCapture | None = None
     checkpoint_error: CheckpointError | None = None
+    policy: CommandPolicy | None = None
+    approval: ApprovalGate | None = None
 
     def event_sink(self, additional_sinks: Sequence[EventSink] = ()) -> CompositeSink:
         """Combine optional presentation sinks with the mandatory local trace."""
@@ -86,6 +90,8 @@ def create_agent_runtime_resources(
     run_id_factory: Callable[[], str] = new_run_id,
     checkpoint_enabled: bool = True,
     checkpoint_limits: CheckpointLimits = DEFAULT_CHECKPOINT_LIMITS,
+    policy: CommandPolicy | None = None,
+    approval: ApprovalGate | None = None,
 ) -> AgentRuntimeResources:
     """Create one fresh tool registry, trace recorder, and run checkpoint.
 
@@ -116,6 +122,9 @@ def create_agent_runtime_resources(
     # are only admissible when a baseline exists, and that is a fact of this run rather
     # than an argument the model can supply.
     available = checkpoint is not None
+    # The policy arrives already frozen and the gate already configured. Neither is read
+    # from disk here, so nothing the run writes can change what this registry decides.
+    gate = ApprovalGate() if approval is None else approval
     registry = ToolRegistry()
     registry.register(create_list_files_tool(workspace_root))
     registry.register(create_search_text_tool(workspace_root))
@@ -126,7 +135,14 @@ def create_agent_runtime_resources(
     registry.register(create_make_directory_tool(workspace_root))
     registry.register(create_delete_path_tool(workspace_root, checkpoint_available=available))
     registry.register(create_move_path_tool(workspace_root, checkpoint_available=available))
-    registry.register(create_run_command_tool(workspace_root, environ=environ))
+    registry.register(
+        create_run_command_tool(
+            workspace_root,
+            environ=environ,
+            policy=policy,
+            approval=gate,
+        )
+    )
     registry.register(create_finish_task_tool(workspace_root))
     return AgentRuntimeResources(
         workspace=workspace_root,
@@ -135,6 +151,8 @@ def create_agent_runtime_resources(
         recorder=recorder,
         checkpoint=checkpoint,
         checkpoint_error=checkpoint_error,
+        policy=policy,
+        approval=gate,
     )
 
 
@@ -165,6 +183,7 @@ def build_agent_loop(
         trace_path=resources.recorder.trace_path,
         cancel_requested=cancel_requested,
         checkpoint=resources.checkpoint,
+        approval=resources.approval,
     )
 
 

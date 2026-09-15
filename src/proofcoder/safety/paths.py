@@ -6,6 +6,7 @@ import os
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Literal
 
+from proofcoder.safety.policy import is_command_policy_path
 from proofcoder.safety.secrets import is_sensitive_path
 
 
@@ -55,6 +56,20 @@ def resolve_workspace_path(
     return resolved, relative
 
 
+def ensure_writable_path(relative: str) -> None:
+    """Refuse to write a command policy file from inside a run.
+
+    The loaded policy is already frozen, so this changes no decision of this run. It is
+    the second line: a policy the model can rewrite is one a later run would honor.
+    """
+
+    if is_command_policy_path(relative):
+        raise WorkspacePathError(
+            "POLICY_PATH_BLOCKED",
+            "writing a project command policy file is blocked",
+        )
+
+
 def resolve_workspace_directory(workspace: Path, requested: str) -> tuple[Path, str]:
     """Resolve a relative directory and return it with its POSIX workspace path."""
 
@@ -96,6 +111,7 @@ def resolve_workspace_new_file(workspace: Path, requested: str) -> tuple[Path, s
             "SENSITIVE_PATH",
             "access to sensitive credential or key paths is blocked",
         )
+    ensure_writable_path(relative)
     if not parent.exists():
         raise WorkspacePathError("PARENT_NOT_FOUND", "target parent directory does not exist")
     if not parent.is_dir():
@@ -147,6 +163,7 @@ def resolve_workspace_new_directory(workspace: Path, requested: str) -> tuple[Pa
             "SENSITIVE_PATH",
             "access to sensitive credential or key paths is blocked",
         )
+    ensure_writable_path(relative)
     return target, relative
 
 
@@ -184,6 +201,7 @@ def resolve_workspace_existing_path(workspace: Path, requested: str) -> tuple[Pa
             "SENSITIVE_PATH",
             "access to sensitive credential or key paths is blocked",
         )
+    ensure_writable_path(relative)
     if not parent.is_dir():
         raise WorkspacePathError("PATH_NOT_FOUND", "parent directory does not exist")
     if not os.path.lexists(target):

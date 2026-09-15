@@ -318,6 +318,15 @@ _CAPABILITIES = (
         require_shell_false=True,
     ),
     _Capability(
+        "capability.command_approval",
+        "project command policy and human approval",
+        (
+            ("src/proofcoder/safety/policy.py", ("load_command_policy", "CommandDecision")),
+            ("src/proofcoder/approval.py", ("ApprovalGate",)),
+        ),
+        ("tests/unit/test_command_policy_file.py", "tests/unit/test_approval.py"),
+    ),
+    _Capability(
         "capability.api_retry",
         "API retry policy",
         (
