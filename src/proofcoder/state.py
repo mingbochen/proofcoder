@@ -53,6 +53,7 @@ class RunState:
     completion_status: CompletionStatus | None = None
     limitations: tuple[str, ...] = ()
     blocked_reason: str | None = None
+    finish_summary: str | None = None
     finish_warnings: tuple[str, ...] = ()
     _changed_files: list[str] = field(default_factory=list, repr=False)
 

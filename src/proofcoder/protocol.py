@@ -139,3 +139,6 @@ class RunResult:
     trace_path: str | None = None
     trace_complete: bool = True
     event_count: int = 0
+    finish_summary: str | None = None
+    limitations: tuple[str, ...] = ()
+    blocked_reason: str | None = None

@@ -287,6 +287,7 @@ proofcoder/
 │   ├── retry.py
 │   ├── rollback.py
 │   ├── prompt.py
+│   ├── session.py
 │   ├── trace.py
 │   ├── verification.py
 │   ├── llm/
