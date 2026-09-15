@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import json
 import os
 import sys
 from collections.abc import Callable, Mapping, Sequence
@@ -20,6 +21,13 @@ from proofcoder.agent_runtime import (
     create_agent_runtime_resources,
     emit_setup_termination,
     run_exit_code,
+)
+from proofcoder.approval import (
+    ApprovalGate,
+    ApprovalMode,
+    ApprovalOutcome,
+    ApprovalRequest,
+    ApprovalResponder,
 )
 from proofcoder.checkpoint import (
     ChangeSource,
@@ -52,6 +60,14 @@ from proofcoder.llm.deepseek import DeepSeekClient
 from proofcoder.protocol import ModelResponse, TerminationReason
 from proofcoder.retry import DEFAULT_MAX_API_ATTEMPTS
 from proofcoder.rollback import build_rollback_plan, perform_rollback, rollback_exit_code
+from proofcoder.safety.commands import load_project_command_policy
+from proofcoder.safety.policy import (
+    POLICY_FILENAME,
+    CommandPolicy,
+    CommandPolicyFileError,
+    unloaded_policy_warning,
+    workspace_policy_path,
+)
 from proofcoder.safety.secrets import redact_text, sensitive_environment_values
 from proofcoder.trace import (
     TracePathError,
@@ -145,6 +161,23 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "start without a rollback checkpoint; the run's writes, and any made by "
             "workspace scripts it starts, cannot be undone afterwards"
+        ),
+    )
+    run.add_argument(
+        "--approval",
+        choices=[ApprovalMode.NEVER.value, ApprovalMode.ON_RISK.value],
+        default=ApprovalMode.NEVER.value,
+        help=(
+            "how commands that need confirmation are handled: 'never' refuses them "
+            f"(default), 'on-risk' asks at the terminal (default: {ApprovalMode.NEVER.value})"
+        ),
+    )
+    run.add_argument(
+        "--command-policy",
+        default=None,
+        help=(
+            "path to a project command policy file to authorize for this run; "
+            "a policy is never loaded unless it is named here"
         ),
     )
     run.add_argument("task", help="task for the local coding agent loop")
@@ -330,6 +363,8 @@ def main(
                 console=output,
                 client_factory=run_client_factory,
                 checkpoint_enabled=not bool(args.no_checkpoint),
+                approval_mode=ApprovalMode(str(args.approval)),
+                policy_argument=(None if args.command_policy is None else str(args.command_policy)),
             )
         except KeyboardInterrupt:
             _print(output, "DONE: termination=interrupted completion=none")
@@ -541,6 +576,40 @@ def _run_doctor(
     return 0
 
 
+def _terminal_responder(console: Console) -> ApprovalResponder:
+    """Ask at the terminal, and refuse rather than assume when nobody is there.
+
+    A console read cannot be given a portable wall-clock timeout, so this responder
+    does not time out; the unattended case is handled by refusing outright when
+    standard input is not a terminal, exactly as the rollback confirmation does.
+    """
+
+    def respond(request: ApprovalRequest) -> ApprovalOutcome:
+        if not sys.stdin.isatty():
+            _print(
+                console,
+                "APPROVAL refused: standard input is not a terminal; "
+                "run without --approval on-risk for unattended use",
+            )
+            return ApprovalOutcome.DENIED
+        argv = json.dumps(list(request.display_argv), ensure_ascii=False)
+        _print(console, "APPROVAL needed before this command runs:")
+        _print(console, f"  argv={argv}")
+        _print(console, f"  cwd={request.relative_cwd} timeout_seconds={request.timeout_seconds}")
+        _print(
+            console,
+            f"  kind={request.command_kind} decided_by={request.decision_source}",
+        )
+        answer = input("run this command? [y/N] ")
+        return (
+            ApprovalOutcome.APPROVED
+            if answer.strip().casefold() in {"y", "yes"}
+            else ApprovalOutcome.DENIED
+        )
+
+    return respond
+
+
 def _run_agent(
     *,
     task: str,
@@ -555,6 +624,9 @@ def _run_agent(
     console: Console,
     client_factory: _RunClientFactory,
     checkpoint_enabled: bool = True,
+    approval_mode: ApprovalMode = ApprovalMode.NEVER,
+    policy_argument: str | None = None,
+    approval_responder: ApprovalResponder | None = None,
 ) -> int:
     workspace_input = Path(workspace_argument)
     workspace = (
@@ -572,12 +644,33 @@ def _run_agent(
 
     secret: str | None = None
     sensitive_values = sensitive_environment_values(environ)
+    policy: CommandPolicy | None = None
+    if policy_argument is not None:
+        policy_input = Path(policy_argument)
+        policy_path = policy_input if policy_input.is_absolute() else (cwd / policy_input)
+        try:
+            policy = load_project_command_policy(policy_path, workspace=workspace)
+        except CommandPolicyFileError as error:
+            _print(
+                console,
+                "DONE: termination=configuration_error completion=none\n"
+                f"  error_code={error.code}\n  {error}",
+            )
+            return 1
+    gate = ApprovalGate(
+        mode=approval_mode,
+        responder=_terminal_responder(console)
+        if approval_responder is None and approval_mode is ApprovalMode.ON_RISK
+        else approval_responder,
+    )
     try:
         resources = create_agent_runtime_resources(
             workspace,
             environ=environ,
             sensitive_values=sensitive_values,
             checkpoint_enabled=checkpoint_enabled,
+            policy=policy,
+            approval=gate,
         )
     except TracePathError as error:
         _print(
@@ -586,6 +679,9 @@ def _run_agent(
         )
         return 1
     terminal = TerminalSink(lambda line: _safe_print(console, line, secret))
+    if policy is None and workspace_policy_path(workspace).is_file():
+        # Discoverable without being self-granting: the file is named, not applied.
+        _print(console, f"WARN: {unloaded_policy_warning(POLICY_FILENAME)['message']}")
     if resources.checkpoint_error is not None:
         _print(console, f"WARN: {resources.checkpoint_error.code}")
         emit_setup_termination(

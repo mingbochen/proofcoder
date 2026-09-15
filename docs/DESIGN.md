@@ -137,6 +137,16 @@ One decision function returns one of three values: allow, needs confirmation, or
 
 A project may extend the default-deny set with a policy file. The file is repository content, which the trust model treats as untrusted, so it never authorizes itself: it applies only when a caller names it, is parsed and frozen before the run begins, and is never re-read, so a write that lands on it during a run changes no decision of that run. Each entry must state its subcommands, options, decision and evidence kind, and may not redeclare any executable the built-in policy already decides — allowed or refused — because redeclaring is the one way a policy could relax rather than extend. Validation is all-or-nothing, and every write tool refuses the policy filename at any path. Approval decides whether a command runs; its kind decides whether it counts as verification evidence. The two are orthogonal, so supervising a run never costs it verified status.
 
+Two surfaces answer a request. At a terminal the prompt prints the full argv, working
+directory and timeout and reads one answer; standard input that is not a terminal
+refuses rather than assuming, the same rule the rollback confirmation follows. In the
+browser the run and the page live on different threads, so the request is published into
+the session, the run blocks on the condition the session already uses for events, and
+the decision arrives on an HTTP thread carrying the digest of the request it was shown.
+A digest that no longer names the pending request is refused and the caller is handed
+the current one, so an approval cannot land on a command nobody looked at; a stop
+pressed while a request is on screen refuses it rather than leaving it waiting.
+
 The command policy also permits one deliberately restricted C++ build form: `g++` or `g++.exe` from the sanitized PATH may compile exactly one existing workspace `.cpp` file with explicit `-std=c++17`, optional `-O2`, and one separate `-o` target. The output must be new, Windows targets must explicitly end in `.exe`, and the existing command timeout is reused. This is not a general compiler interface and does not permit running the generated program. The compiler and its toolchain are trusted operator installations; constraining explicit argument paths does not isolate source-level includes, toolchain file access, or compiler temporary files. A successful build proves only that this invocation compiled, not that the algorithm is correct. No source-regex scanner, container, complex isolation layer, or operating-system sandbox is added by this capability.
 
 The tools that destroy content in one call -- deleting a path, moving onto one, and overwriting a file -- are admissible only because that recovery exists, so they are wired to it rather than merely documented alongside it. Runtime assembly captures the checkpoint before it builds the registry and passes the result in, which makes availability a fact of the run instead of an argument the model supplies; without a checkpoint those three refuse and the rest of the write tools keep working. Deletion never recurses, moving never overwrites, and a patch is validated entirely in memory before one atomic write, so a rejected edit leaves the file exactly as it was.

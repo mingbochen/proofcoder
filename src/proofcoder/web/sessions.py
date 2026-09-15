@@ -9,11 +9,13 @@ layer only reads snapshots and buffered events through the locks defined here.
 from __future__ import annotations
 
 import threading
+import time
 from collections import OrderedDict, deque
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
+from hmac import compare_digest
 from pathlib import Path
 
 from proofcoder.agent_runtime import (
@@ -23,6 +25,13 @@ from proofcoder.agent_runtime import (
     create_agent_runtime_resources,
     emit_setup_termination,
     run_exit_code,
+)
+from proofcoder.approval import (
+    DEFAULT_APPROVAL_TIMEOUT_SECONDS,
+    ApprovalGate,
+    ApprovalMode,
+    ApprovalOutcome,
+    ApprovalRequest,
 )
 from proofcoder.config import ProofCoderConfig
 from proofcoder.errors import ConfigurationError, ProofCoderError
@@ -82,6 +91,7 @@ class SessionSummary:
     trace_path: str | None
     trace_complete: bool | None
     final_report: str | None
+    pending_approval: dict[str, object] | None = None
 
     def to_dict(self) -> dict[str, object]:
         """Return one deterministic mapping for the JSON API."""
@@ -103,6 +113,7 @@ class SessionSummary:
             "trace_path": self.trace_path,
             "trace_complete": self.trace_complete,
             "final_report": self.final_report,
+            "pending_approval": self.pending_approval,
         }
 
 
@@ -130,6 +141,8 @@ class RunSession:
     _appended: int = 0
     _dropped: int = 0
     _cancel: bool = False
+    _pending_approval: dict[str, object] | None = None
+    _approval_answer: ApprovalOutcome | None = None
     _condition: threading.Condition = field(default_factory=threading.Condition)
 
     @property
@@ -156,6 +169,60 @@ class RunSession:
             self._cancel = True
             self._condition.notify_all()
             return not already
+
+    def await_approval(self, request: ApprovalRequest, timeout: float) -> ApprovalOutcome:
+        """Publish one request and block this run's thread until it is answered.
+
+        The run executes on its own thread while the decision arrives on an HTTP
+        thread, so the condition already used for events carries the answer back.
+        Every exit but an explicit approval refuses, including a stop pressed while
+        the request was on screen.
+        """
+
+        with self._condition:
+            if self._cancel:
+                return ApprovalOutcome.DENIED
+            self._pending_approval = request.to_dict()
+            self._approval_answer = None
+            self._condition.notify_all()
+            deadline = time.monotonic() + timeout
+            while self._approval_answer is None and not self._cancel:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                self._condition.wait(remaining)
+            answer = self._approval_answer
+            self._pending_approval = None
+            self._approval_answer = None
+            self._condition.notify_all()
+            if answer is not None:
+                return answer
+            return ApprovalOutcome.DENIED if self._cancel else ApprovalOutcome.TIMED_OUT
+
+    def answer_approval(self, digest: str, outcome: ApprovalOutcome) -> str:
+        """Record one decision for the request currently on screen.
+
+        Returns ``"accepted"``, ``"none"`` when nothing is pending, or ``"stale"``
+        when the digest names a different command than the one now awaiting an
+        answer -- an approval must never land on a command nobody looked at.
+        """
+
+        with self._condition:
+            pending = self._pending_approval
+            if pending is None:
+                return "none"
+            if not compare_digest(str(pending.get("digest", "")), digest):
+                return "stale"
+            self._approval_answer = outcome
+            self._condition.notify_all()
+            return "accepted"
+
+    @property
+    def pending_approval(self) -> dict[str, object] | None:
+        """Return the request awaiting a decision, if any."""
+
+        with self._condition:
+            return None if self._pending_approval is None else dict(self._pending_approval)
 
     def append_event(self, event: RunEvent) -> None:
         """Buffer one already sanitized event and wake every waiting reader."""
@@ -212,6 +279,9 @@ class RunSession:
                 trace_path=self.trace_path,
                 trace_complete=self.trace_complete,
                 final_report=self.final_report,
+                pending_approval=(
+                    None if self._pending_approval is None else dict(self._pending_approval)
+                ),
             )
 
     def complete(
@@ -271,6 +341,8 @@ class SessionManager:
         max_active_runs: int = DEFAULT_MAX_ACTIVE_RUNS,
         max_retained_sessions: int = MAX_RETAINED_SESSIONS,
         run_id_factory: Callable[[], str] = new_run_id,
+        approval_mode: ApprovalMode = ApprovalMode.ON_RISK,
+        approval_timeout_seconds: int = DEFAULT_APPROVAL_TIMEOUT_SECONDS,
     ) -> None:
         if max_active_runs < 1:
             raise ValueError("max_active_runs must be at least 1")
@@ -281,6 +353,11 @@ class SessionManager:
         self._max_active_runs = max_active_runs
         self._max_retained_sessions = max_retained_sessions
         self._run_id_factory = run_id_factory
+        # A browser is an interactive surface, so a command that needs confirmation is
+        # worth asking about. Nobody watching is still bounded: the request times out
+        # and is refused rather than waiting forever.
+        self._approval_mode = approval_mode
+        self._approval_timeout_seconds = approval_timeout_seconds
         self._lock = threading.Lock()
         self._sessions: OrderedDict[str, RunSession] = OrderedDict()
         self._threads: dict[str, threading.Thread] = {}
@@ -409,12 +486,19 @@ class SessionManager:
 
         sink = _SessionSink(session)
         sensitive_values = sensitive_environment_values(self._environ)
+        timeout = float(self._approval_timeout_seconds)
+        gate = ApprovalGate(
+            mode=self._approval_mode,
+            responder=lambda request: session.await_approval(request, timeout),
+            timeout_seconds=self._approval_timeout_seconds,
+        )
         try:
             resources = create_agent_runtime_resources(
                 session.workspace,
                 environ=self._environ,
                 sensitive_values=sensitive_values,
                 run_id_factory=lambda: session.run_id,
+                approval=gate,
             )
         except (TracePathError, OSError, ValueError):
             _stream_termination(

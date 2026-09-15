@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Protocol, cast
 
 from proofcoder.agent_runtime import AgentRunLimits
+from proofcoder.approval import ApprovalOutcome
 from proofcoder.checkpoint import ChangeSource, CheckpointError, RollbackPlan
 from proofcoder.config import ProofCoderConfig
 from proofcoder.context import DEFAULT_CONTEXT_BUDGET_BYTES
@@ -146,6 +147,8 @@ class ApiRouter:
             return self._run_events(request, route[1])
         if len(route) == 3 and route[0] == "runs" and route[2] == "cancel" and method == "POST":
             return self._cancel_run(route[1])
+        if len(route) == 3 and route[0] == "runs" and route[2] == "approval" and method == "POST":
+            return self._answer_approval(request, route[1])
         if _matches(route, "checkpoints", "plan") and method == "GET":
             return self._rollback_plan(request, route[1])
         if _matches(route, "checkpoints", "rollback") and method == "POST":
@@ -416,6 +419,52 @@ class ApiRouter:
         session = self._sessions.get(run_id)
         assert session is not None
         return ApiResponse(200, {"cancelled": changed, "run": session.summary().to_dict()})
+
+    def _answer_approval(self, request: ApiRequest, run_id: str) -> ApiResponse:
+        """Record one decision for the command a browser is currently showing.
+
+        The page and the run live in different threads, so the decision is bound to the
+        request it was given for: the digest the page displays must still name the
+        command now awaiting an answer. A stale digest is refused and the caller gets
+        whatever is pending instead, so an approval can never land on a command nobody
+        looked at.
+        """
+
+        session = self._sessions.get(run_id)
+        if session is None:
+            return error_response(404, "UNKNOWN_RUN", "no run with this identifier")
+        submitted = request.body.get("request_digest")
+        if not isinstance(submitted, str) or not submitted:
+            return error_response(
+                400,
+                "APPROVAL_DIGEST_REQUIRED",
+                "the digest of the request that was shown is required",
+            )
+        decision = request.body.get("decision")
+        if decision not in {"approve", "deny"}:
+            return error_response(400, "INVALID_DECISION", "decision must be 'approve' or 'deny'")
+
+        outcome = ApprovalOutcome.APPROVED if decision == "approve" else ApprovalOutcome.DENIED
+        status = session.answer_approval(submitted, outcome)
+        if status == "none":
+            return error_response(
+                409, "NO_PENDING_APPROVAL", "this run is not waiting for a decision"
+            )
+        if status == "stale":
+            return ApiResponse(
+                409,
+                {
+                    "error": {
+                        "code": "APPROVAL_CHANGED",
+                        "message": (
+                            "the request that was shown is no longer the one awaiting a "
+                            "decision; review the current request before answering"
+                        ),
+                    },
+                    "run": session.summary().to_dict(),
+                },
+            )
+        return ApiResponse(200, {"decision": decision, "run": session.summary().to_dict()})
 
     def _list_traces(self, request: ApiRequest) -> ApiResponse:
         """Return newest-first stored runs for one workspace."""

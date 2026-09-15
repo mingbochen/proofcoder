@@ -184,6 +184,7 @@ def build_agent_loop(
         cancel_requested=cancel_requested,
         checkpoint=resources.checkpoint,
         approval=resources.approval,
+        policy=resources.policy,
     )
 
 

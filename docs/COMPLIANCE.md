@@ -248,9 +248,12 @@ into automatic passes; their manual dispositions and limitations remain distinct
   The approval prompt is likewise a social-engineering surface; the categories that must
   never be confirmable are refused before any prompt exists, but a person can still
   approve a command they did not understand.
-- The command-line and browser entry points that let a user load a policy or answer an
-  approval are not implemented yet, so commands needing confirmation are currently
-  refused rather than executed.
+- The command-line approval prompt cannot be given a portable wall-clock timeout on a
+  console read, so it waits until the operator answers or interrupts. The unattended
+  case is covered by refusing outright when standard input is not a terminal; the
+  browser prompt does enforce the protocol timeout.
+- A project command policy can only be named on the command line, so a run started from
+  the browser interface uses the built-in command set.
 - The tools that delete, move, or overwrite destroy content in one call. They refuse to
   run without a checkpoint and never recurse, but within the captured scope their damage
   is undone only when someone actually runs a rollback; outside it, nothing undoes it.
