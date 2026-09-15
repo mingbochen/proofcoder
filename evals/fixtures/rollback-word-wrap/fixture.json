@@ -4,11 +4,12 @@
     "tests/test_word_wrap.py"
   ],
   "category": "bug_fix",
+  "command_policy": null,
   "id": "rollback-word-wrap",
   "required_modified_files": [
     "word_wrap.py"
   ],
-  "schema_version": 2,
+  "schema_version": 3,
   "task": "wrap_words drops the last line when the text fits without needing a split. Fix it so every word is returned, and keep the existing tests passing.",
   "validation": {
     "argv": [

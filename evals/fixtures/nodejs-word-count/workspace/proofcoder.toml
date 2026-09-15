@@ -1,0 +1,10 @@
+# This project is not Python, so its test command is not one the built-in policy
+# knows. Declaring it here is what lets the run execute it; the file itself grants
+# nothing until something outside the workspace names it.
+schema_version = 1
+
+[[command]]
+executable = "node"
+options = ["--test"]
+decision = "allow"
+kind = "test"

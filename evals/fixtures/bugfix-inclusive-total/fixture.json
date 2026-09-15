@@ -4,12 +4,13 @@
     "tests/test_inclusive_total.py"
   ],
   "category": "bug_fix",
+  "command_policy": null,
   "id": "bugfix-inclusive-total",
   "required_modified_files": [
     "inclusive_total.py",
     "tests/test_inclusive_total.py"
   ],
-  "schema_version": 2,
+  "schema_version": 3,
   "task": "Fix inclusive_total so both ends of the interval are included, and add a regression test for a single-value interval while keeping the existing behavior intact.",
   "validation": {
     "argv": [

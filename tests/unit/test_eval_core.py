@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import shutil
 import stat
 import subprocess
 from dataclasses import replace
@@ -942,3 +943,70 @@ def test_a_workspace_that_does_not_return_to_its_baseline_is_reported(
     assert EvaluationFailureReason.ROLLBACK_MISMATCH in result.failure_reasons
     assert result.rollback_unrestored_files == (".env",)
     assert (tmp_path / "workspace" / ".env").is_file()
+
+
+def _node_fixture() -> EvalFixture:
+    return next(
+        fixture
+        for fixture in load_fixtures(FIXTURES_ROOT)
+        if fixture.fixture_id == "nodejs-word-count"
+    )
+
+
+def _fix_word_count(workspace: Path) -> None:
+    source = workspace / "word_count.js"
+    source.write_text(
+        source.read_text(encoding="utf-8").replace(
+            "for (const word of text.split(/\\s+/).filter((item) => item.length > 0)) {",
+            "for (const raw of text.split(/\\s+/).filter((item) => item.length > 0)) {\n"
+            "    const word = raw.toLowerCase();",
+        ),
+        encoding="utf-8",
+    )
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="this fixture needs node on PATH")
+def test_a_non_python_fixture_is_scored_through_its_declared_policy(tmp_path: Path) -> None:
+    """The project's own test command runs because the fixture declared it."""
+
+    fixture = _node_fixture()
+
+    def runner(_fixture: EvalFixture, workspace: Path) -> RunResult:
+        _fix_word_count(workspace)
+        return _run_result()
+
+    result = run_evaluation_attempt(
+        fixture, tmp_path / "workspace", 1, runner, environ=_environment(tmp_path)
+    )
+
+    assert fixture.command_policy == "proofcoder.toml"
+    assert result.success is True
+    assert result.failure_reasons == ()
+    assert result.modified_files == ("word_count.js",)
+    assert result.initial_validation is not None
+    assert result.initial_validation.exit_code == 1
+    assert result.final_validation is not None
+    assert result.final_validation.exit_code == 0
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="this fixture needs node on PATH")
+def test_the_same_fixture_cannot_validate_without_its_policy(tmp_path: Path) -> None:
+    """Take the declaration away and the command is refused, which is the point.
+
+    Nothing about the workspace changed: the policy file is still sitting in it. What
+    changed is that fixture.json no longer names it, and naming it is the authorization.
+    """
+
+    fixture = replace(_node_fixture(), command_policy=None)
+
+    result = run_evaluation_attempt(
+        fixture,
+        tmp_path / "workspace",
+        1,
+        lambda _fixture, workspace: _run_result(),
+        environ=_environment(tmp_path),
+    )
+
+    assert result.success is False
+    assert EvaluationFailureReason.INITIAL_VALIDATION_ERROR in result.failure_reasons
+    assert (tmp_path / "workspace" / "proofcoder.toml").is_file()
