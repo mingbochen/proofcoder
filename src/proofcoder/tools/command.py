@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import BinaryIO
 
+from proofcoder.approval import ApprovalGate, ApprovalOutcome
 from proofcoder.safety.commands import (
     MAX_COMMAND_ARGUMENT_CHARS,
     MAX_COMMAND_ARGUMENTS,
@@ -27,6 +28,7 @@ from proofcoder.safety.commands import (
     prepare_command,
 )
 from proofcoder.safety.paths import WorkspacePathError
+from proofcoder.safety.policy import CommandDecision, CommandPolicy
 from proofcoder.safety.writes import (
     commit_new_file,
     discard_temporary_file,
@@ -75,19 +77,32 @@ def create_run_command_tool(
     workspace: Path,
     *,
     environ: Mapping[str, str] | None = None,
+    policy: CommandPolicy | None = None,
+    approval: ApprovalGate | None = None,
 ) -> ToolDefinition:
-    """Create a policy-bound local command tool for one workspace."""
+    """Create a policy-bound local command tool for one workspace.
+
+    The policy is whatever the caller already froze; this tool never reads it from disk,
+    so a write that lands on the policy file during the run cannot change any decision.
+    """
 
     workspace_root = workspace.resolve(strict=True)
+    gate = ApprovalGate() if approval is None else approval
 
     def preflight(arguments: Mapping[str, object]) -> ToolResult | None:
-        prepared = _prepare_or_result(workspace_root, arguments, environ=environ)
+        # Only the classification runs here. Asking a person during preflight would
+        # raise one prompt per call in a batch before any of them was meant to run.
+        prepared = _prepare_or_result(workspace_root, arguments, environ=environ, policy=policy)
         return prepared if isinstance(prepared, ToolResult) else None
 
     def execute(arguments: Mapping[str, object]) -> ToolResult:
-        prepared = _prepare_or_result(workspace_root, arguments, environ=environ)
+        prepared = _prepare_or_result(workspace_root, arguments, environ=environ, policy=policy)
         if isinstance(prepared, ToolResult):
             return prepared
+        if prepared.decision is CommandDecision.CONFIRM:
+            refusal = _review_or_refusal(gate, prepared)
+            if refusal is not None:
+                return refusal
         return _run_prepared_command(workspace_root, prepared)
 
     return ToolDefinition(
@@ -137,14 +152,46 @@ def create_run_command_tool(
     )
 
 
+_APPROVAL_REFUSALS = {
+    ApprovalOutcome.DENIED: (
+        "APPROVAL_DENIED",
+        "this command needs confirmation and was not approved; it did not run",
+    ),
+    ApprovalOutcome.TIMED_OUT: (
+        "APPROVAL_TIMED_OUT",
+        "this command needs confirmation and no decision arrived in time; it did not run",
+    ),
+}
+
+
+def _review_or_refusal(gate: ApprovalGate, prepared: PreparedCommand) -> ToolResult | None:
+    """Ask about one command, returning the refusal to report when it is not approved."""
+
+    request = gate.new_request(
+        display_argv=prepared.display_argv,
+        relative_cwd=prepared.relative_cwd,
+        timeout_seconds=prepared.timeout_seconds,
+        command_kind=prepared.command_kind,
+        decision_source=prepared.decision_source,
+    )
+    record = gate.review(request)
+    if record.executed:
+        return None
+    code, message = _APPROVAL_REFUSALS[record.outcome]
+    # Refusal is an ordinary structured result rather than a termination: the model can
+    # read it and take another route, and nothing has happened to the workspace.
+    return ToolResult.failure(code, message, retryable=False)
+
+
 def _prepare_or_result(
     workspace: Path,
     arguments: Mapping[str, object],
     *,
     environ: Mapping[str, str] | None,
+    policy: CommandPolicy | None = None,
 ) -> PreparedCommand | ToolResult:
     try:
-        return prepare_command(workspace, arguments, environ=environ)
+        return prepare_command(workspace, arguments, environ=environ, policy=policy)
     except WorkspacePathError as error:
         return ToolResult.failure(error.code, str(error), retryable=True)
     except CommandPolicyError as error:

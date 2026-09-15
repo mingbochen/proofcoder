@@ -68,6 +68,7 @@ class EventType(StrEnum):
     VERIFICATION = "verification"
     CHECKPOINT = "checkpoint"
     ROLLBACK = "rollback"
+    APPROVAL = "approval"
     WARNING = "warning"
     COMPLETION = "completion"
     TERMINATION = "termination"

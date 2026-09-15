@@ -57,6 +57,7 @@ future dependency, environment, configuration, or source changes remain complian
 | Command policy and execution | `proofcoder.safety.commands.prepare_command`; `proofcoder.tools.command.create_run_command_tool` | `tests/unit/test_command_policy.py`, `tests/unit/test_run_command.py` | Mechanical `PASS`; dynamic starts manually reviewed |
 | DeepSeek client | `proofcoder.llm.deepseek.DeepSeekClient` | `tests/unit/test_deepseek.py` | Mechanical `PASS`; dynamic request manually reviewed |
 | Evaluation pipeline | `proofcoder.eval_fixtures`, `proofcoder.eval_core`, `proofcoder.eval_runner` | `tests/unit/test_eval_fixtures.py`, `tests/unit/test_eval_core.py`, `tests/unit/test_eval_runner.py` | Mechanical `PASS` |
+| Project command policy and approval | `proofcoder.safety.policy`, `proofcoder.approval` | `tests/unit/test_command_policy_file.py`, `tests/unit/test_approval.py` | Mechanical `PASS` |
 | Local file tools | `proofcoder.tools.files`, `proofcoder.tools.search`, `proofcoder.tools.edit`, `proofcoder.tools.paths` | `tests/unit/test_read_file.py`, `tests/unit/test_search_text.py`, `tests/unit/test_edit_tools.py`, `tests/unit/test_path_tools.py` | Mechanical `PASS`; ripgrep start manually reviewed |
 | History and context | `proofcoder.context.MessageHistory`; `proofcoder.context.ContextManager` | `tests/unit/test_context.py`, `tests/unit/test_context_manager.py` | Mechanical `PASS` |
 | No-progress termination | `proofcoder.progress.ProgressTracker`; `proofcoder.agent.AgentLoop` | `tests/unit/test_progress.py`, `tests/unit/test_agent_d2.py` | Mechanical `PASS` |
@@ -241,6 +242,15 @@ into automatic passes; their manual dispositions and limitations remain distinct
   All six terminated with `finish_task`, so the interrupted and budget-exhausted
   terminations that the stage F exit criteria name still have offline coverage only.
   See `docs/EVAL_REPORT.md` section 12.
+- A project command policy can widen the command surface, and the control against a
+  hostile repository is explicit authorization rather than detection: a policy applies
+  only when a caller names it, and a user who names a hostile policy has authorized it.
+  The approval prompt is likewise a social-engineering surface; the categories that must
+  never be confirmable are refused before any prompt exists, but a person can still
+  approve a command they did not understand.
+- The command-line and browser entry points that let a user load a policy or answer an
+  approval are not implemented yet, so commands needing confirmation are currently
+  refused rather than executed.
 - The tools that delete, move, or overwrite destroy content in one call. They refuse to
   run without a checkpoint and never recurse, but within the captured scope their damage
   is undone only when someone actually runs a rollback; outside it, nothing undoes it.

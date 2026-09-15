@@ -17,6 +17,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from proofcoder.agent import AgentLoop
+from proofcoder.approval import ApprovalGate, ApprovalMode, ApprovalOutcome
 from proofcoder.checkpoint import CheckpointCapture, ScanSkips
 from proofcoder.events import EventType
 from proofcoder.llm.scripted import ScriptedClient
@@ -48,6 +49,7 @@ GOLDEN_CHECKPOINT = CheckpointCapture(
     skips=ScanSkips(ignored_directories=1, symlinks=1),
 )
 VERIFY_ARGV = ["python", "-m", "unittest", "discover", "-s", "tests"]
+GOLDEN_APPROVED_ARGV = ("git", "add", "calc.py")
 
 CALC_SOURCE = (
     '"""Small calculator helpers."""\n\n\n'
@@ -189,6 +191,34 @@ def _golden_client() -> ScriptedClient:
     )
 
 
+def _golden_approval() -> ApprovalGate:
+    """Return a gate already holding one decided request.
+
+    The loop emits approvals but never creates them; the command tool does, and only
+    when it is about to run a real command the policy marked confirmable. Seeding one
+    decided record keeps the golden trajectory free of a real `git add` while still
+    exercising the emission path, the same way GOLDEN_CHECKPOINT stands in for a
+    real capture.
+    """
+
+    gate = ApprovalGate(
+        mode=ApprovalMode.ON_RISK,
+        responder=lambda _request: ApprovalOutcome.APPROVED,
+        clock=lambda: 100.0,
+        request_id_factory=lambda: "golden-approval-request",
+    )
+    gate.review(
+        gate.new_request(
+            display_argv=GOLDEN_APPROVED_ARGV,
+            relative_cwd=".",
+            timeout_seconds=60,
+            command_kind="git_write",
+            decision_source="builtin",
+        )
+    )
+    return gate
+
+
 def _run_golden_trajectory(workspace: Path) -> bytes:
     """Run the fixed trajectory and return the raw recorded trace bytes."""
 
@@ -209,6 +239,7 @@ def _run_golden_trajectory(workspace: Path) -> bytes:
             event_clock=lambda: GOLDEN_TIME,
             trace_path=recorder.trace_path,
             checkpoint=GOLDEN_CHECKPOINT,
+            approval=_golden_approval(),
         ).run(GOLDEN_TASK)
     finally:
         recorder.close()

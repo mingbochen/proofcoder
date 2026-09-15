@@ -28,6 +28,7 @@ class RunState:
     run_id: str = ""
     started_at: float = 0.0
     elapsed_seconds: float = 0.0
+    approval_wait_seconds: float = 0.0
     final_text: str | None = None
     model_step: int = 0
     event_sequence: int = 0

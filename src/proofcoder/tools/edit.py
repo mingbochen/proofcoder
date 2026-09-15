@@ -11,6 +11,7 @@ from pathlib import Path
 
 from proofcoder.safety.paths import (
     WorkspacePathError,
+    ensure_writable_path,
     resolve_workspace_file,
     resolve_workspace_new_file,
 )
@@ -450,6 +451,8 @@ def _read_editable_file(workspace_root: Path, path: str) -> _EditableFile | Tool
 
     try:
         target, relative_path = resolve_workspace_file(workspace_root, path)
+        # Reading a policy file is harmless; editing one is the write this refuses.
+        ensure_writable_path(relative_path)
         before_metadata = target.stat()
         if before_metadata.st_size > MAX_FILE_SIZE_BYTES:
             return ToolResult.failure(

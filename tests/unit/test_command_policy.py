@@ -11,6 +11,8 @@ import pytest
 
 import proofcoder.safety.commands as command_policy
 from proofcoder.protocol import FunctionCall, ToolCall
+from proofcoder.safety.commands import prepare_command
+from proofcoder.safety.policy import CommandDecision
 from proofcoder.tools.base import PreparedToolCall, RiskLevel, ToolResult
 from proofcoder.tools.command import create_run_command_tool
 from proofcoder.tools.registry import ToolRegistry
@@ -652,12 +654,26 @@ def test_dangerous_or_unknown_commands_are_blocked(tmp_path: Path, argv: list[st
 
 @pytest.mark.parametrize(
     "subcommand",
+    ["push", "pull", "fetch", "clone", "remote", "config"],
+)
+def test_git_network_and_configuration_subcommands_stay_blocked(
+    tmp_path: Path, subcommand: str
+) -> None:
+    """These never become confirmable, so no prompt can ever offer them.
+
+    Network subcommands move repository content across a boundary no rollback reaches,
+    and `git config` can set core.hooksPath or an alias, which turns the next ordinary
+    git command into arbitrary execution.
+    """
+
+    _assert_error(_prepare(tmp_path, {"argv": ["git", subcommand]}), "COMMAND_BLOCKED")
+
+
+@pytest.mark.parametrize(
+    "subcommand",
     [
         "add",
         "commit",
-        "push",
-        "pull",
-        "fetch",
         "checkout",
         "switch",
         "restore",
@@ -669,13 +685,22 @@ def test_dangerous_or_unknown_commands_are_blocked(tmp_path: Path, argv: list[st
         "revert",
         "tag",
         "stash",
-        "config",
         "worktree",
         "gc",
     ],
 )
-def test_git_write_and_network_subcommands_are_blocked(tmp_path: Path, subcommand: str) -> None:
-    _assert_error(_prepare(tmp_path, {"argv": ["git", subcommand]}), "COMMAND_BLOCKED")
+def test_local_git_write_subcommands_need_confirmation(tmp_path: Path, subcommand: str) -> None:
+    """They pass classification but do not run: the decision says a person must look."""
+
+    prepared = prepare_command(
+        tmp_path,
+        {"argv": ["git", subcommand]},
+        environ=_environment(),
+    )
+
+    assert prepared.decision is CommandDecision.CONFIRM
+    assert prepared.command_kind == "git_write"
+    assert prepared.decision_source == "builtin"
 
 
 @pytest.mark.parametrize(
