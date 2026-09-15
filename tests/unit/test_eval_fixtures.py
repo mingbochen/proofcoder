@@ -20,12 +20,15 @@ from proofcoder.safety.secrets import minimal_subprocess_environment
 FIXTURES_ROOT = Path(__file__).resolve().parents[2] / "evals" / "fixtures"
 EXPECTED_FIXTURES = {
     "bugfix-inclusive-total": FixtureCategory.BUG_FIX,
+    "cleanup-text-helpers": FixtureCategory.CROSS_FILE_CHANGE,
     "cross-file-message-format": FixtureCategory.CROSS_FILE_CHANGE,
     "feature-available-items": FixtureCategory.FEATURE_ADDITION,
     "rollback-word-wrap": FixtureCategory.BUG_FIX,
 }
-# Exactly one repository fixture verifies that a finished run can be undone.
-EXPECTED_ROLLBACK_FIXTURES = {"rollback-word-wrap"}
+# These repository fixtures verify that a finished run can be undone. The rename and
+# delete fixture is here because recreating a deleted file and removing a created one
+# are the rollback steps an edit-only fixture never reaches.
+EXPECTED_ROLLBACK_FIXTURES = {"cleanup-text-helpers", "rollback-word-wrap"}
 FORBIDDEN_TASK_HINTS = {
     "create_file",
     "finish_task",
