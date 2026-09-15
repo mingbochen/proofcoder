@@ -1,6 +1,6 @@
 # ProofCoder Stage E 真实模型评测报告
 
-本报告记录 Stage E2a-4 的真实模型评测证据。结论基于仓库中已经保存的三个本地评测 artifact；本次报告编写没有重新运行 `proofcoder eval`，也没有调用模型 API。
+本报告记录 Stage E2a-4 的真实模型评测证据。第 1–10 节的结论基于仓库中已经保存的三个本地评测 artifact，这几节编写时没有重新运行 `proofcoder eval`，也没有调用模型 API。第 11–12 节记录的是阶段 F 与 G 之后另外运行的一次评测，有自己的 eval ID 和配置。
 
 正式评测 `b6f7ae7f5c0549ca96b7c66971c55d7b` 在干净 revision `ef1ded6293229c11b70076b3cb7107b470fb6d43` 上完成了 3 个 fixture、每项 3 次的评测。记录结果为 9/9 成功，成功率 100%。这个结果只描述本报告中的任务集、模型配置和运行环境，不代表 ProofCoder 对任意仓库都可靠。
 
@@ -194,12 +194,13 @@ proofcoder trace show --workspace .proofcoder/evals/<eval-id>/<sequence>/w <run-
 | 修复前基础设施 false negative | `5626e986bd884f6f998754381d93c315` | 表面 0/9；9 次均已验证完成，统一被 `unexpected_files` 误判 |
 | 修复后单次 smoke | `5c8dfea266f14cce9b60869dff962692` | 1/1 成功 |
 | 干净提交正式评测 | `b6f7ae7f5c0549ca96b7c66971c55d7b` | 9/9 成功，成功率 100% |
+| 阶段 F 与 G 回滚 fixture（第 12 节） | `812e545045eb4f9ab3fa51ae2e109d7e` | 6/6 成功，六次回滚均无未恢复路径 |
 
 每个 eval 的证据范围均限定为其 `metadata.json`、`summary.json` 和 `attempts.jsonl`。本报告中的事实值来自这些文件；关于旧 0/9 的“基础设施 false negative”属于根据 attempt 文件范围、验证退出码和当前评分实现作出的诊断。
 
 ---
 
-## 11. 阶段 F 与 G 新增：回滚 fixture（尚无真实模型数据）
+## 11. 阶段 F 与 G 新增：回滚 fixture
 
 本节记录仓库当前的 fixture 集合，与上面第 1–10 节描述的 `b6f7ae7f5c0549ca96b7c66971c55d7b` 那次评测无关——那次评测运行时第四、第五个 fixture 还不存在。
 
@@ -218,10 +219,90 @@ proofcoder trace show --workspace .proofcoder/evals/<eval-id>/<sequence>/w <run-
 
 两个 fixture 的改动形状不同是有意的：只改写文件的运行永远不会走到回滚中「重建被删除的文件」和「删除运行新建的文件」这两条路径，而改名加删除的运行两条都会走到。`cleanup-text-helpers` 的测试文件不在允许改动的清单里，所以把测试改松以求通过会被判为改动越界。
 
-**这两个 fixture 目前都没有真实模型的重复运行数据。** 它们的离线行为由 `tests/unit/test_eval_core.py`、`tests/unit/test_eval_runner.py` 和 `tests/unit/test_eval_fixtures.py` 覆盖——包括成功回滚、改名与删除的逐文件还原、缺少检查点、以及工作区未回到基线几种情况——但开发规范 §16「v3.0 阶段通用规则」要求的「真实模型评测 fixture 和重复运行数据」只完成了 fixture 这一半。补齐它需要配置真实 key 并运行：
+这两个 fixture 的离线行为由 `tests/unit/test_eval_core.py`、`tests/unit/test_eval_runner.py` 和 `tests/unit/test_eval_fixtures.py` 覆盖——包括成功回滚、改名与删除的逐文件还原、缺少检查点、以及工作区未回到基线几种情况。开发规范 §16「v3.0 阶段通用规则」还要求「真实模型评测 fixture 和重复运行数据」，这部分数据记录在第 12 节。
 
-```text
+---
+
+## 12. 阶段 F 与 G 回滚 fixture 的真实模型结果（2026-09-15）
+
+本节记录为补齐阶段 F 和阶段 G 退出条件而运行的评测。它与第 1–10 节描述的那次评测相互独立：不同的 eval ID、不同的 fixture 子集、不同的代码 revision。字段来自 `.proofcoder/evals/812e545045eb4f9ab3fa51ae2e109d7e/` 下的 `metadata.json`、`summary.json` 和 `attempts.jsonl`。
+
+### 12.1 可复现配置
+
+| 配置项 | 值 |
+|---|---|
+| UTC 开始时间 | `2026-09-15T03:01:13.060809Z` |
+| UTC 完成时间 | `2026-09-15T03:02:11.370655Z` |
+| 代码 revision | `e12312037d9c6605d59a53735169a8980b235b23` |
+| `code.dirty` | `true`（见 12.4） |
+| 模型 | `deepseek-v4-flash` |
+| API base URL | `https://api.deepseek.com` |
+| reasoning effort | `high` |
+| 选中的 fixture | `cleanup-text-helpers`、`rollback-word-wrap` |
+| 每项重复次数 | 3 |
+| 每个 attempt 最大模型步数 | 8 |
+| 每个 attempt 最大运行时间 | 600 秒 |
+| context budget | 262144 bytes |
+| 最大连续失败批次 | 5 |
+| 每个模型响应最大 API attempts | 3 |
+| 独立验证超时 | 60 秒 |
+| `metadata.warnings` | 空 |
+
+运行命令如下；命令本身不包含凭据：
+
+```powershell
 uv run --locked --env-file .env proofcoder eval --fixture rollback-word-wrap --fixture cleanup-text-helpers --repeat 3
 ```
 
-结果产生后，应当在本报告中新增一节记录其 eval ID、日期、代码 revision、成功率和失败分析，并在 `docs/ROADMAP.md` 中把阶段 F 和阶段 G 标记为完成。在那之前，两个阶段的这条退出条件都尚未满足。
+### 12.2 结果
+
+下表转录 `summary.json` 的逐 fixture 聚合值。API retries 为 0，因此 API attempts 与 model calls 相同。
+
+| Fixture | Attempts | Successes | Success rate | Model calls（API attempts） | Tool calls | API retries | Tool errors | Context compactions | Input tokens | Output tokens | Elapsed (s) |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| `cleanup-text-helpers` | 3 | 3 | 100% | 17（17） | 33 | 0 | 0 | 0 | 78144 | 2344 | 27.218 |
+| `rollback-word-wrap` | 3 | 3 | 100% | 15（15） | 21 | 0 | 0 | 0 | 62281 | 1897 | 26.327 |
+| **Overall** | **6** | **6** | **100%** | **32（32）** | **54** | **0** | **0** | **0** | **140425** | **4241** | **53.545** |
+
+六次 attempt 全部以 `finish_task` 终止，`completion_status` 均为 `completed_verified`，`trace_complete` 均为 `true`，`failure_reason_counts` 为空。每次的初始独立验证退出码为 1、最终为 0，符合 fixture 声明。
+
+### 12.3 回滚证据
+
+这是本节存在的理由。六次 attempt 的 `rollback.checked` 都是 `true`，`unrestored` 都是空：
+
+| Fixture | 每次 attempt 的改动 | 回滚 `restored` | `unrestored` |
+|---|---|---|---|
+| `cleanup-text-helpers` | added `text_tools.py`；deleted `legacy_util.py`、`util.py`；modified `report.py` | `legacy_util.py`、`report.py`、`text_tools.py`、`util.py` | 空 |
+| `rollback-word-wrap` | modified `word_wrap.py` | `word_wrap.py` | 空 |
+
+三次 `cleanup-text-helpers` 的改动集合完全一致，三次 `rollback-word-wrap` 也是。因此这组数据支持的结论是：真实模型做出的一次改名加一次删除，被检查点逐文件还原回了运行前的快照——重建两个被删除的文件、删除运行新建的文件、还原一个被改写的文件，三条路径都被走到，且三次都没有残留路径。第 1–10 节那次评测的所有 fixture 都只改写文件，覆盖不到前两条路径。
+
+六次 attempt 的 `unexpected` 和 `missing_required` 都是空。对 `cleanup-text-helpers` 这一点单独值得记：它的测试文件不在允许改动的清单里，模型三次都没有通过放松测试来让自己通过。
+
+各 attempt 的 `ignored_runtime` 中都有一份命令审计记录（`.proofcoder/runtime/commands/`）和 `__pycache__` 字节码，说明模型在声明完成之前确实自己执行了测试。
+
+### 12.4 关于 `code.dirty`
+
+`metadata.json` 记录 `code.dirty` 为 `true`，revision 为 `e123120`（PR #11 的合并提交）。也就是说这组数据对应的是「基于 `e123120` 的工作区」，不是该提交的精确树。第 1–10 节那次评测的 `code.dirty` 为 `false`，两者在这一点上不同。
+
+不过 artifact 本身给出了一个可核对的下界。检查点 blob 是按内容寻址的，attempt 记录里保留了它们的 sha256 路径；把仓库中已提交的 fixture 文件按 LF→CRLF 转换后重新求 sha256，六个摘要与两个 fixture 的 blob 集合**逐一相等**：
+
+| Fixture | 文件 | blob sha256（前 16 位） |
+|---|---|---|
+| `cleanup-text-helpers` | `legacy_util.py` | `2b42a4284d93db16` |
+| `cleanup-text-helpers` | `util.py` | `513673aa98002ee8` |
+| `cleanup-text-helpers` | `tests/test_text_tools.py` | `a81aeede546cd7ca` |
+| `cleanup-text-helpers` | `report.py` | `c414edf71650db6d` |
+| `rollback-word-wrap` | `tests/test_word_wrap.py` | `5087d64f5557c376` |
+| `rollback-word-wrap` | `word_wrap.py` | `b5188e9dcafc6162` |
+
+因此可以确定：评测跑的 fixture 内容与合并到 `main` 的版本逐字节相同，差别只在换行符，而运行环境的工作区是 CRLF 签出的——这同时也是 `code.dirty` 为 `true` 的最可能原因（工作区 CRLF，索引 LF）。这条核对只覆盖 fixture 文件，不覆盖 `src/` 等其余文件；那部分仍然只能以 `code.dirty` 为准，本节不作更强的声明。
+
+### 12.5 这组数据不能说明什么
+
+- 六次运行、两个小型 fixture。6/6 的 Wilson 95% 置信区间是 `[0.61, 1.0]`，按 rule of three，真实失败率的 95% 上界约为 50%。100% 是这六次的观测值，不是可靠性声明。
+- 只有一个模型、一种 reasoning effort、一次运行环境，没有模型间或跨平台比较。
+- 回滚检查比对的是文件摘要快照，不在回滚后重跑验证命令。摘要相同意味着行为相同，这是推断而不是又一次执行证据。
+- 六次运行没有触发任何 API 重试、上下文压缩或工具错误，因此这组数据完全没有覆盖重试路径、压缩路径和工具错误恢复路径。
+- 六次运行全部以 `finish_task` 终止。阶段 F 退出条件里点名的中断和预算耗尽这两种终止方式，仍然只有离线测试覆盖，本节没有它们的真实模型证据。
+- 第 8 节列出的其余局限同样适用于本节。
