@@ -58,6 +58,7 @@ future dependency, environment, configuration, or source changes remain complian
 | DeepSeek client | `proofcoder.llm.deepseek.DeepSeekClient` | `tests/unit/test_deepseek.py` | Mechanical `PASS`; dynamic request manually reviewed |
 | Evaluation pipeline | `proofcoder.eval_fixtures`, `proofcoder.eval_core`, `proofcoder.eval_runner` | `tests/unit/test_eval_fixtures.py`, `tests/unit/test_eval_core.py`, `tests/unit/test_eval_runner.py` | Mechanical `PASS` |
 | Project command policy and approval | `proofcoder.safety.policy`, `proofcoder.approval` | `tests/unit/test_command_policy_file.py`, `tests/unit/test_approval.py` | Mechanical `PASS` |
+| Cross-run sessions | `proofcoder.session` | `tests/unit/test_session.py` | Mechanical `PASS` |
 | Non-Python evaluation fixture | `evals/fixtures/nodejs-word-count` | `tests/unit/test_eval_core.py`, `tests/unit/test_eval_fixtures.py` | Manual review |
 | Local file tools | `proofcoder.tools.files`, `proofcoder.tools.search`, `proofcoder.tools.edit`, `proofcoder.tools.paths` | `tests/unit/test_read_file.py`, `tests/unit/test_search_text.py`, `tests/unit/test_edit_tools.py`, `tests/unit/test_path_tools.py` | Mechanical `PASS`; ripgrep start manually reviewed |
 | History and context | `proofcoder.context.MessageHistory`; `proofcoder.context.ContextManager` | `tests/unit/test_context.py`, `tests/unit/test_context_manager.py` | Mechanical `PASS` |
@@ -267,6 +268,16 @@ into automatic passes; their manual dispositions and limitations remain distinct
   request was raised, and the confirm side, the approval timeout, the interruption path
   and the browser digest binding still have offline coverage only.
   See `docs/EVAL_REPORT.md` section 14.
+- A session is the only data that crosses a run boundary, and it crosses into the
+  prompt alone: it sets no run-state field, so an earlier run's verification can never
+  make a later run `completed_verified`, and a test asserts that completion status
+  rather than the field. The stored file lives in the workspace runtime directory,
+  which file tools refuse but an allowed workspace command can still write, so a
+  session file is forgeable; its model-authored half is treated as untrusted content
+  and it carries nothing that changes a decision, which bounds the worst case to
+  misleading text rather than a widened capability. Sessions have offline coverage
+  only: there is no real-model repeated-run data for them yet, and no command-line or
+  browser entry point, so nothing outside a test can start one.
 - The tools that delete, move, or overwrite destroy content in one call. They refuse to
   run without a checkpoint and never recurse, but within the captured scope their damage
   is undone only when someone actually runs a rollback; outside it, nothing undoes it.

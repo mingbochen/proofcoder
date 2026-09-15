@@ -41,6 +41,7 @@ from proofcoder.protocol import ModelResponse, RunResult, TerminationReason, Too
 from proofcoder.retry import DEFAULT_MAX_API_ATTEMPTS, retry_delay_seconds
 from proofcoder.safety.policy import CommandPolicy
 from proofcoder.safety.secrets import redact_text
+from proofcoder.session import SessionCarry, session_carry_payload
 from proofcoder.state import RunState
 from proofcoder.tools.base import PreparedToolCall, ToolResult
 from proofcoder.tools.finish import (
@@ -107,6 +108,7 @@ class AgentLoop:
         checkpoint: CheckpointCapture | None = None,
         approval: ApprovalGate | None = None,
         policy: CommandPolicy | None = None,
+        carry: SessionCarry | None = None,
     ) -> None:
         workspace_root = workspace.resolve(strict=True)
         if not workspace_root.is_dir():
@@ -149,6 +151,10 @@ class AgentLoop:
         # Frozen before this loop existed. The loop only reports which policy governs
         # the run; it never loads one, so nothing here can widen a decision.
         self._policy = policy
+        # Assembled and bounded before this loop existed. It has exactly one destination,
+        # the first user message; it never reaches run state, so no earlier run's
+        # verification can survive into this one.
+        self._carry = carry
         self._events: EventEmitter | None = None
 
     @property
@@ -162,7 +168,12 @@ class AgentLoop:
 
         history = MessageHistory()
         history.add_system(self._system_prompt)
-        history.add_user(task)
+        # The carry prefixes the task rather than extending the system prompt: the message
+        # history forbids two consecutive user messages, and section 9.3 forbids promoting
+        # unprocessed text to a system instruction. Run state keeps the bare task, so the
+        # task event still reports what the user asked for.
+        carry_text = "" if self._carry is None else self._carry.text
+        history.add_user(f"{carry_text}{task}")
         run_id = self._run_id_factory()
         self._events = EventEmitter(
             run_id=run_id,
@@ -173,6 +184,8 @@ class AgentLoop:
         state = RunState(original_task=task, run_id=run_id, started_at=self._clock())
         tracker = VerificationTracker(state)
         self._emit(EventType.TASK, state, {"task": task})
+        if self._carry is not None:
+            self._emit(EventType.SESSION, state, session_carry_payload(self._carry))
         if self._checkpoint is not None:
             self._emit(
                 EventType.CHECKPOINT,
@@ -355,6 +368,9 @@ class AgentLoop:
                 state.termination_reason = TerminationReason.FINISH_TASK
                 state.completion_status = batch.finish.status
                 finish_data = batch.finish.result.data or {}
+                finish_summary = finish_data.get("summary")
+                if isinstance(finish_summary, str):
+                    state.finish_summary = finish_summary
                 limitations = finish_data.get("limitations")
                 if isinstance(limitations, list) and all(
                     isinstance(item, str) for item in limitations
@@ -826,6 +842,9 @@ class AgentLoop:
             trace_path=self._trace_path,
             trace_complete=events.trace_complete,
             event_count=events.event_count,
+            finish_summary=state.finish_summary,
+            limitations=state.limitations,
+            blocked_reason=state.blocked_reason,
         )
 
     def _build_run_report(

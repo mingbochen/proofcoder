@@ -22,6 +22,12 @@ from proofcoder.checkpoint import CheckpointCapture, ScanSkips
 from proofcoder.events import EventType
 from proofcoder.llm.scripted import ScriptedClient
 from proofcoder.protocol import FunctionCall, ModelResponse, ToolCall
+from proofcoder.session import (
+    RunRecord,
+    Session,
+    SessionVerification,
+    build_session_carry,
+)
 from proofcoder.tools.base import RiskLevel, ToolDefinition, ToolResult
 from proofcoder.tools.edit import create_create_file_tool, create_replace_in_file_tool
 from proofcoder.tools.files import create_list_files_tool, create_read_file_tool
@@ -50,6 +56,8 @@ GOLDEN_CHECKPOINT = CheckpointCapture(
 )
 VERIFY_ARGV = ["python", "-m", "unittest", "discover", "-s", "tests"]
 GOLDEN_APPROVED_ARGV = ("git", "add", "calc.py")
+GOLDEN_SESSION_ID = "f0e1d2c3b4a5968778695a4b3c2d1e0f"
+GOLDEN_EARLIER_RUN_ID = "0f1e2d3c4b5a69788796a5b4c3d2e1f0"
 
 CALC_SOURCE = (
     '"""Small calculator helpers."""\n\n\n'
@@ -219,6 +227,39 @@ def _golden_approval() -> ApprovalGate:
     return gate
 
 
+def _golden_carry() -> object:
+    """Return the carry of a fixed one-run session.
+
+    A literal session keeps the golden bytes stable, the same way GOLDEN_CHECKPOINT
+    stands in for a real capture. The record deliberately carries both halves -- the
+    program's facts and the previous run's own account -- and an accepted verification,
+    so the golden trace pins down that the carried verification is reported expired.
+    """
+
+    session = Session(
+        session_id=GOLDEN_SESSION_ID,
+        created_at="2026-08-31T04:00:00.000000Z",
+        ended_at=None,
+        runs=(
+            RunRecord(
+                run_id=GOLDEN_EARLIER_RUN_ID,
+                task="Add a subtraction helper.",
+                recorded_at="2026-08-31T04:01:00.000000Z",
+                termination_reason="finish_task",
+                completion_status="completed_verified",
+                changed_files=("calc.py",),
+                verification=SessionVerification(argv=tuple(VERIFY_ARGV), cwd=".", exit_code=0),
+                model_calls=3,
+                tool_calls=4,
+                summary="Added subtract and ran the unit tests.",
+                limitations=("The helper does not validate its arguments.",),
+                blocked_reason=None,
+            ),
+        ),
+    )
+    return build_session_carry(session, context_budget_bytes=256 * 1024)
+
+
 def _run_golden_trajectory(workspace: Path) -> bytes:
     """Run the fixed trajectory and return the raw recorded trace bytes."""
 
@@ -240,6 +281,7 @@ def _run_golden_trajectory(workspace: Path) -> bytes:
             trace_path=recorder.trace_path,
             checkpoint=GOLDEN_CHECKPOINT,
             approval=_golden_approval(),
+            carry=_golden_carry(),
         ).run(GOLDEN_TASK)
     finally:
         recorder.close()
