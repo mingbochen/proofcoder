@@ -270,7 +270,7 @@ Real evaluation calls the configured provider and may incur usage charges:
 uv run --locked --env-file .env proofcoder eval --repeat 3
 ```
 
-One fixture, `rollback-word-wrap`, declares `verify_rollback`. For it the runner does one extra step after the usual scoring: it rolls the attempt back and compares the workspace file-by-file with the snapshot taken before the agent started. An incomplete rollback, a workspace that does not return to that baseline, or a run with no usable checkpoint each become their own failure reason, and the attempt's record carries what was restored and what was not.
+Two fixtures declare `verify_rollback`: `rollback-word-wrap`, whose solution rewrites one file, and `cleanup-text-helpers`, whose solution renames one module and deletes another, so that the undo has to recreate deleted files and remove created ones rather than only restore edited text. For them the runner does one extra step after the usual scoring: it rolls the attempt back and compares the workspace file-by-file with the snapshot taken before the agent started. An incomplete rollback, a workspace that does not return to that baseline, or a run with no usable checkpoint each become their own failure reason, and the attempt's record carries what was restored and what was not.
 
 The default repeat count is 3, and the default fixture selection is all fixtures under `evals/fixtures`. Repeat `--fixture <fixture-id>` to select one or more fixtures. Each attempt uses an isolated workspace, initial-failure evidence, independent final validation, exact change-scope checks, and a complete trace requirement. Results are written below the ignored `.proofcoder/evals` directory.
 

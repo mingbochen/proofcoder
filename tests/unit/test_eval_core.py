@@ -822,6 +822,64 @@ def test_a_rollback_fixture_undoes_the_run_it_just_scored(tmp_path: Path) -> Non
     assert "if lines:" in (workspace / "word_wrap.py").read_text(encoding="utf-8")
 
 
+def _cleanup_fixture() -> EvalFixture:
+    return next(
+        fixture
+        for fixture in load_fixtures(FIXTURES_ROOT)
+        if fixture.fixture_id == "cleanup-text-helpers"
+    )
+
+
+def _rename_text_helpers(workspace: Path) -> None:
+    (workspace / "util.py").rename(workspace / "text_tools.py")
+    (workspace / "legacy_util.py").unlink()
+    report = workspace / "report.py"
+    report.write_text(
+        report.read_text(encoding="utf-8").replace("from util import", "from text_tools import"),
+        encoding="utf-8",
+    )
+
+
+def test_a_rename_and_delete_attempt_is_undone_file_for_file(tmp_path: Path) -> None:
+    """Recreating a deleted file and removing a created one are rollback's other halves.
+
+    An edit-only attempt never reaches them, so this fixture is what proves a run that
+    renames and deletes is just as reversible as one that only rewrites a line.
+    """
+
+    from proofcoder.checkpoint import create_checkpoint
+
+    fixture = _cleanup_fixture()
+    workspace = tmp_path / "workspace"
+    run_id = "c" * 32
+
+    def runner(_fixture: EvalFixture, materialized: Path) -> RunResult:
+        create_checkpoint(materialized, run_id)
+        _rename_text_helpers(materialized)
+        return _run_result(run_id=run_id)
+
+    result = run_evaluation_attempt(fixture, workspace, 1, runner, environ=_environment(tmp_path))
+
+    assert result.success is True
+    assert result.failure_reasons == ()
+    assert result.added_files == ("text_tools.py",)
+    assert result.deleted_files == ("legacy_util.py", "util.py")
+    assert result.modified_files == ("report.py",)
+    # Then every one of those four paths is put back the way the attempt found it.
+    assert result.rollback_checked is True
+    assert result.rollback_restored_files == (
+        "legacy_util.py",
+        "report.py",
+        "text_tools.py",
+        "util.py",
+    )
+    assert result.rollback_unrestored_files == ()
+    assert (workspace / "util.py").is_file()
+    assert (workspace / "legacy_util.py").is_file()
+    assert not (workspace / "text_tools.py").exists()
+    assert "from util import" in (workspace / "report.py").read_text(encoding="utf-8")
+
+
 def test_a_fixture_without_the_flag_is_never_rolled_back(tmp_path: Path) -> None:
     fixture = _bug_fixture()
 

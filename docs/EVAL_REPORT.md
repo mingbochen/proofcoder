@@ -199,11 +199,11 @@ proofcoder trace show --workspace .proofcoder/evals/<eval-id>/<sequence>/w <run-
 
 ---
 
-## 11. 阶段 F 新增：回滚 fixture（尚无真实模型数据）
+## 11. 阶段 F 与 G 新增：回滚 fixture（尚无真实模型数据）
 
-本节记录仓库当前的 fixture 集合，与上面第 1–10 节描述的 `b6f7ae7f5c0549ca96b7c66971c55d7b` 那次评测无关——那次评测运行时第四个 fixture 还不存在。
+本节记录仓库当前的 fixture 集合，与上面第 1–10 节描述的 `b6f7ae7f5c0549ca96b7c66971c55d7b` 那次评测无关——那次评测运行时第四、第五个 fixture 还不存在。
 
-阶段 F 增加了 `rollback-word-wrap`，它是唯一一个把 `verify_rollback` 设为 `true` 的 fixture。对这类 fixture，评测器在完成常规评分之后再做一步：为这次运行建立回滚计划并执行，然后把工作区与 agent 启动前的快照逐文件比对。因此它的成功判定在第 1 节的五条之外，还要求：
+阶段 F 增加了 `rollback-word-wrap`，阶段 G 增加了 `cleanup-text-helpers`。这两个是仅有的把 `verify_rollback` 设为 `true` 的 fixture。对这类 fixture，评测器在完成常规评分之后再做一步：为这次运行建立回滚计划并执行，然后把工作区与 agent 启动前的快照逐文件比对。因此它们的成功判定在第 1 节的五条之外，还要求：
 
 6. 回滚执行完整，没有未能恢复的路径（否则记 `rollback_incomplete`）。
 7. 回滚之后的工作区快照与运行前完全一致（否则记 `rollback_mismatch`）。
@@ -211,10 +211,17 @@ proofcoder trace show --workspace .proofcoder/evals/<eval-id>/<sequence>/w <run-
 
 比对快照就是全部检查：两个文件摘要相同的工作区行为必然相同，再跑一次验证命令不会增加证据。运行产物（`.proofcoder/`）不参与比对，因为检查点和轨迹本来就应当在回滚后不同。
 
-**这个 fixture 目前没有真实模型的重复运行数据。** 它的离线行为由 `tests/unit/test_eval_core.py` 和 `tests/unit/test_eval_runner.py` 覆盖——包括成功回滚、缺少检查点、以及工作区未回到基线三种情况——但开发规范 §16「v3.0 阶段通用规则」要求的"真实模型评测 fixture 和重复运行数据"只完成了 fixture 这一半。补齐它需要配置真实 key 并运行：
+| Fixture | 类别 | 任务目标 | 必改文件 | 改动形状 |
+|---|---|---|---|---|
+| `rollback-word-wrap` | `bug_fix` | 修复 `wrap_words` 丢掉最后一行的缺陷，并保持已有测试通过 | `word_wrap.py` | 就地改写一个文件 |
+| `cleanup-text-helpers` | `cross_file_change` | 把 `util.py` 改名为 `text_tools.py`，让 `report.py` 指向新名字，并删除无人引用的旧副本 `legacy_util.py` | `legacy_util.py`；`report.py`；`text_tools.py`；`util.py` | 一次改名加一次删除 |
+
+两个 fixture 的改动形状不同是有意的：只改写文件的运行永远不会走到回滚中「重建被删除的文件」和「删除运行新建的文件」这两条路径，而改名加删除的运行两条都会走到。`cleanup-text-helpers` 的测试文件不在允许改动的清单里，所以把测试改松以求通过会被判为改动越界。
+
+**这两个 fixture 目前都没有真实模型的重复运行数据。** 它们的离线行为由 `tests/unit/test_eval_core.py`、`tests/unit/test_eval_runner.py` 和 `tests/unit/test_eval_fixtures.py` 覆盖——包括成功回滚、改名与删除的逐文件还原、缺少检查点、以及工作区未回到基线几种情况——但开发规范 §16「v3.0 阶段通用规则」要求的「真实模型评测 fixture 和重复运行数据」只完成了 fixture 这一半。补齐它需要配置真实 key 并运行：
 
 ```text
-uv run --locked --env-file .env proofcoder eval --fixture rollback-word-wrap --repeat 3
+uv run --locked --env-file .env proofcoder eval --fixture rollback-word-wrap --fixture cleanup-text-helpers --repeat 3
 ```
 
-结果产生后，应当在本报告中新增一节记录其 eval ID、日期、代码 revision、成功率和失败分析，并在 `docs/ROADMAP.md` 中把阶段 F 标记为完成。在那之前，阶段 F 的这条退出条件尚未满足。
+结果产生后，应当在本报告中新增一节记录其 eval ID、日期、代码 revision、成功率和失败分析，并在 `docs/ROADMAP.md` 中把阶段 F 和阶段 G 标记为完成。在那之前，两个阶段的这条退出条件都尚未满足。

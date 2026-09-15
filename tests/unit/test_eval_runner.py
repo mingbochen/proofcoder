@@ -99,6 +99,20 @@ def _modify_fixture(fixture: EvalFixture, workspace: Path, *, valid: bool = True
             )
         source.write_text(text + "\n# fake runner source evidence\n", encoding="utf-8")
         test = workspace / "tests" / "test_inventory.py"
+    elif fixture.fixture_id == "cleanup-text-helpers":
+        # This fixture forbids touching its tests, and its change is a rename plus a
+        # delete rather than an edit, so this branch returns before the shared tail.
+        (workspace / "util.py").rename(workspace / "text_tools.py")
+        if valid:
+            (workspace / "legacy_util.py").unlink()
+        report = workspace / "report.py"
+        report.write_text(
+            report.read_text(encoding="utf-8").replace(
+                "from util import", "from text_tools import"
+            ),
+            encoding="utf-8",
+        )
+        return
     elif fixture.fixture_id == "rollback-word-wrap":
         source = workspace / "word_wrap.py"
         text = source.read_text(encoding="utf-8")
@@ -256,7 +270,7 @@ def _json(path: Path) -> dict[str, object]:
     return value
 
 
-def test_three_fixtures_repeat_two_are_ordered_isolated_and_fully_persisted(
+def test_every_fixture_repeat_two_is_ordered_isolated_and_fully_persisted(
     tmp_path: Path,
 ) -> None:
     root = _project(tmp_path)
@@ -273,6 +287,8 @@ def test_three_fixtures_repeat_two_are_ordered_isolated_and_fully_persisted(
     expected_order = [
         "bugfix-inclusive-total",
         "bugfix-inclusive-total",
+        "cleanup-text-helpers",
+        "cleanup-text-helpers",
         "cross-file-message-format",
         "cross-file-message-format",
         "feature-available-items",
@@ -283,10 +299,10 @@ def test_three_fixtures_repeat_two_are_ordered_isolated_and_fully_persisted(
     assert session.status is EvaluationStatus.COMPLETED
     assert session.exit_code == 0
     assert [fixture_id for fixture_id, _ in calls] == expected_order
-    assert len({workspace for _, workspace in calls}) == 8
+    assert len({workspace for _, workspace in calls}) == 10
     assert all(workspace.name == "w" for _, workspace in calls)
     assert all(workspace.is_dir() for _, workspace in calls)
-    assert len({attempt.run_id for attempt in session.attempts}) == 8
+    assert len({attempt.run_id for attempt in session.attempts}) == 10
     assert all(attempt.trace_complete for attempt in session.attempts)
 
     evaluation = session.evaluation_directory
@@ -300,10 +316,10 @@ def test_three_fixtures_repeat_two_are_ordered_isolated_and_fully_persisted(
     assert metadata["code"] == {"dirty": None, "revision": None}
     assert metadata["warnings"] == ["GIT_REVISION_UNAVAILABLE", "GIT_DIRTY_UNAVAILABLE"]
     assert summary["status"] == "completed"
-    assert summary["recorded_attempts"] == summary["expected_attempts"] == 8
-    assert summary["overall"]["successes"] == 8
-    assert [item["sequence"] for item in attempts] == list(range(1, 9))
-    assert len({(item["fixture_id"], item["attempt"]) for item in attempts}) == 8
+    assert summary["recorded_attempts"] == summary["expected_attempts"] == 10
+    assert summary["overall"]["successes"] == 10
+    assert [item["sequence"] for item in attempts] == list(range(1, 11))
+    assert len({(item["fixture_id"], item["attempt"]) for item in attempts}) == 10
     assert [item["fixture_id"] for item in attempts] == expected_order
     assert all(not Path(item["workspace"]).is_absolute() for item in attempts)
     assert all(item["files"]["ignored_runtime"] for item in attempts)
@@ -1040,6 +1056,7 @@ def test_rollback_evidence_is_persisted_for_the_fixture_that_asks_for_it(
     attempts = {json.loads(line)["fixture_id"]: json.loads(line) for line in lines}
 
     rolled_back = attempts["rollback-word-wrap"]["rollback"]
+    renamed = attempts["cleanup-text-helpers"]["rollback"]
     untouched = attempts["bugfix-inclusive-total"]["rollback"]
 
     assert session.exit_code == 0
@@ -1047,5 +1064,15 @@ def test_rollback_evidence_is_persisted_for_the_fixture_that_asks_for_it(
     # The fake runner touches both files, so the rollback restores both.
     assert rolled_back["restored"] == ["tests/test_word_wrap.py", "word_wrap.py"]
     assert rolled_back["unrestored"] == []
-    # Only the fixture that declares it is undone; the others keep their changes.
+    # The rename-and-delete fixture reports the same evidence for a change whose
+    # undo has to recreate two files and remove the one the run created.
+    assert renamed["checked"] is True
+    assert renamed["restored"] == [
+        "legacy_util.py",
+        "report.py",
+        "text_tools.py",
+        "util.py",
+    ]
+    assert renamed["unrestored"] == []
+    # Only the fixtures that declare it are undone; the others keep their changes.
     assert untouched == {"checked": False, "restored": [], "unrestored": []}
