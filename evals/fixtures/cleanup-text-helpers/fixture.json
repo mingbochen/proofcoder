@@ -7,6 +7,7 @@
   ],
   "category": "cross_file_change",
   "command_policy": null,
+  "follow_up_task": null,
   "id": "cleanup-text-helpers",
   "required_modified_files": [
     "legacy_util.py",
@@ -14,7 +15,7 @@
     "text_tools.py",
     "util.py"
   ],
-  "schema_version": 3,
+  "schema_version": 4,
   "task": "The shared text helpers outgrew the name util.py. Rename that module to text_tools.py, point report.py at the new name, and drop legacy_util.py, a superseded copy that nothing imports. Keep the existing tests passing and do not change them.",
   "validation": {
     "argv": [
@@ -27,9 +28,9 @@
       "-v"
     ],
     "cwd": ".",
-    "success_exit_code": 0,
     "initial_exit_code": 1,
-    "initial_output_contains": "ERROR: test_exposes_the_helpers_under_the_new_name"
+    "initial_output_contains": "ERROR: test_exposes_the_helpers_under_the_new_name",
+    "success_exit_code": 0
   },
   "verify_rollback": true
 }

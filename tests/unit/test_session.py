@@ -8,11 +8,13 @@ restores run state from a session fails it.
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 
 import pytest
 
 from proofcoder.agent import AgentLoop
+from proofcoder.context import MessageHistory
 from proofcoder.llm.scripted import ScriptedClient
 from proofcoder.protocol import (
     CompletionStatus,
@@ -558,3 +560,174 @@ def test_listing_skips_an_unreadable_session_without_failing(tmp_path: Path) -> 
     with pytest.raises(SessionError) as error:
         load_session(tmp_path, SESSION_B)
     assert error.value.code == "SESSION_INVALID"
+
+
+def _eval_environment(temp_directory: Path) -> dict[str, str]:
+    """Return the minimal environment the evaluation validation command needs."""
+
+    import os
+
+    environment = {
+        "PATH": os.environ.get("PATH", ""),
+        "TEMP": str(temp_directory),
+        "TMP": str(temp_directory),
+    }
+    for name in ("PATHEXT", "SYSTEMROOT", "WINDIR"):
+        value = os.environ.get(name)
+        if value is not None:
+            environment[name] = value
+    return environment
+
+
+def test_a_multi_task_fixture_runs_its_tasks_in_one_session(tmp_path: Path) -> None:
+    """The evaluation pipeline's own use of sessions, end to end and offline."""
+
+    from proofcoder.eval_core import EvalRunRequest, run_evaluation_attempt
+    from proofcoder.eval_fixtures import load_fixtures
+    from proofcoder.protocol import RunResult
+    from proofcoder.session import list_sessions
+
+    fixtures = {item.fixture_id: item for item in load_fixtures(Path("evals/fixtures").resolve())}
+    fixture = fixtures["session-two-step-report"]
+    assert fixture.tasks == (fixture.task, fixture.follow_up_task)
+
+    seen: list[EvalRunRequest] = []
+    carried: list[str] = []
+
+    def runner(_fixture: object, workspace: Path, request: EvalRunRequest) -> RunResult:
+        seen.append(request)
+        assert request.session_id is not None
+        stored = load_session(workspace, request.session_id)
+        carried.append(build_session_carry(stored, context_budget_bytes=256 * 1024).text)
+        if request.sequence == 2:
+            report = workspace / "report.py"
+            report.write_text(
+                report.read_text(encoding="utf-8").replace("max(ordered[:-1])", "max(ordered)"),
+                encoding="utf-8",
+            )
+        # The pipeline appends the record; this fake only has to return a result.
+        append_run_record(
+            workspace,
+            request.session_id,
+            _record(
+                run_id=f"{request.sequence:032x}",
+                task=request.task,
+                summary=f"finished step {request.sequence}",
+            ),
+        )
+        return RunResult(
+            termination_reason=TerminationReason.FINISH_TASK,
+            final_text=None,
+            history=MessageHistory(),
+            model_call_count=2,
+            tool_call_count=3,
+            tool_error_count=0,
+            completion_status=CompletionStatus.COMPLETED_VERIFIED,
+            changed_files=("report.py",),
+            run_id=f"{request.sequence:032x}",
+            trace_path=f".proofcoder/runs/{request.sequence:032x}/trace.jsonl",
+            trace_complete=True,
+            elapsed_seconds=1.0,
+        )
+
+    result = run_evaluation_attempt(
+        fixture,
+        tmp_path / "workspace",
+        1,
+        runner,
+        environ=_eval_environment(tmp_path),
+    )
+
+    assert [request.sequence for request in seen] == [1, 2]
+    assert {request.session_id for request in seen} == {seen[0].session_id}
+    assert seen[0].task == fixture.task
+    assert seen[1].task == fixture.follow_up_task
+    # The first task carries nothing; the second carries the first.
+    assert carried[0] == ""
+    assert "finished step 1" in carried[1]
+    # Counters add across the sequence; the outcome comes from the last run alone.
+    assert result.model_call_count == 4
+    assert result.tool_call_count == 6
+    assert result.run_id == f"{2:032x}"
+    assert [reason.value for reason in result.failure_reasons] == []
+    assert result.success is True
+    assert len(list_sessions(tmp_path / "workspace")) == 1
+
+
+def test_a_single_task_fixture_creates_no_session(tmp_path: Path) -> None:
+    from proofcoder.eval_core import EvalRunRequest, run_evaluation_attempt
+    from proofcoder.eval_fixtures import load_fixtures
+    from proofcoder.protocol import RunResult
+    from proofcoder.session import list_sessions
+
+    fixtures = {item.fixture_id: item for item in load_fixtures(Path("evals/fixtures").resolve())}
+    fixture = fixtures["bugfix-inclusive-total"]
+    assert fixture.tasks == (fixture.task,)
+
+    seen: list[EvalRunRequest] = []
+
+    def runner(_fixture: object, workspace: Path, request: EvalRunRequest) -> RunResult:
+        seen.append(request)
+        return RunResult(
+            termination_reason=TerminationReason.FINISH_TASK,
+            final_text=None,
+            history=MessageHistory(),
+            model_call_count=1,
+            tool_call_count=1,
+            tool_error_count=0,
+            completion_status=CompletionStatus.COMPLETED_VERIFIED,
+            run_id="f" * 32,
+            trace_path=".proofcoder/runs/" + "f" * 32 + "/trace.jsonl",
+            trace_complete=True,
+        )
+
+    run_evaluation_attempt(
+        fixture, tmp_path / "workspace", 1, runner, environ=_eval_environment(tmp_path)
+    )
+
+    assert [request.session_id for request in seen] == [None]
+    assert list_sessions(tmp_path / "workspace") == ()
+
+
+def test_the_multi_task_fixture_cannot_be_fixed_without_changing_its_size() -> None:
+    """Guard the fixture against stale bytecode, which once made it unfixable.
+
+    CPython validates a cached ``.pyc`` by source mtime *in seconds* and size. A
+    correction that preserves the file's size and lands in the same second as the
+    validation that cached it is invisible: the second run imports the stale bytecode
+    and fails against code that is no longer there. Two runs of a real model are far
+    apart in time, but the fixture must not depend on that, so no correct edit here may
+    preserve the size.
+    """
+
+    import subprocess
+    import sys
+    import tempfile
+
+    source = Path("evals/fixtures/session-two-step-report/workspace").resolve()
+    with tempfile.TemporaryDirectory() as temporary:
+        workspace = Path(temporary) / "w"
+        shutil.copytree(source, workspace)
+        report = workspace / "report.py"
+        before = report.stat().st_size
+
+        first = subprocess.run(
+            [sys.executable, "-m", "unittest", "discover", "-s", "tests"],
+            cwd=workspace,
+            capture_output=True,
+            text=True,
+        )
+        report.write_text(
+            report.read_text(encoding="utf-8").replace("max(ordered[:-1])", "max(ordered)"),
+            encoding="utf-8",
+        )
+        second = subprocess.run(
+            [sys.executable, "-m", "unittest", "discover", "-s", "tests"],
+            cwd=workspace,
+            capture_output=True,
+            text=True,
+        )
+
+        assert report.stat().st_size != before
+        assert first.returncode == 1
+        assert second.returncode == 0

@@ -4,11 +4,12 @@
   ],
   "category": "bug_fix",
   "command_policy": "proofcoder.toml",
+  "follow_up_task": null,
   "id": "nodejs-word-count",
   "required_modified_files": [
     "word_count.js"
   ],
-  "schema_version": 3,
+  "schema_version": 4,
   "task": "countWords treats 'Alpha' and 'alpha' as different words. Make the count case-insensitive while keeping the first-seen order and the existing tests passing.",
   "validation": {
     "argv": [
@@ -16,9 +17,9 @@
       "--test"
     ],
     "cwd": ".",
-    "success_exit_code": 0,
     "initial_exit_code": 1,
-    "initial_output_contains": "countWords must fold case before counting"
+    "initial_output_contains": "countWords must fold case before counting",
+    "success_exit_code": 0
   },
   "verify_rollback": false
 }

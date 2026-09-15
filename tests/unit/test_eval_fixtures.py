@@ -26,6 +26,7 @@ EXPECTED_FIXTURES = {
     "feature-available-items": FixtureCategory.FEATURE_ADDITION,
     "nodejs-word-count": FixtureCategory.BUG_FIX,
     "rollback-word-wrap": FixtureCategory.BUG_FIX,
+    "session-two-step-report": FixtureCategory.BUG_FIX,
 }
 # These repository fixtures verify that a finished run can be undone. The rename and
 # delete fixture is here because recreating a deleted file and removing a created one
@@ -48,7 +49,7 @@ FORBIDDEN_TASK_HINTS = {
 
 def _metadata(fixture_id: str = "sample-fixture") -> dict[str, object]:
     return {
-        "schema_version": 3,
+        "schema_version": 4,
         "id": fixture_id,
         "category": "bug_fix",
         "task": "Correct the sample behavior and keep its tests passing.",
@@ -63,6 +64,7 @@ def _metadata(fixture_id: str = "sample-fixture") -> dict[str, object]:
         "required_modified_files": ["sample.py"],
         "verify_rollback": False,
         "command_policy": None,
+        "follow_up_task": None,
     }
 
 
@@ -276,7 +278,7 @@ def test_invalid_json_is_rejected(tmp_path: Path) -> None:
 
 def test_unknown_schema_version_is_rejected(tmp_path: Path) -> None:
     metadata = _metadata()
-    metadata["schema_version"] = 4
+    metadata["schema_version"] = 5
     _write_fixture(tmp_path, "fixture", metadata=metadata)
 
     _assert_code(tmp_path, "FIXTURE_METADATA_INVALID")

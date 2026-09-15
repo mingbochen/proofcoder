@@ -6,9 +6,9 @@
 
 - 规范版本：v3.3
 - 当前阶段：阶段 I（多轮会话）
-- 下一步：小项 I.4，声明任务序列的多轮会话评测 fixture 与文档同步
-- 最近完成：小项 I.3，`proofcoder session` 子命令、`run --session`、浏览器会话选择器，以及 D6 的改名
-- 阻塞项：无
+- 下一步：阶段 J（可替换模型提供方与流式响应），先写阶段 ADR
+- 最近完成：小项 I.4，多轮会话评测 fixture `session-two-step-report` 与评测流水线的任务序列支持
+- 阻塞项：阶段 I 的通用退出条件要求「新增能力有对应的真实模型评测 fixture 和重复运行数据」。fixture 已就绪且有离线测试，重复运行数据需要真实 key，见 [EVAL_REPORT §15](EVAL_REPORT.md)
 
 状态取值：`已完成`、`进行中`、`未开始`、`阻塞`、`暂缓`。
 
@@ -80,7 +80,7 @@
 | I.1 | 阶段 ADR 与规范补全：携带什么、放在哪里、证据不跨运行继承、会话数据的信任边界（[ADR-0007](adr/0007-cross-run-sessions.md)、规范 §9.5、§10.6 与 §13.6） | 已完成 | [#19](https://github.com/mingbochen/proofcoder/pull/19) |
 | I.2 | 会话存储与校验、携带摘要的确定性组装与裁剪、证据不跨运行继承的保证，含离线测试 | 已完成 | [#20](https://github.com/mingbochen/proofcoder/pull/20) |
 | I.3 | 命令行与浏览器的会话入口，以及浏览器在服务重启后的会话恢复 | 已完成 | [#21](https://github.com/mingbochen/proofcoder/pull/21) |
-| I.4 | 声明任务序列的多轮会话评测 fixture，以及文档同步 | 未开始 | — |
+| I.4 | 声明任务序列的多轮会话评测 fixture `session-two-step-report`，以及文档同步 | 阻塞（等待真实模型重复运行数据） | [#22](https://github.com/mingbochen/proofcoder/pull/22) |
 
 ## 阶段 J–M
 

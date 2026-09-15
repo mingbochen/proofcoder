@@ -193,6 +193,8 @@ Evaluation fixtures are strict JSON descriptions with bounded identifiers, tasks
 
 A fixture may additionally declare that the attempt be rolled back. The runner then applies the rollback after scoring and compares the workspace with the pre-run snapshot it already holds. Comparing snapshots is the whole check: two workspaces with identical file digests behave identically, so re-running the validation command would cost a subprocess without adding evidence. Runtime artifacts stay out of that comparison, because the checkpoint and the traces are expected to differ afterwards.
 
+A fixture may declare a second task. The attempt then creates a session in its workspace and runs the agent once per task inside it, and is scored once after the last one: the fixture describes one end state, not one per task. Counters add across the sequence, everything that describes an outcome comes from the last run, and a single-task fixture is passed no session at all.
+
 Success is conjunctive: local agent status must be completed_verified, the normalized trace must be present and complete, final independent validation must match the fixture's configured `success_exit_code` without infrastructure failure, every required file must change, and no unexpected file may change. Protected runtime artifacts are security-checked and reported separately before being excluded from task scope. Attempt records are append-and-flush persisted, summaries are atomically replaced, fixture order is deterministic, and aggregate counts are derived from durable attempt data. The recorded real-model evidence and its limitations are described in [EVAL_REPORT.md](EVAL_REPORT.md), not duplicated as timeless claims here.
 
 ## 13. Design decisions and trade-offs

@@ -1,6 +1,6 @@
 # ProofCoder Stage E 真实模型评测报告
 
-本报告记录 Stage E2a-4 的真实模型评测证据。第 1–10 节的结论基于仓库中已经保存的三个本地评测 artifact，这几节编写时没有重新运行 `proofcoder eval`，也没有调用模型 API。第 11–12 节记录的是阶段 F 与 G 之后另外运行的一次评测，第 13–14 节记录的是阶段 H 之后又一次评测；这两次各有自己的 eval ID 和配置。
+本报告记录 Stage E2a-4 的真实模型评测证据。第 1–10 节的结论基于仓库中已经保存的三个本地评测 artifact，这几节编写时没有重新运行 `proofcoder eval`，也没有调用模型 API。第 11–12 节记录的是阶段 F 与 G 之后另外运行的一次评测，第 13–14 节记录的是阶段 H 之后又一次评测；这两次各有自己的 eval ID 和配置。第 15 节记录阶段 I 新增的 fixture，它还没有真实模型数据。
 
 正式评测 `b6f7ae7f5c0549ca96b7c66971c55d7b` 在干净 revision `ef1ded6293229c11b70076b3cb7107b470fb6d43` 上完成了 3 个 fixture、每项 3 次的评测。记录结果为 9/9 成功，成功率 100%。这个结果只描述本报告中的任务集、模型配置和运行环境，不代表 ProofCoder 对任意仓库都可靠。
 
@@ -415,3 +415,39 @@ uv run --locked --env-file .env proofcoder eval --fixture nodejs-word-count --re
 - 三次运行全部以 `finish_task` 终止，中断和预算耗尽两种终止方式仍然只有离线测试覆盖。
 - 这个 fixture 的 `verify_rollback` 为 `false`，三次的 `rollback.checked` 都是 `false`，所以本节不提供任何回滚证据。回滚证据在第 12.3 节。
 - 只有一个模型、一种 reasoning effort、一次运行环境。第 8 节列出的其余局限同样适用于本节。
+
+---
+
+## 15. 阶段 I 新增：多轮会话 fixture（尚无真实模型数据）
+
+本节记录 fixture 集合在阶段 I 的变化，与第 14 节那次评测无关——那次评测运行时第七个 fixture 还不存在。
+
+阶段 I 增加了 `session-two-step-report`，它是 fixture 集合里第一个声明**任务序列**的条目：
+
+| Fixture | 类别 | 第一个任务 | 第二个任务 | 必改文件 | 验证命令 |
+|---|---|---|---|---|---|
+| `session-two-step-report` | `bug_fix` | 修好 `summarize` 的上界，明确要求不要动 `summarize_verbose` | 把同一处修正应用到 `summarize_verbose` | `report.py` | `python -m unittest discover -s tests` |
+
+`fixture.json` 的新字段 `follow_up_task` 是这个序列的全部声明。有它时，评测器在同一个 attempt 工作区里建立一个会话，按顺序跑两次 agent，两次都属于那个会话；成功判定只在**最后一次**之后做一次，因为 fixture 描述的是一个终态而不是每个任务一个。没有它时（其余六个 fixture），attempt 的行为与阶段 I 之前逐字节一致：不建会话，`session_id` 为 `None`。
+
+三处值得单独记的约束：
+
+- **统计相加，结论不相加。** attempt 记录里的模型轮数、工具调用数、token 和耗时是整个序列的总和，因为整个序列才是这次 attempt 的成本；而完成状态、终止原因、验证证据和轨迹路径只来自最后一次运行。证据在评测内部同样不跨运行累积。
+- **会话由评测器建立，不由工作区建立。** 会话是评测器在 agent 启动之前创建的，agent 只是被告知加入哪一个。工作区里出现的 `.proofcoder/sessions/` 是运行产物，和轨迹、检查点一样不参与改动比对。
+- **这个 fixture 不能证明模型“用上了”携带内容。** 它能证明的是机制成立：两次运行在同一个会话里、第二次的提示词里有第一次的记录、而且第二次仍然要自己取得验证。第二个任务写得在没有携带内容时会更难理解（“同一处修正”），但模型也可以直接读代码推断出来。fixture 无法区分这两条路径，本节也不作更强的声明。
+
+### 15.1 一个被这个 fixture 暴露的 fixture 设计陷阱
+
+第一次写这个 fixture 时，它的 bug 是 `ordered[-2]`，正确修法是 `ordered[-1]`——**长度完全相同**。结果是：初始验证导入并缓存了 `report.py` 的字节码；随后写入的修正长度不变，又落在同一个文件系统时间戳秒内；CPython 校验 `.pyc` 只看源文件的 mtime（秒）和大小，两者都没变，于是第二次验证**导入了过期的字节码**，对着已经不存在的代码失败。
+
+真实模型的两次运行之间隔着若干秒，mtime 会变，所以这个陷阱在真实运行里不会触发；但离线测试里会，而一个依赖“运行得够慢”的 fixture 是坏 fixture。现在的 bug 是 `max(ordered[:-1])`，任何正确的修法都会改变文件长度。`tests/unit/test_session.py` 里有一条回归测试固定这一点：它在同一秒内应用修正，断言文件大小变了、且验证从退出码 1 变成 0。
+
+`python -B` 能从根上消除这个问题，但内置命令策略只允许 `python` 以 `-m` 或工作区 `.py` 脚本开头，放开 `-B` 属于命令策略变更，需要单独的 ADR。
+
+**这个 fixture 目前没有真实模型的重复运行数据。** 阶段 I 的能力（跨运行会话、携带摘要、证据不继承）同样如此。补齐需要配置真实 key 并运行：
+
+```text
+uv run --locked --env-file .env proofcoder eval --fixture session-two-step-report --repeat 3
+```
+
+结果产生后，应当在本报告中新增一节记录其 eval ID、日期、代码 revision、成功率和失败分析，并在 `docs/ROADMAP.md` 中把阶段 I 标记为完成。在那之前，阶段 I 的这条退出条件尚未满足。

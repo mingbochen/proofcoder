@@ -24,6 +24,7 @@ from proofcoder.errors import ProofCoderError
 from proofcoder.eval_core import (
     AgentRunner,
     AggregateMetrics,
+    EvalRunRequest,
     EvaluationAggregate,
     EvaluationAttemptInfrastructureError,
     EvaluationAttemptResult,
@@ -44,6 +45,14 @@ from proofcoder.safety.writes import (
     commit_replacement,
     discard_temporary_file,
     stage_temporary_file,
+)
+from proofcoder.session import (
+    SessionCarry,
+    SessionError,
+    append_run_record,
+    build_session_carry,
+    load_session,
+    run_record_from_result,
 )
 from proofcoder.tools.base import ToolDefinition
 from proofcoder.tools.command import create_run_command_tool
@@ -237,7 +246,7 @@ def create_evaluation_agent_runner(
 
     sensitive_values = sensitive_environment_values(environ)
 
-    def run_agent(fixture: EvalFixture, workspace: Path) -> RunResult:
+    def run_agent(fixture: EvalFixture, workspace: Path, request: EvalRunRequest) -> RunResult:
         try:
             # The fixture names its policy; the workspace never grants itself one.
             # fixture.json is not materialized, so this naming is outside everything
@@ -254,11 +263,13 @@ def create_evaluation_agent_runner(
                 error.code, "the fixture's command policy could not be loaded"
             ) from None
         try:
+            carry = _attempt_carry(workspace, request, limits)
             resources = create_agent_runtime_resources(
                 workspace,
                 environ=environ,
                 sensitive_values=sensitive_values,
                 policy=policy,
+                carry=carry,
             )
         except (OSError, TracePathError, ValueError) as error:
             code = getattr(error, "code", "AGENT_SETUP_FAILED")
@@ -270,13 +281,13 @@ def create_evaluation_agent_runner(
         try:
             if resources.checkpoint_error is not None:
                 emit_setup_termination(
-                    task=fixture.task,
+                    task=request.task,
                     resources=resources,
                     termination_reason=TerminationReason.CHECKPOINT_ERROR,
                     sensitive_values=sensitive_values,
                 )
                 result = setup_failure_result(
-                    task=fixture.task,
+                    task=request.task,
                     resources=resources,
                     termination_reason=TerminationReason.CHECKPOINT_ERROR,
                 )
@@ -285,25 +296,25 @@ def create_evaluation_agent_runner(
                     client = client_factory(config)
                 except KeyboardInterrupt:
                     emit_setup_termination(
-                        task=fixture.task,
+                        task=request.task,
                         resources=resources,
                         termination_reason=TerminationReason.INTERRUPTED,
                         sensitive_values=sensitive_values,
                     )
                     result = setup_failure_result(
-                        task=fixture.task,
+                        task=request.task,
                         resources=resources,
                         termination_reason=TerminationReason.INTERRUPTED,
                     )
                 except ProofCoderError:
                     emit_setup_termination(
-                        task=fixture.task,
+                        task=request.task,
                         resources=resources,
                         termination_reason=TerminationReason.API_ERROR,
                         sensitive_values=sensitive_values,
                     )
                     result = setup_failure_result(
-                        task=fixture.task,
+                        task=request.task,
                         resources=resources,
                         termination_reason=TerminationReason.API_ERROR,
                     )
@@ -313,15 +324,57 @@ def create_evaluation_agent_runner(
                         resources=resources,
                         limits=limits,
                         sensitive_values=sensitive_values,
-                    ).run(fixture.task)
+                    ).run(request.task)
         finally:
             resources.close()
-        return replace(
+        recorded = replace(
             result,
             trace_complete=result.trace_complete and resources.recorder.trace_complete,
         )
+        _record_attempt_run(workspace, request, recorded, sensitive_values)
+        return recorded
 
     return run_agent
+
+
+def _attempt_carry(
+    workspace: Path,
+    request: EvalRunRequest,
+    limits: AgentRunLimits,
+) -> SessionCarry | None:
+    """Assemble what this task carries from the earlier tasks of the same attempt."""
+
+    if request.session_id is None:
+        return None
+    try:
+        stored = load_session(workspace, request.session_id)
+    except SessionError as error:
+        raise EvaluationAttemptInfrastructureError(
+            error.code, "the attempt's session could not be read"
+        ) from None
+    return build_session_carry(stored, context_budget_bytes=limits.context_budget_bytes)
+
+
+def _record_attempt_run(
+    workspace: Path,
+    request: EvalRunRequest,
+    result: RunResult,
+    sensitive_values: tuple[str, ...],
+) -> None:
+    """Append one finished task to the attempt's session, when it has one."""
+
+    if request.session_id is None:
+        return
+    try:
+        append_run_record(
+            workspace,
+            request.session_id,
+            run_record_from_result(result, task=request.task, sensitive_values=sensitive_values),
+        )
+    except SessionError as error:
+        raise EvaluationAttemptInfrastructureError(
+            error.code, "the attempt's session could not be updated"
+        ) from None
 
 
 def run_evaluation(

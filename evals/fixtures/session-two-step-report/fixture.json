@@ -1,0 +1,29 @@
+{
+  "allowed_modified_files": [
+    "report.py"
+  ],
+  "category": "bug_fix",
+  "command_policy": null,
+  "follow_up_task": "summarize_verbose in report.py reports its highest entry the same wrong way summarize reported its range end. Apply the same correction there, keep summarize as it is now, and keep the tests passing.",
+  "id": "session-two-step-report",
+  "required_modified_files": [
+    "report.py"
+  ],
+  "schema_version": 4,
+  "task": "summarize in report.py must describe a range that covers every entry, but its upper bound drops the largest one. Fix summarize only; leave summarize_verbose alone in this task.",
+  "validation": {
+    "argv": [
+      "python",
+      "-m",
+      "unittest",
+      "discover",
+      "-s",
+      "tests"
+    ],
+    "cwd": ".",
+    "initial_exit_code": 1,
+    "initial_output_contains": "summarize must cover the last entry",
+    "success_exit_code": 0
+  },
+  "verify_rollback": false
+}
