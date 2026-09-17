@@ -37,7 +37,7 @@ from proofcoder.checkpoint import (
     delete_checkpoint,
     list_checkpoints,
 )
-from proofcoder.config import ProofCoderConfig
+from proofcoder.config import ProofCoderConfig, ProviderName
 from proofcoder.context import DEFAULT_CONTEXT_BUDGET_BYTES
 from proofcoder.errors import ConfigurationError, ProofCoderError
 from proofcoder.eval_core import AgentRunner
@@ -56,7 +56,7 @@ from proofcoder.eval_runner import (
 )
 from proofcoder.events import TerminalSink
 from proofcoder.llm.base import LLMClient
-from proofcoder.llm.deepseek import DeepSeekClient
+from proofcoder.llm.factory import create_client, create_connectivity_client
 from proofcoder.protocol import ModelResponse, TerminationReason
 from proofcoder.retry import DEFAULT_MAX_API_ATTEMPTS
 from proofcoder.rollback import build_rollback_plan, perform_rollback, rollback_exit_code
@@ -103,9 +103,9 @@ class _ConnectivityClient(Protocol):
 
 
 _ConnectivityClientFactory = Callable[[ProofCoderConfig], _ConnectivityClient]
-_DEFAULT_CONNECTIVITY_CLIENT_FACTORY = cast(_ConnectivityClientFactory, DeepSeekClient)
+_DEFAULT_CONNECTIVITY_CLIENT_FACTORY = cast(_ConnectivityClientFactory, create_connectivity_client)
 _RunClientFactory = Callable[[ProofCoderConfig], LLMClient]
-_DEFAULT_RUN_CLIENT_FACTORY = cast(_RunClientFactory, DeepSeekClient)
+_DEFAULT_RUN_CLIENT_FACTORY = cast(_RunClientFactory, create_client)
 _MAX_AGENT_STEPS = 64
 _MAX_AGENT_SECONDS = 3600.0
 _MIN_CONTEXT_BUDGET_BYTES = 4096
@@ -591,13 +591,19 @@ def _run_doctor(
         status = "PASS" if check.ok else "FAIL"
         _safe_print(console, f"{status} {check.name}: {check.detail}", secret)
 
+    _safe_print(console, f"Configuration provider: {config.provider.value}", secret)
     _safe_print(console, f"Configuration base URL: {config.base_url}", secret)
     _safe_print(console, f"Configuration model: {config.model}", secret)
-    _safe_print(
-        console,
-        f"Configuration reasoning effort: {config.reasoning_effort}",
-        secret,
-    )
+    if config.provider is ProviderName.DEEPSEEK:
+        # Reasoning effort is a DeepSeek setting. Printing it for a provider that does
+        # not read it would describe configuration that is not in force.
+        _safe_print(
+            console,
+            f"Configuration reasoning effort: {config.reasoning_effort}",
+            secret,
+        )
+    if not config.requires_api_key:
+        _print(console, "PASS Credentials: this provider needs none")
 
     if not all(check.ok for check in checks):
         return 1
@@ -605,17 +611,22 @@ def _run_doctor(
         _print(console, "PASS API connectivity: skipped in offline mode")
         return 0
 
+    label = _provider_label(config.provider)
     try:
         client_factory(config).check_connection()
     except Exception:
         _print(
             console,
-            "FAIL API connectivity: DeepSeek request failed; check configuration and network.",
+            f"FAIL API connectivity: {label} request failed; check configuration and network.",
         )
         return 1
 
-    _print(console, "PASS API connectivity: DeepSeek connection succeeded")
+    _print(console, f"PASS API connectivity: {label} connection succeeded")
     return 0
+
+
+def _provider_label(provider: ProviderName) -> str:
+    return "local model" if provider is ProviderName.OLLAMA else "DeepSeek"
 
 
 def _terminal_responder(console: Console) -> ApprovalResponder:

@@ -326,6 +326,8 @@ proofcoder/
 │   ├── llm/
 │   │   ├── base.py
 │   │   ├── deepseek.py
+│   │   ├── factory.py
+│   │   ├── ollama.py
 │   │   └── scripted.py
 │   ├── tools/
 │   │   ├── base.py

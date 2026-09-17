@@ -69,10 +69,31 @@ Dependency synchronization may contact the configured package source. Neither co
 
 | Variable | Purpose | Example default |
 | --- | --- | --- |
+| `PROOFCODER_PROVIDER` | Which provider a run talks to: `deepseek` or `ollama` | `deepseek` |
 | `DEEPSEEK_API_KEY` | Provider credential required in online mode | empty; supply your own value |
 | `DEEPSEEK_BASE_URL` | OpenAI-compatible endpoint | `https://api.deepseek.com` |
 | `DEEPSEEK_MODEL` | Model identifier | `deepseek-v4-flash` |
 | `DEEPSEEK_REASONING_EFFORT` | Requested reasoning effort | `high` |
+| `OLLAMA_BASE_URL` | Local Ollama endpoint | `http://localhost:11434` |
+| `OLLAMA_MODEL` | Local model identifier; required for this provider | none — the installed set is yours |
+
+Each provider reads only its own group. Selecting `ollama` ignores every `DEEPSEEK_*` variable, including the credential, so a stale key in `.env` cannot reach a local run.
+
+### Running against a local model
+
+`PROOFCODER_PROVIDER=ollama` points ProofCoder at a local [Ollama](https://ollama.com) server over its native chat API. It needs no credential, adds no runtime dependency — the adapter speaks HTTP through the standard library — and the agent loop cannot tell which provider answered:
+
+```text
+ollama serve
+ollama pull qwen3:8b
+
+PROOFCODER_PROVIDER=ollama OLLAMA_MODEL=qwen3:8b uv run --offline proofcoder doctor
+PROOFCODER_PROVIDER=ollama OLLAMA_MODEL=qwen3:8b uv run --offline proofcoder run --workspace ../proofcoder-demo "修复任务描述"
+```
+
+`doctor` reports which provider is configured, says so plainly when that provider needs no credential, and checks reachability rather than a key.
+
+Local models generally call tools less reliably than the hosted one, so **evaluation numbers are not comparable across providers** and should not be presented side by side.
 
 Create a local configuration file with the command for your shell.
 

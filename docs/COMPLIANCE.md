@@ -56,6 +56,7 @@ future dependency, environment, configuration, or source changes remain complian
 | Checkpoint and rollback | `proofcoder.checkpoint.create_checkpoint`, `proofcoder.checkpoint.plan_rollback`, `proofcoder.checkpoint.apply_rollback`, `proofcoder.rollback.perform_rollback` | `tests/unit/test_checkpoint.py`, `tests/unit/test_checkpoint_runtime.py`, `tests/unit/test_cli_rollback.py`, `tests/unit/test_web_rollback.py` | Mechanical `PASS` |
 | Command policy and execution | `proofcoder.safety.commands.prepare_command`; `proofcoder.tools.command.create_run_command_tool` | `tests/unit/test_command_policy.py`, `tests/unit/test_run_command.py` | Mechanical `PASS`; dynamic starts manually reviewed |
 | DeepSeek client | `proofcoder.llm.deepseek.DeepSeekClient` | `tests/unit/test_deepseek.py` | Mechanical `PASS`; dynamic request manually reviewed |
+| Provider selection and local model | `proofcoder.config.ProviderName`, `proofcoder.llm.factory`, `proofcoder.llm.ollama` | `tests/unit/test_ollama.py` | Mechanical `PASS`; dynamic request manually reviewed |
 | Evaluation pipeline | `proofcoder.eval_fixtures`, `proofcoder.eval_core`, `proofcoder.eval_runner` | `tests/unit/test_eval_fixtures.py`, `tests/unit/test_eval_core.py`, `tests/unit/test_eval_runner.py` | Mechanical `PASS` |
 | Project command policy and approval | `proofcoder.safety.policy`, `proofcoder.approval` | `tests/unit/test_command_policy_file.py`, `tests/unit/test_approval.py` | Mechanical `PASS` |
 | Cross-run sessions | `proofcoder.session` | `tests/unit/test_session.py`, `tests/unit/test_cli_session.py`, `tests/unit/test_web_session.py` | Mechanical `PASS` |
@@ -292,6 +293,13 @@ into automatic passes; their manual dispositions and limitations remain distinct
   outside the workspace are recorded as gaps or not at all, and `--no-checkpoint`
   removes the protection. It is a recovery aid, not a backup, and the stored blobs
   carry the same sensitivity as the workspace files they copy.
+- A second provider is selectable, and the local one needs no credential, so the
+  real-model path can be exercised without a hosted key. Its adapter speaks HTTP
+  through the standard library and adds no runtime dependency. Local models
+  generally call tools less reliably than the hosted one, so evaluation numbers are
+  not comparable across providers and are not presented side by side. The local
+  endpoint is plain HTTP on loopback by default; pointing it elsewhere is an
+  operator choice with the exposure that implies.
 - Real model use necessarily contacts the configured API endpoint. This review made
   no network request and performed no real-model evaluation.
 - External ripgrep provenance is delegated to the operator-controlled absolute
