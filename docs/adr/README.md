@@ -31,4 +31,4 @@ bug 修复、纯实现细节和不改变约束的重构不需要 ADR。
 | [0005](0005-destructive-file-tools.md) | 删除、移动与覆盖类文件工具 | 已接受 | 2026-09-14 |
 | [0006](0006-command-policy-and-approval.md) | 项目级命令策略与人工审批 | 已接受 | 2026-09-15 |
 | [0007](0007-cross-run-sessions.md) | 同一工作区内的跨运行会话 | 已接受 | 2026-09-15 |
-| [0008](0008-provider-abstraction-and-streaming.md) | 可替换模型提供方与流式响应 | 提议 | 2026-09-15 |
+| [0008](0008-provider-abstraction-and-streaming.md) | 可替换模型提供方与流式响应 | 已接受 | 2026-09-15 |
