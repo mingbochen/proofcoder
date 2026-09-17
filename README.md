@@ -179,6 +179,23 @@ A rollback is a separate operation against a finished run, so it records its own
 
 The browser interface offers the same thing on the card that closes a run; see below.
 
+### Streaming output
+
+`proofcoder run --stream` prints the model's visible text as it arrives, and the browser sidebar has the same toggle:
+
+```text
+uv run --locked --env-file .env proofcoder run --workspace ../proofcoder-demo --stream "修复任务描述"
+```
+
+Streaming changes when text appears and nothing about what a run decides. The stream is consumed, assembled and validated by the provider adapter, and what reaches the agent loop is the same response object the non-streaming path returns — so the loop cannot tell the difference, and the recorded trace is identical either way.
+
+Two consequences worth knowing:
+
+- **A partially assembled tool call is never shown.** Only visible text streams. Half a tool call on screen reads as an operation that has already started, when nothing has run and nothing may yet.
+- **A stream that fails does not silently retry without streaming.** Truncation and connection loss are transient errors the ordinary retry policy handles; a tool call that changes its name or identifier mid-stream, exceeds its limits, or does not assemble into valid JSON is refused outright. In every case **no tool runs at all** — there is no partial batch.
+
+Non-streaming stays the default, and evaluation always uses it: streaming introduces network timing, not model behavior, and evaluation should not carry that noise.
+
 ### Sessions across runs
 
 Several runs in one workspace can belong to one session, so a later run starts with a record of what the earlier ones did instead of with nothing:

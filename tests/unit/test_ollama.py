@@ -501,3 +501,157 @@ def test_the_loop_produces_the_same_run_through_either_adapter(tmp_path: Any) ->
     assert scripted_result.termination_reason == local_result.termination_reason  # type: ignore[union-attr]
     assert scripted_result.completion_status == local_result.completion_status  # type: ignore[union-attr]
     assert scripted_result.tool_call_count == local_result.tool_call_count  # type: ignore[union-attr]
+
+
+# ---------- streaming ----------
+
+
+class _StreamOpener(_FakeOpener):
+    """Serve newline-delimited JSON the way Ollama streams it."""
+
+    def __init__(self, documents: list[object], *, fail_after: int | None = None) -> None:
+        super().__init__(None)
+        self._documents = documents
+        self._fail_after = fail_after
+
+    def open(self, request: Any, timeout: float | None = None) -> Any:
+        self.requests.append({"url": request.full_url, "body": json.loads(request.data)})
+        return _StreamResponse(self._documents, self._fail_after)
+
+
+class _StreamResponse:
+    def __init__(self, documents: list[object], fail_after: int | None) -> None:
+        self._documents = documents
+        self._fail_after = fail_after
+
+    def __iter__(self) -> Any:
+        for position, document in enumerate(self._documents):
+            if self._fail_after is not None and position == self._fail_after:
+                raise OSError("the connection dropped")
+            yield (json.dumps(document) + "\n").encode("utf-8")
+
+    def __enter__(self) -> _StreamResponse:
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        return None
+
+
+def _stream_client(documents: list[object], *, fail_after: int | None = None) -> OllamaClient:
+    return OllamaClient(_config(), opener=_StreamOpener(documents, fail_after=fail_after))
+
+
+def test_streaming_assembles_the_same_response_as_the_non_streaming_path() -> None:
+    """Specification 15.2 item 8: the two paths must agree field by field."""
+
+    whole = _assistant(
+        content="Listing the workspace now.",
+        tool_calls=[{"function": {"name": "list_files", "arguments": {"path": "."}}}],
+    )
+    pieces: list[object] = [
+        {"message": {"role": "assistant", "content": "Listing "}, "done": False},
+        {"message": {"role": "assistant", "content": "the workspace now."}, "done": False},
+        {
+            "message": {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{"function": {"name": "list_files", "arguments": {"path": "."}}}],
+            },
+            "done": False,
+        },
+        {"message": {"role": "assistant", "content": ""}, "done": True, "done_reason": "stop"},
+    ]
+
+    client, _ = _client(whole)
+    direct = client.complete(({"role": "user", "content": "hi"},))
+    streamed = _stream_client(pieces).complete_streaming(({"role": "user", "content": "hi"},))
+
+    assert streamed.content == direct.content
+    assert streamed.finish_reason == direct.finish_reason
+    assert len(streamed.tool_calls) == len(direct.tool_calls)
+    assert streamed.tool_calls[0].function.name == direct.tool_calls[0].function.name
+    assert streamed.tool_calls[0].function.arguments == direct.tool_calls[0].function.arguments
+
+
+def test_streaming_reports_visible_text_but_never_tool_fragments() -> None:
+    seen: list[str] = []
+    documents: list[object] = [
+        {"message": {"role": "assistant", "content": "Look"}, "done": False},
+        {"message": {"role": "assistant", "content": "ing."}, "done": False},
+        {
+            "message": {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{"function": {"name": "list_files", "arguments": {}}}],
+            },
+            "done": True,
+            "done_reason": "stop",
+        },
+    ]
+
+    response = _stream_client(documents).complete_streaming(
+        ({"role": "user", "content": "hi"},), on_text=seen.append
+    )
+
+    assert seen == ["Look", "ing."]
+    assert response.tool_calls[0].function.name == "list_files"
+
+
+def test_the_streaming_request_asks_for_a_stream() -> None:
+    opener = _StreamOpener(
+        [{"message": {"role": "assistant", "content": "hi"}, "done": True, "done_reason": "stop"}]
+    )
+    OllamaClient(_config(), opener=opener).complete_streaming(({"role": "user", "content": "hi"},))
+
+    assert opener.requests[0]["body"]["stream"] is True
+
+
+def test_a_stream_that_drops_after_data_is_transient() -> None:
+    documents: list[object] = [
+        {"message": {"role": "assistant", "content": "partial"}, "done": False},
+        {"message": {"role": "assistant", "content": "more"}, "done": False},
+    ]
+
+    with pytest.raises(LLMRequestError) as error:
+        _stream_client(documents, fail_after=1).complete_streaming(
+            ({"role": "user", "content": "hi"},)
+        )
+
+    assert error.value.category is LLMErrorCategory.CONNECTION
+    assert error.value.retryable is True
+
+
+def test_a_stream_that_never_starts_is_a_connection_error() -> None:
+    with pytest.raises(LLMRequestError) as error:
+        _stream_client([{"x": 1}], fail_after=0).complete_streaming(
+            ({"role": "user", "content": "hi"},)
+        )
+
+    assert error.value.category is LLMErrorCategory.CONNECTION
+
+
+def test_a_streamed_line_that_is_not_json_is_an_invalid_response() -> None:
+    class _BadOpener(_FakeOpener):
+        def open(self, request: Any, timeout: float | None = None) -> Any:
+            self.requests.append({})
+            return _RawStream([b"not json\n"])
+
+    class _RawStream:
+        def __init__(self, lines: list[bytes]) -> None:
+            self._lines = lines
+
+        def __iter__(self) -> Any:
+            return iter(self._lines)
+
+        def __enter__(self) -> Any:
+            return self
+
+        def __exit__(self, *_exc: object) -> None:
+            return None
+
+    client = OllamaClient(_config(), opener=_BadOpener(None))
+
+    with pytest.raises(LLMRequestError) as error:
+        client.complete_streaming(({"role": "user", "content": "hi"},))
+
+    assert error.value.category is LLMErrorCategory.INVALID_RESPONSE

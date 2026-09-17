@@ -11,8 +11,14 @@ from typing import Protocol, cast
 from openai import APIConnectionError, APIStatusError, APITimeoutError, OpenAI
 
 from proofcoder.config import ProofCoderConfig
-from proofcoder.errors import ConfigurationError, DeepSeekAPIError, LLMErrorCategory
+from proofcoder.errors import (
+    ConfigurationError,
+    DeepSeekAPIError,
+    LLMErrorCategory,
+    LLMRequestError,
+)
 from proofcoder.llm.base import ChatMessagePayload, ToolSchema
+from proofcoder.llm.streaming import StreamAssembler, TextCallback, truncated_stream_error
 from proofcoder.protocol import FunctionCall, ModelResponse, TokenUsage, ToolCall
 
 
@@ -95,10 +101,102 @@ class DeepSeekClient:
 
         return _normalize_response(response)
 
+    def complete_streaming(
+        self,
+        messages: Sequence[ChatMessagePayload],
+        tools: Sequence[ToolSchema] = (),
+        *,
+        on_text: TextCallback | None = None,
+    ) -> ModelResponse:
+        """Stream one request and assemble it into the non-streaming response object.
+
+        The loop never sees the stream. Everything it receives has already been
+        assembled and validated here, so streaming changes when text appears on a
+        screen and nothing about what the run decides.
+        """
+
+        request: dict[str, object] = {
+            "model": self._config.model,
+            "messages": list(messages),
+            "stream": True,
+            "reasoning_effort": self._config.reasoning_effort,
+            "extra_body": {"thinking": {"type": "enabled"}},
+            "max_tokens": MAX_TOOL_OUTPUT_TOKENS if tools else MAX_CONNECTIVITY_OUTPUT_TOKENS,
+        }
+        if tools:
+            request["tools"] = list(tools)
+        assembler = StreamAssembler(on_text=on_text)
+        try:
+            stream = self._client.chat.completions.create(**request)
+            for chunk in stream:
+                _consume_chunk(assembler, chunk)
+        except LLMRequestError:
+            raise
+        except Exception as error:
+            classified = _classify_api_error(error)
+            if classified.category is LLMErrorCategory.PERMANENT and assembler.saw_fragment:
+                # A failure after fragments have arrived is a stream that stopped, not a
+                # request that was rejected; that distinction decides whether retrying
+                # could ever help.
+                raise truncated_stream_error() from None
+            raise classified from None
+        return assembler.finish()
+
     def check_connection(self) -> ModelResponse:
         """Issue the minimal request used by the online doctor command."""
 
         return self.complete(({"role": "user", "content": "Reply with OK."},))
+
+
+def _consume_chunk(assembler: StreamAssembler, chunk: object) -> None:
+    """Feed one Chat Completions stream chunk into the assembler."""
+
+    choices = _field(chunk, "choices")
+    if not isinstance(choices, Sequence) or isinstance(choices, (str, bytes)) or not choices:
+        # Some providers emit a usage-only final chunk with no choices at all.
+        _consume_usage(assembler, chunk)
+        return
+    choice = choices[0]
+    delta = _field(choice, "delta")
+    if delta is not None:
+        content = _optional_text(_field(delta, "content"))
+        if content:
+            assembler.add_text(content)
+        reasoning = _optional_text(_field(delta, "reasoning_content"))
+        if reasoning:
+            assembler.add_reasoning(reasoning)
+        _consume_tool_calls(assembler, _field(delta, "tool_calls"))
+    assembler.set_finish_reason(_optional_text(_field(choice, "finish_reason")))
+    _consume_usage(assembler, chunk)
+
+
+def _consume_usage(assembler: StreamAssembler, chunk: object) -> None:
+    usage_value = _field(chunk, "usage")
+    if usage_value is None:
+        return
+    assembler.set_usage(
+        TokenUsage(
+            prompt_tokens=_optional_int(_field(usage_value, "prompt_tokens")),
+            completion_tokens=_optional_int(_field(usage_value, "completion_tokens")),
+            total_tokens=_optional_int(_field(usage_value, "total_tokens")),
+        )
+    )
+
+
+def _consume_tool_calls(assembler: StreamAssembler, value: object) -> None:
+    if value is None:
+        return
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        raise _invalid_response_error()
+    for position, raw_call in enumerate(value):
+        index = _optional_int(_field(raw_call, "index"))
+        function = _field(raw_call, "function")
+        assembler.add_tool_call_fragment(
+            position if index is None else index,
+            call_id=_optional_text(_field(raw_call, "id")),
+            name=None if function is None else _optional_text(_field(function, "name")),
+            arguments=(None if function is None else _optional_text(_field(function, "arguments"))),
+        )
 
 
 def _normalize_response(response: object) -> ModelResponse:

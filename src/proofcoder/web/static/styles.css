@@ -260,6 +260,31 @@ h3 {
   border-radius: var(--radius-sm);
 }
 
+.session__toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 8px 4px 0;
+  font-size: 11px;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.say--streaming {
+  opacity: 0.75;
+}
+
+.say__streaming-label {
+  display: inline-block;
+  margin-right: 6px;
+  padding: 1px 6px;
+  font-size: 10px;
+  text-transform: lowercase;
+  color: var(--text-faint);
+  background: var(--bg-sunken);
+  border-radius: var(--radius-sm);
+}
+
 .session__note {
   margin: 6px 4px 0;
   font-size: 11px;

@@ -328,7 +328,8 @@ proofcoder/
 │   │   ├── deepseek.py
 │   │   ├── factory.py
 │   │   ├── ollama.py
-│   │   └── scripted.py
+│   │   ├── scripted.py
+│   │   └── streaming.py
 │   ├── tools/
 │   │   ├── base.py
 │   │   ├── registry.py

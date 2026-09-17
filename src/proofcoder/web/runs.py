@@ -18,6 +18,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from hmac import compare_digest
 from pathlib import Path
+from typing import cast
 
 from proofcoder.agent_runtime import (
     AgentRunLimits,
@@ -42,7 +43,12 @@ from proofcoder.events import (
     RunEvent,
     new_run_id,
 )
-from proofcoder.llm.base import LLMClient
+from proofcoder.llm.base import (
+    LLMClient,
+    StreamingClient,
+    StreamingLLMClient,
+    supports_streaming,
+)
 from proofcoder.llm.factory import create_client
 from proofcoder.protocol import CompletionStatus, RunResult, TerminationReason
 from proofcoder.safety.secrets import sensitive_environment_values
@@ -101,6 +107,7 @@ class BrowserRunSummary:
     trace_complete: bool | None
     final_report: str | None
     session_id: str | None = None
+    partial_text: str = ""
     pending_approval: dict[str, object] | None = None
 
     def to_dict(self) -> dict[str, object]:
@@ -124,6 +131,7 @@ class BrowserRunSummary:
             "trace_complete": self.trace_complete,
             "final_report": self.final_report,
             "session_id": self.session_id,
+            "partial_text": self.partial_text,
             "pending_approval": self.pending_approval,
         }
 
@@ -138,6 +146,7 @@ class BrowserRun:
     limits: AgentRunLimits
     started_at: str
     session_id: str | None = None
+    stream: bool = False
     status: BrowserRunStatus = BrowserRunStatus.RUNNING
     finished_at: str | None = None
     termination_reason: str | None = None
@@ -154,6 +163,7 @@ class BrowserRun:
     _dropped: int = 0
     _cancel: bool = False
     _pending_approval: dict[str, object] | None = None
+    _partial_text: str = ""
     _approval_answer: ApprovalOutcome | None = None
     _condition: threading.Condition = field(default_factory=threading.Condition)
 
@@ -236,6 +246,19 @@ class BrowserRun:
         with self._condition:
             return None if self._pending_approval is None else dict(self._pending_approval)
 
+    def append_partial_text(self, fragment: str) -> None:
+        """Record visible text that has arrived but is not yet a committed event."""
+
+        with self._condition:
+            self._partial_text += fragment
+            self._condition.notify_all()
+
+    def clear_partial_text(self) -> None:
+        """Drop the buffer once the completed text has been emitted as an event."""
+
+        with self._condition:
+            self._partial_text = ""
+
     def append_event(self, event: RunEvent) -> None:
         """Buffer one already sanitized event and wake every waiting reader."""
 
@@ -292,6 +315,7 @@ class BrowserRun:
                 trace_complete=self.trace_complete,
                 final_report=self.final_report,
                 session_id=self.session_id,
+                partial_text=self._partial_text,
                 pending_approval=(
                     None if self._pending_approval is None else dict(self._pending_approval)
                 ),
@@ -340,6 +364,10 @@ class _BrowserRunSink:
     def emit(self, event: RunEvent) -> None:
         """Buffer one event for the browser without mutating it."""
 
+        if event.event_type is EventType.MODEL:
+            # The committed event now carries this text, so the streamed preview of it
+            # must go; leaving it would show the same sentence twice.
+            self._session.clear_partial_text()
         self._session.append_event(event)
 
 
@@ -382,6 +410,7 @@ class BrowserRunManager:
         task: str,
         limits: AgentRunLimits,
         session_id: str | None = None,
+        stream: bool = False,
     ) -> BrowserRun:
         """Validate one request, register the run, and start its worker thread."""
 
@@ -421,6 +450,7 @@ class BrowserRunManager:
             limits=limits,
             started_at=_timestamp(),
             session_id=session_id,
+            stream=stream,
         )
         with self._lock:
             active = [
@@ -574,6 +604,15 @@ class BrowserRunManager:
 
             try:
                 client = self._client_factory(config)
+                if session.stream:
+                    if not supports_streaming(client):
+                        raise ConfigurationError(
+                            "the configured provider does not support streaming."
+                        )
+                    client = StreamingClient(
+                        inner=cast(StreamingLLMClient, client),
+                        on_text=session.append_partial_text,
+                    )
             except ProofCoderError:
                 self._fail_before_loop(
                     session=session,

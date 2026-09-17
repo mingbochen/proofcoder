@@ -19,13 +19,14 @@ from __future__ import annotations
 import json
 import urllib.error
 import urllib.request
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from http.client import HTTPException
 from typing import Any
 
 from proofcoder.config import ProofCoderConfig
 from proofcoder.errors import LLMErrorCategory, LLMRequestError
 from proofcoder.llm.base import ChatMessagePayload, ToolSchema
+from proofcoder.llm.streaming import StreamAssembler, TextCallback, truncated_stream_error
 from proofcoder.protocol import FunctionCall, ModelResponse, TokenUsage, ToolCall
 
 # Ollama has no documented ceiling of its own, so this is the same project choice the
@@ -72,6 +73,67 @@ class OllamaClient:
         if tools:
             request["tools"] = list(tools)
         return _normalize_response(self._post(request))
+
+    def complete_streaming(
+        self,
+        messages: Sequence[ChatMessagePayload],
+        tools: Sequence[ToolSchema] = (),
+        *,
+        on_text: TextCallback | None = None,
+    ) -> ModelResponse:
+        """Stream one request and assemble it into the non-streaming response object.
+
+        Ollama streams newline-delimited JSON objects rather than server-sent events,
+        which is another place the adapter absorbs a protocol difference the loop
+        never sees.
+        """
+
+        request: dict[str, object] = {
+            "model": self._config.model,
+            "messages": [_to_provider_message(message) for message in messages],
+            "stream": True,
+            "options": {
+                "num_predict": (MAX_TOOL_OUTPUT_TOKENS if tools else MAX_CONNECTIVITY_OUTPUT_TOKENS)
+            },
+        }
+        if tools:
+            request["tools"] = list(tools)
+        assembler = StreamAssembler(on_text=on_text)
+        for document in self._stream(request):
+            _consume_stream_document(assembler, document)
+        return assembler.finish()
+
+    def _stream(self, payload: Mapping[str, object]) -> Iterator[Mapping[str, Any]]:
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        request = urllib.request.Request(
+            f"{self._config.base_url}{_CHAT_PATH}",
+            data=body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        started = False
+        try:
+            with self._opener.open(request, timeout=self._timeout_seconds) as response:
+                for raw in response:
+                    line = raw.strip()
+                    if not line:
+                        continue
+                    started = True
+                    yield _decode_line(line)
+        except urllib.error.HTTPError as error:
+            raise _status_error(error.code) from None
+        except TimeoutError:
+            raise LLMRequestError(
+                "the local model did not respond before the request timeout",
+                category=LLMErrorCategory.TIMEOUT,
+            ) from None
+        except (urllib.error.URLError, HTTPException, OSError):
+            if started:
+                raise truncated_stream_error() from None
+            raise LLMRequestError(
+                "the local model endpoint could not be reached",
+                category=LLMErrorCategory.CONNECTION,
+            ) from None
 
     def check_connection(self) -> ModelResponse:
         """Make one minimal request so `doctor` can report reachability."""
@@ -122,6 +184,57 @@ class OllamaClient:
                 category=LLMErrorCategory.INVALID_RESPONSE,
             )
         return document
+
+
+def _decode_line(line: bytes) -> Mapping[str, Any]:
+    try:
+        document = json.loads(line.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        raise LLMRequestError(
+            "the local model streamed a line that was not valid UTF-8 JSON",
+            category=LLMErrorCategory.INVALID_RESPONSE,
+        ) from None
+    if not isinstance(document, dict):
+        raise LLMRequestError(
+            "the local model streamed a line that was not a JSON object",
+            category=LLMErrorCategory.INVALID_RESPONSE,
+        )
+    return document
+
+
+def _consume_stream_document(assembler: StreamAssembler, document: Mapping[str, Any]) -> None:
+    """Feed one streamed Ollama object into the assembler."""
+
+    message = document.get("message")
+    if isinstance(message, Mapping):
+        content = message.get("content")
+        if isinstance(content, str):
+            assembler.add_text(content)
+        thinking = message.get("thinking")
+        if isinstance(thinking, str):
+            assembler.add_reasoning(thinking)
+        calls = message.get("tool_calls")
+        if isinstance(calls, list):
+            for index, item in enumerate(calls):
+                if not isinstance(item, Mapping):
+                    continue
+                function = item.get("function")
+                if not isinstance(function, Mapping):
+                    continue
+                name = function.get("name")
+                raw_arguments = function.get("arguments")
+                assembler.add_tool_call_fragment(
+                    index,
+                    name=name if isinstance(name, str) else None,
+                    # Ollama sends each tool call complete rather than in fragments, so
+                    # the object is serialized once here rather than accumulated.
+                    arguments=(
+                        None if raw_arguments is None else _arguments_to_json(raw_arguments)
+                    ),
+                )
+    if document.get("done") is True:
+        assembler.set_finish_reason(_finish_reason(document))
+        assembler.set_usage(_normalize_usage(document))
 
 
 def _status_error(status: int) -> LLMRequestError:
