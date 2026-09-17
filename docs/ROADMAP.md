@@ -6,7 +6,7 @@
 
 - 规范版本：v3.4
 - 当前阶段：阶段 I（多轮会话）
-- 下一步：小项 J.2，提供方选择与本地模型适配层（等 J.1 的 ADR 获批准后开始）
+- 下一步：小项 J.2，提供方选择与配置分组，以及本地模型适配层
 - 最近完成：小项 J.1，阶段 ADR 与规范补全（[ADR-0008](adr/0008-provider-abstraction-and-streaming.md)、规范 §4.7 与 §11.5）
 - 阻塞项：阶段 I 的通用退出条件要求「新增能力有对应的真实模型评测 fixture 和重复运行数据」。fixture 已就绪且有离线测试，重复运行数据需要真实 key，见 [EVAL_REPORT §15](EVAL_REPORT.md)
 
@@ -86,7 +86,7 @@
 
 | 小项 | 内容 | 状态 | PR |
 | --- | --- | --- | --- |
-| J.1 | 阶段 ADR 与规范补全：提供方边界、流式给循环看什么、流式 tool call 的拼装、默认路径（[ADR-0008](adr/0008-provider-abstraction-and-streaming.md)、规范 §4.7 与 §11.5） | 阻塞（等待用户批准 ADR-0008） | [#23](https://github.com/mingbochen/proofcoder/pull/23) |
+| J.1 | 阶段 ADR 与规范补全：提供方边界、流式给循环看什么、流式 tool call 的拼装、默认路径（[ADR-0008](adr/0008-provider-abstraction-and-streaming.md)、规范 §4.7 与 §11.5） | 已完成 | [#23](https://github.com/mingbochen/proofcoder/pull/23) |
 | J.2 | 提供方选择与配置分组，以及本地模型适配层，含离线测试 | 未开始 | — |
 | J.3 | 流式响应的拼装与校验，命令行与浏览器的增量渲染 | 未开始 | — |
 | J.4 | 本地模型的评测记录与文档同步 | 未开始 | — |
