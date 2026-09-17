@@ -394,11 +394,15 @@ class ApiRouter:
         session_value = request.body.get("session_id")
         if session_value is not None and not isinstance(session_value, str):
             return error_response(400, "INVALID_SESSION_ID", "session_id must be a string")
+        stream = request.body.get("stream")
+        if stream is not None and not isinstance(stream, bool):
+            return error_response(400, "INVALID_STREAM", "stream must be a boolean")
         session = self._sessions.start(
             workspace=self._absolute(workspace_value.strip()),
             task=task,
             limits=limits,
             session_id=None if session_value in (None, "") else str(session_value),
+            stream=bool(stream),
         )
         return ApiResponse(201, {"run": session.summary().to_dict()})
 

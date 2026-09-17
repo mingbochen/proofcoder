@@ -57,6 +57,7 @@ future dependency, environment, configuration, or source changes remain complian
 | Command policy and execution | `proofcoder.safety.commands.prepare_command`; `proofcoder.tools.command.create_run_command_tool` | `tests/unit/test_command_policy.py`, `tests/unit/test_run_command.py` | Mechanical `PASS`; dynamic starts manually reviewed |
 | DeepSeek client | `proofcoder.llm.deepseek.DeepSeekClient` | `tests/unit/test_deepseek.py` | Mechanical `PASS`; dynamic request manually reviewed |
 | Provider selection and local model | `proofcoder.config.ProviderName`, `proofcoder.llm.factory`, `proofcoder.llm.ollama` | `tests/unit/test_ollama.py` | Mechanical `PASS`; dynamic request manually reviewed |
+| Streamed response assembly | `proofcoder.llm.streaming.StreamAssembler`, `proofcoder.llm.base.StreamingClient` | `tests/unit/test_streaming.py`, `tests/unit/test_deepseek.py`, `tests/unit/test_ollama.py` | Mechanical `PASS` |
 | Evaluation pipeline | `proofcoder.eval_fixtures`, `proofcoder.eval_core`, `proofcoder.eval_runner` | `tests/unit/test_eval_fixtures.py`, `tests/unit/test_eval_core.py`, `tests/unit/test_eval_runner.py` | Mechanical `PASS` |
 | Project command policy and approval | `proofcoder.safety.policy`, `proofcoder.approval` | `tests/unit/test_command_policy_file.py`, `tests/unit/test_approval.py` | Mechanical `PASS` |
 | Cross-run sessions | `proofcoder.session` | `tests/unit/test_session.py`, `tests/unit/test_cli_session.py`, `tests/unit/test_web_session.py` | Mechanical `PASS` |
@@ -300,6 +301,14 @@ into automatic passes; their manual dispositions and limitations remain distinct
   not comparable across providers and are not presented side by side. The local
   endpoint is plain HTTP on loopback by default; pointing it elsewhere is an
   operator choice with the exposure that implies.
+- Streaming adds a second dynamic provider request, `complete_streaming`, which the
+  mechanical checker flags exactly as it flags the non-streaming one: the request is
+  a locally constructed mapping with the same fixed top-level fields plus
+  `stream: true`, and it adds no hosted file, search or execution field. The stream
+  is assembled and validated before anything reaches the agent loop, so a truncated
+  or malformed stream produces no tool execution at all. The current checker
+  therefore reports five review items where section 2's historical run reported four;
+  that section stays bound to its named commit and is not rewritten.
 - Real model use necessarily contacts the configured API endpoint. This review made
   no network request and performed no real-model evaluation.
 - External ripgrep provenance is delegated to the operator-controlled absolute

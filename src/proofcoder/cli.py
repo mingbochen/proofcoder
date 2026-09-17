@@ -55,7 +55,12 @@ from proofcoder.eval_runner import (
     run_evaluation,
 )
 from proofcoder.events import TerminalSink
-from proofcoder.llm.base import LLMClient
+from proofcoder.llm.base import (
+    LLMClient,
+    StreamingClient,
+    StreamingLLMClient,
+    supports_streaming,
+)
 from proofcoder.llm.factory import create_client, create_connectivity_client
 from proofcoder.protocol import ModelResponse, TerminationReason
 from proofcoder.retry import DEFAULT_MAX_API_ATTEMPTS
@@ -190,6 +195,14 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "path to a project command policy file to authorize for this run; "
             "a policy is never loaded unless it is named here"
+        ),
+    )
+    run.add_argument(
+        "--stream",
+        action="store_true",
+        help=(
+            "stream the model's visible text as it arrives; the decision path is "
+            "unchanged and evaluation always uses the non-streaming path"
         ),
     )
     run.add_argument(
@@ -405,6 +418,7 @@ def main(
                 approval_mode=ApprovalMode(str(args.approval)),
                 policy_argument=(None if args.command_policy is None else str(args.command_policy)),
                 session_argument=(None if args.session is None else str(args.session)),
+                stream=bool(args.stream),
             )
         except KeyboardInterrupt:
             _print(output, "DONE: termination=interrupted completion=none")
@@ -756,6 +770,27 @@ def _open_session_carry(
     )
 
 
+def _streaming_client(
+    client_factory: _RunClientFactory,
+    config: ProofCoderConfig,
+    console: Console,
+    secret: str | None,
+) -> LLMClient:
+    """Wrap the configured client so its visible text prints as it arrives.
+
+    Only visible text is printed. A partially assembled tool call is not shown,
+    because on a terminal it would read as an operation that has already begun.
+    """
+
+    inner = client_factory(config)
+    if not supports_streaming(inner):
+        raise ConfigurationError("the configured provider does not support streaming.")
+    return StreamingClient(
+        inner=cast(StreamingLLMClient, inner),
+        on_text=lambda fragment: _safe_print(console, f"MODEL/stream: {fragment}", secret),
+    )
+
+
 def _run_agent(
     *,
     task: str,
@@ -774,6 +809,7 @@ def _run_agent(
     policy_argument: str | None = None,
     approval_responder: ApprovalResponder | None = None,
     session_argument: str | None = None,
+    stream: bool = False,
 ) -> int:
     resolved = _resolve_workspace(workspace_argument, cwd)
     if resolved is None:
@@ -868,7 +904,11 @@ def _run_agent(
     secret = config.api_key
 
     try:
-        client = client_factory(config)
+        client = (
+            _streaming_client(client_factory, config, console, secret)
+            if stream
+            else (client_factory(config))
+        )
     except KeyboardInterrupt:
         emit_setup_termination(
             task=task,

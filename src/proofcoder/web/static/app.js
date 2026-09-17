@@ -23,6 +23,8 @@ const TEXT = {
     sessionRuns: "次运行",
     sessionNote: "会话把前几次运行的程序记录带进下一次运行。验证证据不会被继承：本次运行仍需自己取得验证。",
     sessionFailed: "会话操作失败",
+    streaming: "生成中",
+    stream: "流式输出",
     checking: "正在检查…",
     runDoctor: "自检",
     theme: "主题",
@@ -147,6 +149,8 @@ const TEXT = {
     sessionRuns: "runs",
     sessionNote: "A session carries the program's record of earlier runs into the next one. Verification is never inherited: this run must still earn its own.",
     sessionFailed: "Session request failed",
+    streaming: "streaming",
+    stream: "Stream output",
     checking: "Checking…",
     runDoctor: "Doctor",
     theme: "Theme",
@@ -293,6 +297,7 @@ const state = {
   suggestionsShown: true,
   sessions: [],
   sessionId: "",
+  stream: false,
 };
 
 const el = (id) => document.getElementById(id);
@@ -319,6 +324,7 @@ function saveStore() {
         workspace: state.workspace,
         recent: state.recent.slice(0, 8),
         limits: state.limits,
+        stream: state.stream,
       })
     );
   } catch (error) {
@@ -1251,6 +1257,9 @@ async function startRun() {
   if (state.sessionId) {
     request.session_id = state.sessionId;
   }
+  if (state.stream) {
+    request.stream = true;
+  }
   let payload;
   try {
     payload = await api("/api/runs", { method: "POST", json: request });
@@ -1270,6 +1279,38 @@ async function startRun() {
   appendUserTurn(task);
   setRunning(true);
   pollRun(payload.run.run_id, 0);
+}
+
+/* ---------- streamed text ---------- */
+
+function syncPartialText(run) {
+  const existing = el("partial-text");
+  const text = run && typeof run.partial_text === "string" ? run.partial_text : "";
+  if (!text) {
+    // The committed event now carries this text, so the preview goes rather than
+    // showing the same sentence twice.
+    if (existing) existing.remove();
+    return;
+  }
+  const node = existing || createPartialText();
+  node.lastChild.textContent = text;
+  scrollToEnd();
+}
+
+function createPartialText() {
+  // Rendered in the same place and with the same shape a committed model message
+  // takes, so the text does not jump when the event replaces the preview.
+  const body = currentBody();
+  const element = document.createElement("div");
+  element.className = "say say--streaming";
+  element.id = "partial-text";
+  const label = document.createElement("span");
+  label.className = "say__streaming-label";
+  label.textContent = t("streaming");
+  element.appendChild(label);
+  element.appendChild(document.createTextNode(""));
+  body.appendChild(element);
+  return element;
 }
 
 /* ---------- sessions ---------- */
@@ -1347,6 +1388,7 @@ async function pollRun(runId, cursor) {
       );
       nextCursor = data.cursor;
       syncApproval(data.run);
+      syncPartialText(data.run);
       if (data.events.length) {
         setWorking(false);
         data.events.forEach(renderEvent);
@@ -1588,6 +1630,7 @@ function cacheDom() {
     ["sessionSelect", "session-select"],
     ["sessionNew", "session-new"],
     ["sessionNote", "session-note"],
+    ["streamToggle", "stream-toggle"],
     ["workspaceName", "workspace-name"],
     ["workspacePath", "workspace-path"],
     ["workspaceInput", "workspace-input"],
@@ -1614,6 +1657,10 @@ function bindEvents() {
     dom.sessionNote.textContent = state.sessionId ? t("sessionNote") : "";
   });
   dom.sessionNew.addEventListener("click", createSession);
+  dom.streamToggle.addEventListener("change", () => {
+    state.stream = dom.streamToggle.checked;
+    saveStore();
+  });
   dom.sendButton.addEventListener("click", startRun);
   dom.stopButton.addEventListener("click", stopRun);
   dom.taskInput.addEventListener("input", autoGrow);
@@ -1701,9 +1748,11 @@ async function main() {
   state.theme = stored.theme || "system";
   state.recent = Array.isArray(stored.recent) ? stored.recent : [];
   state.limits = stored.limits && typeof stored.limits === "object" ? stored.limits : {};
+  state.stream = stored.stream === true;
   applyTheme();
   applyLanguage();
   bindEvents();
+  dom.streamToggle.checked = state.stream;
   autoGrowSoon();
   if (stored.workspace) {
     await setWorkspace(stored.workspace, false);

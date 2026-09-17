@@ -9,7 +9,12 @@ import pytest
 from openai import APIConnectionError, APIStatusError, APITimeoutError
 
 from proofcoder.config import ProofCoderConfig
-from proofcoder.errors import ConfigurationError, DeepSeekAPIError, LLMErrorCategory
+from proofcoder.errors import (
+    ConfigurationError,
+    DeepSeekAPIError,
+    LLMErrorCategory,
+    LLMRequestError,
+)
 from proofcoder.llm.deepseek import (
     MAX_TOOL_OUTPUT_TOKENS,
     REQUEST_TIMEOUT_SECONDS,
@@ -368,3 +373,212 @@ def test_malformed_response_is_rejected(response: object) -> None:
 
     with pytest.raises(DeepSeekAPIError, match="invalid response"):
         client.check_connection()
+
+
+# ---------- streaming ----------
+
+
+@dataclass
+class _FakeDeltaFunction:
+    name: str | None = None
+    arguments: str | None = None
+
+
+@dataclass
+class _FakeDeltaToolCall:
+    index: int
+    id: str | None = None
+    function: _FakeDeltaFunction | None = None
+
+
+@dataclass
+class _FakeDelta:
+    content: str | None = None
+    reasoning_content: str | None = None
+    tool_calls: list[_FakeDeltaToolCall] | None = None
+
+
+@dataclass
+class _FakeChunkChoice:
+    delta: _FakeDelta
+    finish_reason: str | None = None
+
+
+@dataclass
+class _FakeChunk:
+    choices: list[_FakeChunkChoice]
+    usage: _FakeUsage | None = None
+
+
+class _FakeStream:
+    """Yield chunks, optionally failing part-way through."""
+
+    def __init__(self, chunks: list[object], fail_after: int | None = None) -> None:
+        self._chunks = chunks
+        self._fail_after = fail_after
+
+    def __iter__(self) -> object:
+        for position, chunk in enumerate(self._chunks):
+            if self._fail_after is not None and position == self._fail_after:
+                raise RuntimeError("the stream dropped")
+            yield chunk
+
+
+def _streaming_client(chunks: list[object], fail_after: int | None = None) -> DeepSeekClient:
+    completions = _FakeCompletions(_FakeStream(chunks, fail_after))
+    return DeepSeekClient(
+        _config(), client=_FakeOpenAIClient(chat=_FakeChat(completions=completions))
+    )
+
+
+def test_streaming_assembles_the_same_response_as_the_non_streaming_path() -> None:
+    """Specification 15.2 item 8: the two paths must agree field by field."""
+
+    whole = _FakeResponse(
+        choices=[
+            _FakeChoice(
+                message=_FakeMessage(
+                    content="Reading it.",
+                    reasoning_content=REASONING_SENTINEL,
+                    tool_calls=[
+                        _FakeToolCall(
+                            id="call-1",
+                            type="function",
+                            function=_FakeToolFunction(
+                                name="read_file", arguments='{"path": "a.py"}'
+                            ),
+                        )
+                    ],
+                ),
+                finish_reason="tool_calls",
+            )
+        ],
+        usage=_FakeUsage(prompt_tokens=5, completion_tokens=7, total_tokens=12),
+    )
+    completions = _FakeCompletions(whole)
+    direct = DeepSeekClient(
+        _config(), client=_FakeOpenAIClient(chat=_FakeChat(completions=completions))
+    ).complete(({"role": "user", "content": "hi"},))
+
+    chunks: list[object] = [
+        _FakeChunk([_FakeChunkChoice(_FakeDelta(content="Reading "))]),
+        _FakeChunk(
+            [_FakeChunkChoice(_FakeDelta(content="it.", reasoning_content=REASONING_SENTINEL))]
+        ),
+        _FakeChunk(
+            [
+                _FakeChunkChoice(
+                    _FakeDelta(
+                        tool_calls=[
+                            _FakeDeltaToolCall(
+                                index=0,
+                                id="call-1",
+                                function=_FakeDeltaFunction(name="read_file", arguments='{"path"'),
+                            )
+                        ]
+                    )
+                )
+            ]
+        ),
+        _FakeChunk(
+            [
+                _FakeChunkChoice(
+                    _FakeDelta(
+                        tool_calls=[
+                            _FakeDeltaToolCall(
+                                index=0, function=_FakeDeltaFunction(arguments=': "a.py"}')
+                            )
+                        ]
+                    ),
+                    finish_reason="tool_calls",
+                )
+            ],
+            usage=_FakeUsage(prompt_tokens=5, completion_tokens=7, total_tokens=12),
+        ),
+    ]
+    streamed = _streaming_client(chunks).complete_streaming(({"role": "user", "content": "hi"},))
+
+    assert streamed.content == direct.content
+    assert streamed.reasoning_content == direct.reasoning_content
+    assert streamed.finish_reason == direct.finish_reason
+    assert streamed.tool_calls == direct.tool_calls
+    assert streamed.usage == direct.usage
+
+
+def test_the_streaming_request_asks_for_a_stream_and_keeps_the_other_settings() -> None:
+    completions = _FakeCompletions(
+        _FakeStream([_FakeChunk([_FakeChunkChoice(_FakeDelta(content="hi"), "stop")])])
+    )
+    client = DeepSeekClient(
+        _config(), client=_FakeOpenAIClient(chat=_FakeChat(completions=completions))
+    )
+
+    client.complete_streaming(({"role": "user", "content": "hi"},), ({"type": "function"},))
+
+    assert completions.request is not None
+    assert completions.request["stream"] is True
+    assert completions.request["max_tokens"] == MAX_TOOL_OUTPUT_TOKENS
+    assert completions.request["reasoning_effort"] == "high"
+
+
+def test_streaming_reports_visible_text_but_never_reasoning_or_tool_fragments() -> None:
+    seen: list[str] = []
+    chunks: list[object] = [
+        _FakeChunk([_FakeChunkChoice(_FakeDelta(content="Read"))]),
+        _FakeChunk([_FakeChunkChoice(_FakeDelta(reasoning_content=REASONING_SENTINEL))]),
+        _FakeChunk(
+            [
+                _FakeChunkChoice(
+                    _FakeDelta(
+                        content="ing.",
+                        tool_calls=[
+                            _FakeDeltaToolCall(
+                                index=0,
+                                id="c",
+                                function=_FakeDeltaFunction(name="list_files", arguments="{}"),
+                            )
+                        ],
+                    ),
+                    finish_reason="tool_calls",
+                )
+            ]
+        ),
+    ]
+
+    _streaming_client(chunks).complete_streaming(
+        ({"role": "user", "content": "hi"},), on_text=seen.append
+    )
+
+    assert seen == ["Read", "ing."]
+    assert REASONING_SENTINEL not in "".join(seen)
+    assert "list_files" not in "".join(seen)
+
+
+def test_a_stream_that_drops_after_data_is_transient() -> None:
+    chunks: list[object] = [
+        _FakeChunk([_FakeChunkChoice(_FakeDelta(content="partial"))]),
+        _FakeChunk([_FakeChunkChoice(_FakeDelta(content="more"))]),
+    ]
+
+    # The truncated-stream error is shared by every provider, so it is the base type
+    # rather than this client's own subclass. Only the category drives retrying.
+    with pytest.raises(LLMRequestError) as error:
+        _streaming_client(chunks, fail_after=1).complete_streaming(
+            ({"role": "user", "content": "hi"},)
+        )
+
+    assert error.value.category is LLMErrorCategory.CONNECTION
+    assert error.value.retryable is True
+
+
+def test_a_usage_only_final_chunk_is_accepted() -> None:
+    chunks: list[object] = [
+        _FakeChunk([_FakeChunkChoice(_FakeDelta(content="done"), "stop")]),
+        _FakeChunk([], usage=_FakeUsage(prompt_tokens=1, completion_tokens=2, total_tokens=3)),
+    ]
+
+    response = _streaming_client(chunks).complete_streaming(({"role": "user", "content": "hi"},))
+
+    assert response.content == "done"
+    assert response.usage is not None
+    assert response.usage.total_tokens == 3
