@@ -6,10 +6,17 @@ means teaching the CLI, the browser or the evaluation runner about it.
 
 from __future__ import annotations
 
-from typing import Protocol
+from collections.abc import Callable
+from typing import Protocol, cast
 
 from proofcoder.config import ProofCoderConfig, ProviderName
-from proofcoder.llm.base import LLMClient
+from proofcoder.errors import ConfigurationError
+from proofcoder.llm.base import (
+    LLMClient,
+    StreamingClient,
+    StreamingLLMClient,
+    supports_streaming,
+)
 from proofcoder.llm.deepseek import DeepSeekClient
 from proofcoder.llm.ollama import OllamaClient
 from proofcoder.protocol import ModelResponse
@@ -21,12 +28,26 @@ class ConnectivityClient(Protocol):
     def check_connection(self) -> ModelResponse: ...
 
 
-def create_client(config: ProofCoderConfig) -> LLMClient:
-    """Create the model client this configuration selects."""
+def create_client(
+    config: ProofCoderConfig,
+    *,
+    stream: bool = False,
+    on_text: Callable[[str], None] | None = None,
+) -> LLMClient:
+    """Create the model client this configuration selects.
 
-    if config.provider is ProviderName.OLLAMA:
-        return OllamaClient(config)
-    return DeepSeekClient(config)
+    Streaming is applied by wrapping, not by a branch inside the loop: the caller asks
+    for it here and everything downstream keeps calling ``complete``.
+    """
+
+    client: LLMClient = (
+        OllamaClient(config) if config.provider is ProviderName.OLLAMA else DeepSeekClient(config)
+    )
+    if not stream:
+        return client
+    if not supports_streaming(client):
+        raise ConfigurationError("the configured provider does not support streaming.")
+    return StreamingClient(inner=cast(StreamingLLMClient, client), on_text=on_text)
 
 
 def create_connectivity_client(config: ProofCoderConfig) -> ConnectivityClient:
