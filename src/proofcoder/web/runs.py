@@ -43,7 +43,7 @@ from proofcoder.events import (
     new_run_id,
 )
 from proofcoder.llm.base import LLMClient
-from proofcoder.llm.deepseek import DeepSeekClient
+from proofcoder.llm.factory import create_client
 from proofcoder.protocol import CompletionStatus, RunResult, TerminationReason
 from proofcoder.safety.secrets import sensitive_environment_values
 from proofcoder.session import (
@@ -62,7 +62,7 @@ DEFAULT_MAX_ACTIVE_RUNS = 2
 MAX_TASK_BYTES = 16 * 1024
 
 ClientFactory = Callable[[ProofCoderConfig], LLMClient]
-_DEFAULT_CLIENT_FACTORY: ClientFactory = DeepSeekClient
+_DEFAULT_CLIENT_FACTORY: ClientFactory = create_client
 
 
 class BrowserRunStatus(StrEnum):

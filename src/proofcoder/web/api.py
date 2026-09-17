@@ -24,7 +24,7 @@ from proofcoder.config import ProofCoderConfig
 from proofcoder.context import DEFAULT_CONTEXT_BUDGET_BYTES
 from proofcoder.errors import ConfigurationError
 from proofcoder.events import EventType
-from proofcoder.llm.deepseek import DeepSeekClient
+from proofcoder.llm.factory import create_connectivity_client
 from proofcoder.protocol import ModelResponse
 from proofcoder.retry import DEFAULT_MAX_API_ATTEMPTS
 from proofcoder.rollback import (
@@ -71,7 +71,7 @@ class _ConnectivityClient(Protocol):
 
 
 ConnectivityClientFactory = Callable[[ProofCoderConfig], _ConnectivityClient]
-_DEFAULT_CONNECTIVITY_FACTORY = cast(ConnectivityClientFactory, DeepSeekClient)
+_DEFAULT_CONNECTIVITY_FACTORY = cast(ConnectivityClientFactory, create_connectivity_client)
 
 
 @dataclass(frozen=True, slots=True)
