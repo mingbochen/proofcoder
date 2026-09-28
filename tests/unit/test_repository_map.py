@@ -96,7 +96,8 @@ def test_parsing_never_executes_the_source(tmp_path: Path) -> None:
 
 
 def test_other_languages_are_listed_without_guessed_symbols(tmp_path: Path) -> None:
-    (tmp_path / "app.js").write_text("function run() {}\n", encoding="utf-8")
+    # Bytes, not text: text mode on Windows writes CRLF and the size would differ.
+    (tmp_path / "app.js").write_bytes(b"function run() {}\n")
 
     entry = _entry(_map(tmp_path), "app.js")
 
@@ -177,7 +178,7 @@ def test_depth_limits_the_walk(tmp_path: Path) -> None:
 
 
 def test_symbols_can_be_turned_off(tmp_path: Path) -> None:
-    (tmp_path / "m.py").write_text("def f():\n    pass\n", encoding="utf-8")
+    (tmp_path / "m.py").write_bytes(b"def f():\n    pass\n")
 
     data = _map(tmp_path, include_symbols=False)
 
