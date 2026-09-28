@@ -753,6 +753,7 @@ def summarize_tool_result(
             "stderr_truncated",
             "timed_out",
             "audit_truncated",
+            "sandboxed",
         )
     elif tool_name == "finish_task":
         field_names = (

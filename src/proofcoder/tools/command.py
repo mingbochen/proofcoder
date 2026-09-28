@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import signal
 import subprocess
 import threading
@@ -29,6 +30,13 @@ from proofcoder.safety.commands import (
 )
 from proofcoder.safety.paths import WorkspacePathError
 from proofcoder.safety.policy import CommandDecision, CommandPolicy
+from proofcoder.safety.sandbox import (
+    TEMPORARY_VARIABLES,
+    SandboxState,
+    create_private_temporary,
+    is_setup_failure,
+    wrapped_argv,
+)
 from proofcoder.safety.writes import (
     commit_new_file,
     discard_temporary_file,
@@ -79,11 +87,13 @@ def create_run_command_tool(
     environ: Mapping[str, str] | None = None,
     policy: CommandPolicy | None = None,
     approval: ApprovalGate | None = None,
+    sandbox: SandboxState | None = None,
 ) -> ToolDefinition:
     """Create a policy-bound local command tool for one workspace.
 
     The policy is whatever the caller already froze; this tool never reads it from disk,
     so a write that lands on the policy file during the run cannot change any decision.
+    The isolation state is likewise decided before the run and never re-probed here.
     """
 
     workspace_root = workspace.resolve(strict=True)
@@ -103,7 +113,7 @@ def create_run_command_tool(
             refusal = _review_or_refusal(gate, prepared)
             if refusal is not None:
                 return refusal
-        return _run_prepared_command(workspace_root, prepared)
+        return _run_prepared_command(workspace_root, prepared, sandbox)
 
     return ToolDefinition(
         name="run_command",
@@ -198,8 +208,50 @@ def _prepare_or_result(
         return ToolResult.failure(error.code, str(error), retryable=True)
 
 
-def _run_prepared_command(workspace: Path, command: PreparedCommand) -> ToolResult:
+def _run_prepared_command(
+    workspace: Path,
+    command: PreparedCommand,
+    sandbox: SandboxState | None = None,
+) -> ToolResult:
     started = time.monotonic()
+    if sandbox is None or not sandbox.isolates:
+        return _run_process(workspace, command, sandbox, list(command.execution_argv), None)
+    try:
+        temporary = create_private_temporary(workspace)
+    except OSError:
+        # Fail closed: without its private temporary directory the command would find no
+        # writable temporary location, or fall back to one isolation did not plan for.
+        return ToolResult.failure(
+            "SANDBOX_SETUP_FAILED",
+            "the command's private temporary directory could not be created; it did not run",
+            retryable=False,
+            duration_ms=_duration_ms(started),
+        )
+    try:
+        argv = wrapped_argv(
+            command.execution_argv,
+            workspace=workspace,
+            temporary=temporary,
+            state=sandbox,
+            timeout_seconds=command.timeout_seconds,
+        )
+        return _run_process(workspace, command, sandbox, argv, temporary)
+    finally:
+        shutil.rmtree(temporary, ignore_errors=True)
+
+
+def _run_process(
+    workspace: Path,
+    command: PreparedCommand,
+    sandbox: SandboxState | None,
+    argv: list[str],
+    temporary: Path | None,
+) -> ToolResult:
+    started = time.monotonic()
+    environment = dict(command.environment)
+    if temporary is not None:
+        for name in TEMPORARY_VARIABLES:
+            environment[name] = str(temporary)
     process_kwargs: dict[str, object] = {}
     if os.name == "nt":
         process_kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
@@ -208,9 +260,9 @@ def _run_prepared_command(workspace: Path, command: PreparedCommand) -> ToolResu
 
     try:
         process = subprocess.Popen(
-            list(command.execution_argv),
+            argv,
             cwd=command.cwd,
-            env=command.environment,
+            env=environment,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -266,6 +318,21 @@ def _run_prepared_command(workspace: Path, command: PreparedCommand) -> ToolResu
     duration_ms = _duration_ms(started)
     stdout_audit = _sanitize_capture(stdout_capture, command.sensitive_values)
     stderr_audit = _sanitize_capture(stderr_capture, command.sensitive_values)
+    if temporary is not None and is_setup_failure(process.returncode, stderr_audit):
+        # The wrapper refused to start the command. Nothing ran, so there is no command
+        # output to audit and no exit code that could be read as the command's own.
+        reason = stderr_audit.splitlines()[0] if stderr_audit else ""
+        return ToolResult.failure(
+            "SANDBOX_SETUP_FAILED",
+            f"isolation could not be set up, so the command did not run ({reason})",
+            retryable=False,
+            data={
+                "argv": list(command.display_argv),
+                "cwd": command.relative_cwd,
+                "sandboxed": True,
+            },
+            duration_ms=duration_ms,
+        )
     stdout, stdout_return_truncated = _bound_text(stdout_audit)
     stderr, stderr_return_truncated = _bound_text(stderr_audit)
     stdout_truncated = stdout_capture.hard_truncated or stdout_return_truncated
@@ -311,6 +378,10 @@ def _run_prepared_command(workspace: Path, command: PreparedCommand) -> ToolResu
         "audit_path": audit_path,
         "audit_truncated": audit_truncated,
     }
+    if sandbox is not None:
+        # Recorded whenever the run decided an isolation state, including "not isolated",
+        # so the trace never leaves a reader to infer it from the platform.
+        data["sandboxed"] = temporary is not None
     truncated = stdout_truncated or stderr_truncated
     if timed_out:
         return ToolResult.failure(
