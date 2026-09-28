@@ -321,6 +321,7 @@ proofcoder/
 │   ├── retry.py
 │   ├── rollback.py
 │   ├── prompt.py
+│   ├── project_rules.py
 │   ├── session.py
 │   ├── trace.py
 │   ├── verification.py

@@ -6,8 +6,8 @@
 
 - 规范版本：v3.5
 - 当前阶段：阶段 K（上下文与仓库理解）
-- 下一步：小项 K.4，读取工作区根目录的 `AGENTS.md`
-- 最近完成：小项 K.3，第十二个工具 `repository_map`（标准库 `ast`，不执行任何代码）
+- 下一步：小项 K.5，需要跨文件定位的大型评测 fixture
+- 最近完成：小项 K.4，默认读取工作区根目录的 `AGENTS.md`，作为带标注的仓库文本放进任务消息
 - 阻塞项：阶段 I 的通用退出条件要求「新增能力有对应的真实模型评测 fixture 和重复运行数据」。fixture 已就绪且有离线测试，重复运行数据需要真实 key，见 [EVAL_REPORT §15](EVAL_REPORT.md)
 
 状态取值：`已完成`、`进行中`、`未开始`、`阻塞`、`暂缓`。
@@ -98,7 +98,7 @@
 | K.1 | 阶段 ADR 与规范补全：按 token 的预算、仓库地图、项目规则文件、更大的 fixture（[ADR-0009](adr/0009-context-and-repository-understanding.md)、规范 §9.6 与 §13.7） | 已完成 | [#26](https://github.com/mingbochen/proofcoder/pull/26) |
 | K.2 | 按 token 的上下文预算，含离线测试 | 已完成 | [#27](https://github.com/mingbochen/proofcoder/pull/27) |
 | K.3 | 只读工具 `repository_map`，含离线测试 | 已完成 | [#28](https://github.com/mingbochen/proofcoder/pull/28) |
-| K.4 | 读取工作区根目录的 `AGENTS.md`，含离线测试 | 未开始 | — |
+| K.4 | 读取工作区根目录的 `AGENTS.md`，含离线测试 | 已完成 | [#29](https://github.com/mingbochen/proofcoder/pull/29) |
 | K.5 | 需要跨文件定位的大型评测 fixture，以及文档同步 | 未开始 | — |
 
 ## 阶段 L–M

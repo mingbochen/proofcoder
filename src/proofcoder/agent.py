@@ -38,6 +38,7 @@ from proofcoder.events import (
 )
 from proofcoder.llm.base import LLMClient
 from proofcoder.progress import NoProgressTracker
+from proofcoder.project_rules import ProjectRules, project_rules_payload
 from proofcoder.protocol import ModelResponse, RunResult, TerminationReason, ToolCall
 from proofcoder.retry import DEFAULT_MAX_API_ATTEMPTS, retry_delay_seconds
 from proofcoder.safety.policy import CommandPolicy
@@ -111,6 +112,7 @@ class AgentLoop:
         policy: CommandPolicy | None = None,
         carry: SessionCarry | None = None,
         context_budget_tokens: int | None = None,
+        project_rules: ProjectRules | None = None,
     ) -> None:
         workspace_root = workspace.resolve(strict=True)
         if not workspace_root.is_dir():
@@ -162,6 +164,9 @@ class AgentLoop:
         # the first user message; it never reaches run state, so no earlier run's
         # verification can survive into this one.
         self._carry = carry
+        # Read before this loop existed, as repository text. It joins the task message
+        # after the session carry and never the system instruction.
+        self._project_rules = project_rules
         self._events: EventEmitter | None = None
 
     @property
@@ -180,7 +185,8 @@ class AgentLoop:
         # unprocessed text to a system instruction. Run state keeps the bare task, so the
         # task event still reports what the user asked for.
         carry_text = "" if self._carry is None else self._carry.text
-        history.add_user(f"{carry_text}{task}")
+        rules_text = "" if self._project_rules is None else self._project_rules.text
+        history.add_user(f"{carry_text}{rules_text}{task}")
         run_id = self._run_id_factory()
         self._events = EventEmitter(
             run_id=run_id,
@@ -193,6 +199,8 @@ class AgentLoop:
         self._emit(EventType.TASK, state, {"task": task})
         if self._carry is not None:
             self._emit(EventType.SESSION, state, session_carry_payload(self._carry))
+        if self._project_rules is not None:
+            self._emit(EventType.PROJECT_RULES, state, project_rules_payload(self._project_rules))
         if self._checkpoint is not None:
             self._emit(
                 EventType.CHECKPOINT,

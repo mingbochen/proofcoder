@@ -61,6 +61,7 @@ future dependency, environment, configuration, or source changes remain complian
 | Evaluation pipeline | `proofcoder.eval_fixtures`, `proofcoder.eval_core`, `proofcoder.eval_runner` | `tests/unit/test_eval_fixtures.py`, `tests/unit/test_eval_core.py`, `tests/unit/test_eval_runner.py` | Mechanical `PASS` |
 | Project command policy and approval | `proofcoder.safety.policy`, `proofcoder.approval` | `tests/unit/test_command_policy_file.py`, `tests/unit/test_approval.py` | Mechanical `PASS` |
 | Cross-run sessions | `proofcoder.session` | `tests/unit/test_session.py`, `tests/unit/test_cli_session.py`, `tests/unit/test_web_session.py` | Mechanical `PASS` |
+| Project instructions | `proofcoder.project_rules` | `tests/unit/test_project_rules.py`, `tests/unit/test_trace_golden.py` | Mechanical `PASS` |
 | Multi-run evaluation fixture | `evals/fixtures/session-two-step-report` | `tests/unit/test_session.py`, `tests/unit/test_eval_runner.py` | Manual review |
 | Non-Python evaluation fixture | `evals/fixtures/nodejs-word-count` | `tests/unit/test_eval_core.py`, `tests/unit/test_eval_fixtures.py` | Manual review |
 | Local file tools | `proofcoder.tools.files`, `proofcoder.tools.search`, `proofcoder.tools.edit`, `proofcoder.tools.paths`, `proofcoder.tools.repository` | `tests/unit/test_read_file.py`, `tests/unit/test_search_text.py`, `tests/unit/test_edit_tools.py`, `tests/unit/test_path_tools.py`, `tests/unit/test_repository_map.py` | Mechanical `PASS`; ripgrep start manually reviewed |
@@ -285,6 +286,13 @@ into automatic passes; their manual dispositions and limitations remain distinct
   Sessions have offline coverage and a multi-run evaluation fixture, but no real-model
   repeated-run data yet, so the stage I exit criterion that requires such data is not met.
   See `docs/EVAL_REPORT.md` section 15.
+- A workspace-root `AGENTS.md` reaches every run's first user message by default,
+  labelled as repository text and never placed in the system instruction. It grants
+  nothing, so it cannot widen what a run may do, but a hostile repository can use it to
+  put persuasive text in front of the model on every run rather than only when the model
+  opens the file. A label constrains placement, not how the model weighs the text.
+  `proofcoder run --no-project-rules` leaves it out; the browser interface and
+  evaluation always read it.
 - The tools that delete, move, or overwrite destroy content in one call. They refuse to
   run without a checkpoint and never recurse, but within the captured scope their damage
   is undone only when someone actually runs a rollback; outside it, nothing undoes it.

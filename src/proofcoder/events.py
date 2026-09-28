@@ -70,6 +70,7 @@ class EventType(StrEnum):
     ROLLBACK = "rollback"
     APPROVAL = "approval"
     SESSION = "session"
+    PROJECT_RULES = "project_rules"
     WARNING = "warning"
     COMPLETION = "completion"
     TERMINATION = "termination"
