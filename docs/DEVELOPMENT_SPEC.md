@@ -321,6 +321,7 @@ proofcoder/
 │   ├── errors.py
 │   ├── retry.py
 │   ├── rollback.py
+│   ├── sandbox_exec.py
 │   ├── prompt.py
 │   ├── project_rules.py
 │   ├── session.py
@@ -344,7 +345,9 @@ proofcoder/
 │   ├── safety/
 │   │   ├── paths.py
 │   │   ├── secrets.py
-│   │   └── commands.py
+│   │   ├── commands.py
+│   │   ├── landlock.py
+│   │   └── sandbox.py
 │   └── web/
 │       ├── runs.py
 │       ├── api.py
