@@ -917,6 +917,7 @@ def test_production_eval_runner_rebuilds_loop_registry_history_and_trace(
             "list_files",
             "search_text",
             "read_file",
+            "repository_map",
             "create_file",
             "replace_in_file",
             "patch_file",

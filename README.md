@@ -307,10 +307,11 @@ stage in the [roadmap](docs/ROADMAP.md).
 | `make_directory` | Create a directory and any missing parents | Refused when the path exists as a file or a link; an existing directory is reported, not recreated |
 | `delete_path` | Delete one file, one empty directory, or one link | Never recursive; a non-empty directory is refused, and a link is removed without following it |
 | `move_path` | Move or rename one file or directory | The destination must not exist; nothing is ever overwritten |
+| `repository_map` | Map files and, for Python, their classes, functions and methods with line numbers | Read-only; parses with the standard library `ast` and executes nothing; other languages get paths only; same skip rules as `list_files`; links never followed; every count is capped |
 | `run_command` | Run an approved local check or workspace script | argv-only, `shell=False`, default-deny policy with an allow/confirm/deny decision, filtered environment, timeout, and bounded output |
 | `finish_task` | Request completion or report a blocker | Runs no claimed verification and cannot override local evidence |
 
-All eleven tools are implemented and executed locally. Expected failures return structured results so the model can change its approach; valid calls in a fully valid batch execute synchronously in model-provided order.
+All twelve tools are implemented and executed locally. Expected failures return structured results so the model can change its approach; valid calls in a fully valid batch execute synchronously in model-provided order.
 
 Three of them destroy content in a single call: `delete_path`, `move_path`, and `create_file` with `overwrite: true`. Those three refuse to run when the run has no checkpoint, because a change that cannot be undone should not be available without the thing that undoes it. A run started with `--no-checkpoint` keeps every other tool, including the ones that create files and edit them.
 
