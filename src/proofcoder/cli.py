@@ -115,6 +115,8 @@ _MAX_AGENT_STEPS = 64
 _MAX_AGENT_SECONDS = 3600.0
 _MIN_CONTEXT_BUDGET_BYTES = 4096
 _MAX_CONTEXT_BUDGET_BYTES = 2 * 1024 * 1024
+_MIN_CONTEXT_BUDGET_TOKENS = 1024
+_MAX_CONTEXT_BUDGET_TOKENS = 1024 * 1024
 _MAX_CONSECUTIVE_FAILURES = 32
 _LOOPBACK_BIND_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 
@@ -158,6 +160,16 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             f"request context budget, {_MIN_CONTEXT_BUDGET_BYTES}-"
             f"{_MAX_CONTEXT_BUDGET_BYTES} bytes (default: {DEFAULT_CONTEXT_BUDGET_BYTES})"
+        ),
+    )
+    run.add_argument(
+        "--context-budget-tokens",
+        type=_bounded_context_tokens,
+        default=None,
+        help=(
+            f"additional token limit, {_MIN_CONTEXT_BUDGET_TOKENS}-{_MAX_CONTEXT_BUDGET_TOKENS}; "
+            "converted to bytes with a ratio calibrated from the provider's reported token "
+            "counts, and never looser than --context-budget-bytes (default: none)"
         ),
     )
     run.add_argument(
@@ -408,6 +420,9 @@ def main(
                 max_steps=int(args.max_steps),
                 max_seconds=float(args.max_seconds),
                 context_budget_bytes=int(args.context_budget_bytes),
+                context_budget_tokens=(
+                    None if args.context_budget_tokens is None else int(args.context_budget_tokens)
+                ),
                 max_consecutive_failures=int(args.max_consecutive_failures),
                 max_api_attempts=int(args.max_api_attempts),
                 environ=environ,
@@ -550,6 +565,15 @@ def _bounded_context_budget(value: str) -> int:
         label="context budget bytes",
         minimum=_MIN_CONTEXT_BUDGET_BYTES,
         maximum=_MAX_CONTEXT_BUDGET_BYTES,
+    )
+
+
+def _bounded_context_tokens(value: str) -> int:
+    return _bounded_integer(
+        value,
+        label="context budget tokens",
+        minimum=_MIN_CONTEXT_BUDGET_TOKENS,
+        maximum=_MAX_CONTEXT_BUDGET_TOKENS,
     )
 
 
@@ -804,6 +828,7 @@ def _run_agent(
     cwd: Path,
     console: Console,
     client_factory: _RunClientFactory,
+    context_budget_tokens: int | None = None,
     checkpoint_enabled: bool = True,
     approval_mode: ApprovalMode = ApprovalMode.NEVER,
     policy_argument: str | None = None,
@@ -943,6 +968,7 @@ def _run_agent(
                 context_budget_bytes=context_budget_bytes,
                 max_consecutive_failures=max_consecutive_failures,
                 max_api_attempts=max_api_attempts,
+                context_budget_tokens=context_budget_tokens,
             ),
             additional_sinks=(terminal,),
             sensitive_values=sensitive_values,

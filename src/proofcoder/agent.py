@@ -21,6 +21,7 @@ from proofcoder.context import (
     DEFAULT_CONTEXT_BUDGET_BYTES,
     ContextManager,
     MessageHistory,
+    TokenBudget,
 )
 from proofcoder.errors import ContextBudgetError, LLMRequestError, ProofCoderError
 from proofcoder.events import (
@@ -109,6 +110,7 @@ class AgentLoop:
         approval: ApprovalGate | None = None,
         policy: CommandPolicy | None = None,
         carry: SessionCarry | None = None,
+        context_budget_tokens: int | None = None,
     ) -> None:
         workspace_root = workspace.resolve(strict=True)
         if not workspace_root.is_dir():
@@ -132,7 +134,12 @@ class AgentLoop:
         self._clock = clock
         self._sleep = sleep
         self._random_value = random_value
-        self._context = ContextManager(budget_bytes=context_budget_bytes)
+        self._context = ContextManager(
+            budget_bytes=context_budget_bytes,
+            token_budget=(
+                None if context_budget_tokens is None else TokenBudget(context_budget_tokens)
+            ),
+        )
         self._event_sink = NoOpSink() if event_sink is None else event_sink
         self._run_id_factory = run_id_factory
         self._event_clock = event_clock
@@ -261,6 +268,9 @@ class AgentLoop:
             if response.usage is not None:
                 state.input_token_count += response.usage.prompt_tokens or 0
                 state.output_token_count += response.usage.completion_tokens or 0
+                # The provider's own count is the only one right for every provider, so
+                # it, rather than a tokenizer, calibrates the next request's byte limit.
+                self._context.observe_usage(view.byte_count, response.usage.prompt_tokens)
             if response.content:
                 final_text = response.content
                 state.final_text = response.content

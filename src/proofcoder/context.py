@@ -26,6 +26,49 @@ CONTEXT_TARGET_RATIO = 0.9
 MIN_RECENT_ATOMIC_GROUPS = 1
 STATE_SUMMARY_PREFIX = "ProofCoder program-generated local run facts: "
 
+# Before any provider has reported a token count, bytes are converted with this ratio.
+# It is deliberately low: a low ratio estimates more tokens per byte, so the budget is
+# tighter than reality. Underestimating tokens gets a request refused by the provider;
+# overestimating them only compacts a little earlier.
+DEFAULT_TOKEN_SIZE_BYTES = 2.0
+# Applied to every observed ratio, so calibration never lands exactly on the edge.
+TOKEN_CALIBRATION_MARGIN = 0.9
+# Bounds on any calibrated ratio. A provider that under-reports tokens would otherwise
+# loosen the budget without limit, and one that over-reports would shrink it to nothing.
+MIN_TOKEN_SIZE_BYTES = 0.5
+MAX_TOKEN_SIZE_BYTES = 6.0
+
+
+@dataclass(slots=True)
+class TokenBudget:
+    """A token limit expressed to the byte-based context manager.
+
+    The byte budget stays the deterministic, provider-independent gate. This converts a
+    token limit into a byte limit using the ratio the provider itself reports, which is
+    the only token count that is right for every provider -- a tokenizer library would
+    be right for one of them and wrong for the rest.
+    """
+
+    max_tokens: int
+    bytes_per_token: float = DEFAULT_TOKEN_SIZE_BYTES
+
+    def __post_init__(self) -> None:
+        if self.max_tokens < 1:
+            raise ValueError("token budget must be positive")
+
+    def byte_limit(self) -> int:
+        """Return the byte limit this token budget currently implies."""
+
+        return max(1, int(self.max_tokens * self.bytes_per_token))
+
+    def observe(self, request_bytes: int, prompt_tokens: int | None) -> None:
+        """Recalibrate from one request the provider has measured."""
+
+        if prompt_tokens is None or prompt_tokens < 1 or request_bytes < 1:
+            return
+        observed = request_bytes / prompt_tokens * TOKEN_CALIBRATION_MARGIN
+        self.bytes_per_token = min(MAX_TOKEN_SIZE_BYTES, max(MIN_TOKEN_SIZE_BYTES, observed))
+
 
 class MessageHistory:
     """Maintain legal message order and tool-call/result pairing."""
@@ -113,6 +156,7 @@ class ContextManager:
         budget_bytes: int = DEFAULT_CONTEXT_BUDGET_BYTES,
         target_ratio: float = CONTEXT_TARGET_RATIO,
         min_recent_groups: int = MIN_RECENT_ATOMIC_GROUPS,
+        token_budget: TokenBudget | None = None,
     ) -> None:
         if budget_bytes < 1:
             raise ValueError("context budget must be positive")
@@ -121,8 +165,31 @@ class ContextManager:
         if min_recent_groups < 0:
             raise ValueError("minimum recent groups cannot be negative")
         self._budget_bytes = budget_bytes
-        self._target_bytes = max(1, int(budget_bytes * target_ratio))
+        self._target_ratio = target_ratio
         self._min_recent_groups = min_recent_groups
+        self._token_budget = token_budget
+
+    @property
+    def token_budget(self) -> TokenBudget | None:
+        """Return the token limit layered over the byte budget, if one is set."""
+
+        return self._token_budget
+
+    def effective_budget_bytes(self) -> int:
+        """Return the byte limit in force for the next request.
+
+        A token budget only ever tightens the byte budget; it can never loosen it.
+        """
+
+        if self._token_budget is None:
+            return self._budget_bytes
+        return min(self._budget_bytes, self._token_budget.byte_limit())
+
+    def observe_usage(self, request_bytes: int, prompt_tokens: int | None) -> None:
+        """Feed one measured request back into the token budget, if there is one."""
+
+        if self._token_budget is not None:
+            self._token_budget.observe(request_bytes, prompt_tokens)
 
     def build(
         self,
@@ -132,6 +199,8 @@ class ContextManager:
     ) -> ContextView:
         """Return a deterministic view or fail when required context cannot fit."""
 
+        budget_bytes = self.effective_budget_bytes()
+        target_bytes = max(1, int(budget_bytes * self._target_ratio))
         complete = history.to_api_messages()
         if len(complete) < 2:
             raise MessageHistoryError("Context requires a system message and original task.")
@@ -140,19 +209,19 @@ class ContextManager:
 
         messages = self._assemble(complete[:2], groups, state, removed)
         size = deterministic_request_bytes(messages, tools)
-        if size <= self._budget_bytes:
+        if size <= budget_bytes:
             return ContextView(tuple(messages), size, 0)
 
         while len(groups) - removed > self._min_recent_groups:
             removed += 1
             messages = self._assemble(complete[:2], groups[removed:], state, removed)
             size = deterministic_request_bytes(messages, tools)
-            if size <= self._target_bytes:
+            if size <= target_bytes:
                 return ContextView(tuple(messages), size, removed)
 
         messages = self._assemble(complete[:2], groups[removed:], state, removed)
         size = deterministic_request_bytes(messages, tools)
-        if size > self._budget_bytes:
+        if size > budget_bytes:
             raise ContextBudgetError(
                 "Required messages and newest atomic interaction group exceed context budget."
             )

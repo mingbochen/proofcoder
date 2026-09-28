@@ -145,7 +145,9 @@ uv run --locked --env-file .env proofcoder run --workspace ../proofcoder-demo \
 
 `--approval on-risk` prints the full argv, working directory and timeout and waits for an answer; anything but an explicit yes refuses, and standard input that is not a terminal refuses immediately rather than assuming. `--command-policy` is the only way a project policy takes effect: a `proofcoder.toml` sitting in the workspace is reported and ignored until you name it. The time spent waiting for you is not charged against `--max-seconds`.
 
-`run` defaults to 8 assistant responses, 600 seconds, a 262144-byte context budget, 5 consecutive failed batches, and up to 3 API attempts per model response. Use `proofcoder run --help` for their bounded overrides. Exit code `0` represents verified completion or a locally observed no-change completion, `3` unverified changes, and `4` an explicit blocked result. Other failures are nonzero; interruption returns `130`.
+`run` defaults to 8 assistant responses, 600 seconds, a 262144-byte context budget, 5 consecutive failed batches, and up to 3 API attempts per model response. Use `proofcoder run --help` for their bounded overrides.
+
+`--context-budget-tokens N` adds a token limit on top of the byte budget. It can only ever tighten it: each request converts the token limit to bytes with a ratio the provider itself calibrates — the prompt token count it reports for one request sets the ratio for the next, with a 10% safety margin and bounds on how far one provider's report can move it. There is no tokenizer dependency, because a tokenizer is right for one provider and wrong for every other. Before the first report the ratio is a deliberately low 2 bytes per token, which errs toward compacting early rather than toward a request the provider refuses. Exit code `0` represents verified completion or a locally observed no-change completion, `3` unverified changes, and `4` an explicit blocked result. Other failures are nonzero; interruption returns `130`.
 
 ## Run Checkpoints
 
