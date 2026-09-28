@@ -57,6 +57,9 @@ class AgentRunLimits:
     context_budget_bytes: int = DEFAULT_CONTEXT_BUDGET_BYTES
     max_consecutive_failures: int = 5
     max_api_attempts: int = DEFAULT_MAX_API_ATTEMPTS
+    # Layered over the byte budget, never in place of it; None keeps the byte budget
+    # alone, exactly as before token budgets existed.
+    context_budget_tokens: int | None = None
 
 
 @dataclass(slots=True)
@@ -179,6 +182,7 @@ def build_agent_loop(
         max_steps=limits.max_steps,
         max_seconds=limits.max_seconds,
         context_budget_bytes=limits.context_budget_bytes,
+        context_budget_tokens=limits.context_budget_tokens,
         max_consecutive_failures=limits.max_consecutive_failures,
         max_api_attempts=limits.max_api_attempts,
         event_sink=resources.event_sink(additional_sinks),

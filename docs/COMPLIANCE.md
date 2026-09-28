@@ -64,7 +64,7 @@ future dependency, environment, configuration, or source changes remain complian
 | Multi-run evaluation fixture | `evals/fixtures/session-two-step-report` | `tests/unit/test_session.py`, `tests/unit/test_eval_runner.py` | Manual review |
 | Non-Python evaluation fixture | `evals/fixtures/nodejs-word-count` | `tests/unit/test_eval_core.py`, `tests/unit/test_eval_fixtures.py` | Manual review |
 | Local file tools | `proofcoder.tools.files`, `proofcoder.tools.search`, `proofcoder.tools.edit`, `proofcoder.tools.paths` | `tests/unit/test_read_file.py`, `tests/unit/test_search_text.py`, `tests/unit/test_edit_tools.py`, `tests/unit/test_path_tools.py` | Mechanical `PASS`; ripgrep start manually reviewed |
-| History and context | `proofcoder.context.MessageHistory`; `proofcoder.context.ContextManager` | `tests/unit/test_context.py`, `tests/unit/test_context_manager.py` | Mechanical `PASS` |
+| History and context | `proofcoder.context.MessageHistory`; `proofcoder.context.ContextManager`; `proofcoder.context.TokenBudget` | `tests/unit/test_context.py`, `tests/unit/test_context_manager.py`, `tests/unit/test_token_budget.py` | Mechanical `PASS` |
 | No-progress termination | `proofcoder.progress.ProgressTracker`; `proofcoder.agent.AgentLoop` | `tests/unit/test_progress.py`, `tests/unit/test_agent_d2.py` | Mechanical `PASS` |
 | Tool registry and validation | `proofcoder.tools.registry.ToolRegistry` | `tests/unit/test_tools.py` | Mechanical `PASS` |
 | Trace and replay | `proofcoder.events`, `proofcoder.trace` | `tests/unit/test_events.py`, `tests/unit/test_trace.py` | Mechanical `PASS` |
