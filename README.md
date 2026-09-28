@@ -364,11 +364,13 @@ Two fixtures declare `verify_rollback`: `rollback-word-wrap`, whose solution rew
 
 One fixture, `session-two-step-report`, declares a task sequence with `follow_up_task`. The evaluator then creates a session in the attempt workspace and runs the agent twice in it, scoring once after the last task. Statistics add across the sequence because the whole sequence is the attempt's cost, but the completion status, verification and trace come from the last run alone — evidence does not accumulate across runs inside evaluation either. Every other fixture leaves the field null and behaves exactly as before.
 
+One fixture, `storefront-monthly-revenue`, is a 48-file Python package, more than ten times the next largest fixture. Its task describes only a symptom, a monthly report whose net revenue is too high. Its only failing tests are the report tests, and those never name the module at fault, which sits three calls below them. It exists to check that a run can locate a fault across files in a repository too large to read at a glance.
+
 One fixture, `nodejs-word-count`, is not a Python project: its tests run under Node's own test runner, which the built-in command policy does not know. It ships a `proofcoder.toml` and its `fixture.json` names it, and that naming is the authorization — `fixture.json` is never copied into the attempt workspace, so the workspace still grants itself nothing. Evaluation always runs with approval mode `never`, so a fixture's validation command has to be an `allow` entry; a confirmable one would be refused with nobody to ask.
 
 The default repeat count is 3, and the default fixture selection is all fixtures under `evals/fixtures`. Repeat `--fixture <fixture-id>` to select one or more fixtures. Each attempt uses an isolated workspace, initial-failure evidence, independent final validation, exact change-scope checks, and a complete trace requirement. Results are written below the ignored `.proofcoder/evals` directory.
 
-The dated real-model results and failure analysis are in the [Evaluation Report](docs/EVAL_REPORT.md), whose section 12 covers the two rollback fixtures and section 14 the Node fixture. Those small-fixture results are bounded evidence, not a general success-rate claim. Real evaluation is opt-in and is not run by CI; CI configures no provider key and runs only offline validation and scanning after dependency synchronization.
+The dated real-model results and failure analysis are in the [Evaluation Report](docs/EVAL_REPORT.md), whose section 12 covers the two rollback fixtures and section 14 the Node fixture; sections 15 and 16 describe the multi-run and large fixtures, which have no real-model data yet. Those small-fixture results are bounded evidence, not a general success-rate claim. Real evaluation is opt-in and is not run by CI; CI configures no provider key and runs only offline validation and scanning after dependency synchronization.
 
 ## Development and Verification
 

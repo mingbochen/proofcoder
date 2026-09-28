@@ -5,10 +5,10 @@
 ## 当前位置
 
 - 规范版本：v3.5
-- 当前阶段：阶段 K（上下文与仓库理解）
-- 下一步：小项 K.5，需要跨文件定位的大型评测 fixture
-- 最近完成：小项 K.4，默认读取工作区根目录的 `AGENTS.md`，作为带标注的仓库文本放进任务消息
-- 阻塞项：阶段 I 的通用退出条件要求「新增能力有对应的真实模型评测 fixture 和重复运行数据」。fixture 已就绪且有离线测试，重复运行数据需要真实 key，见 [EVAL_REPORT §15](EVAL_REPORT.md)
+- 当前阶段：阶段 L（操作系统级隔离）。阶段 I 与阶段 K 的实现已合并，只等真实模型数据
+- 下一步：小项 L.1，阶段 ADR 与规范补全
+- 最近完成：小项 K.5，48 个文件的跨文件定位评测 fixture `storefront-monthly-revenue`
+- 阻塞项：阶段 I 与阶段 K 的退出条件都需要真实模型的重复运行数据。两个 fixture 都已就绪且有离线测试，重复运行数据需要真实 key，见 [EVAL_REPORT §15 与 §16](EVAL_REPORT.md)
 
 状态取值：`已完成`、`进行中`、`未开始`、`阻塞`、`暂缓`。
 
@@ -99,7 +99,7 @@
 | K.2 | 按 token 的上下文预算，含离线测试 | 已完成 | [#27](https://github.com/mingbochen/proofcoder/pull/27) |
 | K.3 | 只读工具 `repository_map`，含离线测试 | 已完成 | [#28](https://github.com/mingbochen/proofcoder/pull/28) |
 | K.4 | 读取工作区根目录的 `AGENTS.md`，含离线测试 | 已完成 | [#29](https://github.com/mingbochen/proofcoder/pull/29) |
-| K.5 | 需要跨文件定位的大型评测 fixture，以及文档同步 | 未开始 | — |
+| K.5 | 需要跨文件定位的大型评测 fixture `storefront-monthly-revenue`，以及文档同步 | 阻塞（等待真实模型重复运行数据） | [#30](https://github.com/mingbochen/proofcoder/pull/30) |
 
 ## 阶段 L–M
 

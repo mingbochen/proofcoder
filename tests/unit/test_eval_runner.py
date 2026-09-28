@@ -149,6 +149,18 @@ def _modify_fixture(fixture: EvalFixture, workspace: Path, *, valid: bool = True
             text = text.replace("max(ordered[:-1])", "max(ordered)", 1)
         source.write_text(text, encoding="utf-8")
         return
+    elif fixture.fixture_id == "storefront-monthly-revenue":
+        # The fault is two calls below the failing report test, and the tests are
+        # outside the allowed set, so this branch returns before the shared tail.
+        source = workspace / "storefront" / "pricing" / "discounts.py"
+        text = source.read_text(encoding="utf-8")
+        if valid:
+            text = text.replace(
+                "percent_of(line.unit_price_cents, rule.value)",
+                "percent_of(line.subtotal_cents, rule.value)",
+            )
+        source.write_text(text + "\n# fake runner source evidence\n", encoding="utf-8")
+        return
     elif fixture.fixture_id == "rollback-word-wrap":
         source = workspace / "word_wrap.py"
         text = source.read_text(encoding="utf-8")
@@ -336,17 +348,21 @@ def test_every_fixture_repeat_two_is_ordered_isolated_and_fully_persisted(
         "rollback-word-wrap",
         "session-two-step-report",
         "session-two-step-report",
+        "storefront-monthly-revenue",
+        "storefront-monthly-revenue",
     ]
     # The two-task fixture calls the runner twice per attempt, so the call order has two
     # extra entries while the attempt records stay one per repeat.
-    expected_call_order = expected_order + ["session-two-step-report"] * 2
+    expected_call_order = (
+        expected_order[:-2] + ["session-two-step-report"] * 2 + expected_order[-2:]
+    )
     assert session.status is EvaluationStatus.COMPLETED
     assert session.exit_code == 0
     assert [fixture_id for fixture_id, _ in calls] == expected_call_order
-    assert len({workspace for _, workspace in calls}) == 14
+    assert len({workspace for _, workspace in calls}) == 16
     assert all(workspace.name == "w" for _, workspace in calls)
     assert all(workspace.is_dir() for _, workspace in calls)
-    assert len(session.attempts) == 14
+    assert len(session.attempts) == 16
     assert all(attempt.trace_complete for attempt in session.attempts)
 
     evaluation = session.evaluation_directory
@@ -360,10 +376,10 @@ def test_every_fixture_repeat_two_is_ordered_isolated_and_fully_persisted(
     assert metadata["code"] == {"dirty": None, "revision": None}
     assert metadata["warnings"] == ["GIT_REVISION_UNAVAILABLE", "GIT_DIRTY_UNAVAILABLE"]
     assert summary["status"] == "completed"
-    assert summary["recorded_attempts"] == summary["expected_attempts"] == 14
-    assert summary["overall"]["successes"] == 14
-    assert [item["sequence"] for item in attempts] == list(range(1, 15))
-    assert len({(item["fixture_id"], item["attempt"]) for item in attempts}) == 14
+    assert summary["recorded_attempts"] == summary["expected_attempts"] == 16
+    assert summary["overall"]["successes"] == 16
+    assert [item["sequence"] for item in attempts] == list(range(1, 17))
+    assert len({(item["fixture_id"], item["attempt"]) for item in attempts}) == 16
     assert [item["fixture_id"] for item in attempts] == expected_order
     assert all(not Path(item["workspace"]).is_absolute() for item in attempts)
     assert all(item["files"]["ignored_runtime"] for item in attempts)

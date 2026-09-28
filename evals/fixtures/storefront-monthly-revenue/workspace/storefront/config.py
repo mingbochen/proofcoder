@@ -1,0 +1,7 @@
+"""Store-wide settings shared by pricing and reports."""
+
+CURRENCY = "EUR"
+DEFAULT_TAX_RATE_PERCENT = 20
+FREE_SHIPPING_THRESHOLD_CENTS = 5_000
+FLAT_SHIPPING_CENTS = 495
+LOYALTY_POINTS_PER_EURO = 1

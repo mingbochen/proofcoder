@@ -27,6 +27,7 @@ EXPECTED_FIXTURES = {
     "nodejs-word-count": FixtureCategory.BUG_FIX,
     "rollback-word-wrap": FixtureCategory.BUG_FIX,
     "session-two-step-report": FixtureCategory.BUG_FIX,
+    "storefront-monthly-revenue": FixtureCategory.BUG_FIX,
 }
 # These repository fixtures verify that a finished run can be undone. The rename and
 # delete fixture is here because recreating a deleted file and removing a created one
@@ -210,6 +211,75 @@ def test_the_node_fixture_reports_its_failure_under_every_reporter(
 
     assert completed.returncode == fixture.validation.initial_exit_code
     assert fixture.validation.initial_output_contains in completed.stdout + completed.stderr
+
+
+LARGE_FIXTURE = "storefront-monthly-revenue"
+
+
+def test_the_large_fixture_is_at_least_ten_times_the_next_largest() -> None:
+    """Stage K's exit criterion, as a number that can be checked rather than a feeling."""
+
+    counts = {
+        fixture.fixture_id: len(fixture.workspace_files) for fixture in load_fixtures(FIXTURES_ROOT)
+    }
+    large = counts.pop(LARGE_FIXTURE)
+
+    assert large >= 10 * max(counts.values())
+
+
+def test_the_large_fixture_fails_away_from_its_fault() -> None:
+    """The failing test must not lead straight to the faulty file.
+
+    Locating the fault is the point of this fixture: its only failing assertions are in
+    the report tests, which never name the discount module, and the task describes a
+    symptom rather than a place.
+    """
+
+    fixture = next(
+        item for item in load_fixtures(FIXTURES_ROOT) if item.fixture_id == LARGE_FIXTURE
+    )
+    workspace = FIXTURES_ROOT / LARGE_FIXTURE / "workspace"
+    (fault,) = fixture.required_modified_files
+    failing_test = (workspace / "tests" / "test_monthly_report.py").read_text(encoding="utf-8")
+
+    assert fault == "storefront/pricing/discounts.py"
+    assert "discount" not in failing_test
+    assert "discount" not in fixture.task.lower()
+    assert fixture.validation.initial_output_contains in failing_test
+
+
+def test_the_large_fixture_cannot_be_fixed_without_changing_its_size(tmp_path: Path) -> None:
+    """Guard against stale bytecode, as the multi-task fixture's guard does.
+
+    CPython validates a cached ``.pyc`` by source mtime in seconds and size, so a fix
+    that kept the size and landed in the same second as the validation that cached it
+    would be invisible. The natural fixes both change the size; this applies one within
+    the same second and requires the suite to go from failing to passing.
+    """
+
+    import sys
+
+    fixture = next(
+        item for item in load_fixtures(FIXTURES_ROOT) if item.fixture_id == LARGE_FIXTURE
+    )
+    workspace = tmp_path / "w"
+    materialize_fixture(fixture, workspace)
+    source = workspace / "storefront" / "pricing" / "discounts.py"
+    before = source.stat().st_size
+    argv = [sys.executable, "-m", "unittest", "discover", "-s", "tests"]
+
+    first = subprocess.run(argv, cwd=workspace, capture_output=True, text=True, check=False)
+    source.write_bytes(
+        source.read_bytes().replace(
+            b"percent_of(line.unit_price_cents, rule.value)",
+            b"percent_of(line.subtotal_cents, rule.value)",
+        )
+    )
+    second = subprocess.run(argv, cwd=workspace, capture_output=True, text=True, check=False)
+
+    assert source.stat().st_size != before
+    assert first.returncode == 1
+    assert second.returncode == 0, second.stderr
 
 
 @pytest.mark.parametrize("unsafe_path", ["../outside.py", "/outside.py", "C:/outside.py"])
