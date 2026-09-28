@@ -44,6 +44,7 @@ from proofcoder.tools.paths import (
     create_move_path_tool,
 )
 from proofcoder.tools.registry import ToolRegistry
+from proofcoder.tools.repository import create_repository_map_tool
 from proofcoder.tools.search import create_search_text_tool
 from proofcoder.trace import TraceRecorder
 
@@ -135,6 +136,7 @@ def create_agent_runtime_resources(
     registry.register(create_list_files_tool(workspace_root))
     registry.register(create_search_text_tool(workspace_root))
     registry.register(create_read_file_tool(workspace_root))
+    registry.register(create_repository_map_tool(workspace_root))
     registry.register(create_create_file_tool(workspace_root, checkpoint_available=available))
     registry.register(create_replace_in_file_tool(workspace_root))
     registry.register(create_patch_file_tool(workspace_root))

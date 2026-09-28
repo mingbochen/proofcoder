@@ -118,17 +118,22 @@ A token budget, when set, is layered over the byte budget rather than replacing 
 
 A session adds the only data that crosses a run boundary, and it crosses in one direction only. The carry is assembled and bounded before the loop exists, is prefixed to the first user message rather than appended to the system instruction, and reaches no field of RunState. So the run that carries a session still starts with no changed files and no verification, and can reach `completed_verified` only through a command it runs itself; the earlier run's verification appears in the carried text marked expired, because that boundary is held by the empty state rather than by withholding the fact. Each carried record keeps the program's observations and the earlier run's own account of itself in separate labelled blocks: one half is program-recorded and the other is model-authored, and merged they would be indistinguishable. Trimming to the ceiling is deterministic and takes the oldest run's account first, then the oldest run entirely, so the newest conclusion survives longest.
 
-## 7. The eleven local tools
+## 7. The twelve local tools
 
-The registry exposes exactly these tools:
+The registry exposes exactly these tools, in registration order:
 
 1. [list_files](../src/proofcoder/tools/files.py) returns a sorted, bounded workspace inventory, with hidden files opt-in and sensitive/internal paths filtered.
 2. [search_text](../src/proofcoder/tools/search.py) searches safe UTF-8 candidates with bounded results. It may use a validated operator-provided ripgrep executable and falls back to a deterministic Python search when that backend is absent or fails.
 3. [read_file](../src/proofcoder/tools/files.py) returns bounded UTF-8 line ranges plus encoding/newline metadata and rejects binary, oversized, sensitive, and runtime files.
-4. [create_file](../src/proofcoder/tools/edit.py) creates one new UTF-8 file beneath an existing safe parent with create-if-absent semantics and no overwrite.
-5. [replace_in_file](../src/proofcoder/tools/edit.py) performs an exact, counted, non-overlapping replacement while preserving BOM, newline style, trailing-newline state, and mode where supported. Zero or ambiguous matches do not mutate.
-6. [run_command](../src/proofcoder/tools/command.py) executes only policy-approved argv with shell disabled, a safe cwd, a minimal environment, bounded/redacted capture, timeout, and best-effort process-tree cleanup.
-7. [finish_task](../src/proofcoder/tools/finish.py) carries the model's summary, claims, and optional blocker explanation to local completion logic. It does not run a claimed validation command or award verified status itself.
+4. [repository_map](../src/proofcoder/tools/repository.py) maps files and, for Python sources, their top-level classes, functions and class methods with line numbers. It parses with the standard library `ast`, which builds a syntax tree and executes nothing; other languages are listed by path and size, because a symbol guessed by pattern matching is worse than none. It applies the same skip rules as `list_files`, never follows a link, caps every count, and lists a file that fails to parse rather than failing the map.
+5. [create_file](../src/proofcoder/tools/edit.py) creates one UTF-8 file beneath an existing safe parent, replacing an existing regular file only with an explicit `overwrite`.
+6. [replace_in_file](../src/proofcoder/tools/edit.py) performs an exact, counted, non-overlapping replacement while preserving BOM, newline style, trailing-newline state, and mode where supported. Zero or ambiguous matches do not mutate.
+7. [patch_file](../src/proofcoder/tools/edit.py) applies several exact replacements to one file in a single atomic write, validating every edit in memory first so one bad match leaves the file untouched.
+8. [make_directory](../src/proofcoder/tools/paths.py) creates a directory and any missing parents.
+9. [delete_path](../src/proofcoder/tools/paths.py) removes one file, one empty directory, or one link, never recursively.
+10. [move_path](../src/proofcoder/tools/paths.py) renames or moves without ever overwriting its destination.
+11. [run_command](../src/proofcoder/tools/command.py) executes only policy-approved argv with shell disabled, a safe cwd, a minimal environment, bounded/redacted capture, timeout, and best-effort process-tree cleanup.
+12. [finish_task](../src/proofcoder/tools/finish.py) carries the model's summary, claims, and optional blocker explanation to local completion logic. It does not run a claimed validation command or award verified status itself.
 
 All tools return the same ToolResult envelope with ok, data, error, and metadata fields. Expected policy, validation, I/O, and process failures become structured observations. Unexpected ordinary exceptions are converted into a generic execution error without exposing a traceback to the model.
 

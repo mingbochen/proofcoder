@@ -262,6 +262,7 @@ def test_run_cli_uses_scripted_client_and_hides_reasoning(tmp_path: Path) -> Non
         "list_files",
         "search_text",
         "read_file",
+        "repository_map",
         "create_file",
         "replace_in_file",
         "patch_file",
