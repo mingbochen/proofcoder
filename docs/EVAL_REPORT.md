@@ -451,3 +451,41 @@ uv run --locked --env-file .env proofcoder eval --fixture session-two-step-repor
 ```
 
 结果产生后，应当在本报告中新增一节记录其 eval ID、日期、代码 revision、成功率和失败分析，并在 `docs/ROADMAP.md` 中把阶段 I 标记为完成。在那之前，阶段 I 的这条退出条件尚未满足。
+
+## 16. 阶段 K 新增：跨文件定位 fixture（尚无真实模型数据）
+
+本节记录 fixture 集合在阶段 K 的变化。在此之前，每个 fixture 都小到一眼就能看完：最大的 `cleanup-text-helpers` 是 4 个文件、2,093 字节。阶段 K 的退出条件要求在「明显大于现有 fixture」的仓库上完成需要跨文件定位的任务，并把「明显大于」定义为文件数至少 10 倍。
+
+| Fixture | 类别 | 文件数 | 字节数 | 必改文件 | 验证命令 |
+|---|---|---|---|---|---|
+| `storefront-monthly-revenue` | `bug_fix` | 48 | 39,421 | `storefront/pricing/discounts.py` | `python -m unittest discover -s tests` |
+
+它是一个 `storefront` 包：目录、客户、库存、订单、定价、支付、报表和工具函数八个子包，37 个源文件，10 个测试文件，加一份 README。任务只描述症状——三月的月度报表把净收入报成了 174.00 EUR，应当是 160.00 EUR——不指出任何模块。
+
+故障与表现故障的测试之间隔着三层调用：
+
+```text
+tests/test_monthly_report.py
+  -> reports/monthly.py      build_monthly_report
+  -> reports/aggregation.py  total / priced_lines
+  -> pricing/lines.py        price_line
+  -> pricing/discounts.py    discount_cents     # 百分比折扣只按一件商品计算
+```
+
+失败的测试不引用折扣模块：它通过 `PromotionBook.from_spec` 用 `{"games": "20%"}` 这样的文本配置促销。`pricing` 的单元测试只覆盖了数量为 1 的百分比折扣，所以全部通过——一个真实仓库里常见的、不完整的测试集。初始验证有 57 个测试，失败 2 个，都在报表测试里。
+
+三条离线测试把这些设计写成可以核对的断言（`tests/unit/test_eval_fixtures.py`）：
+
+- 文件数至少是其余最大 fixture 的 10 倍。
+- 失败的测试文件与任务描述都不包含 `discount`，而初始失败的锚点文本只出现在那个测试文件里。
+- 在初始验证缓存字节码的同一秒内应用修正，验证仍然从失败变为通过，且文件大小改变。两种自然的修法——按小计计算百分比，或把单件折扣乘以数量——都会改变文件大小；§15.1 记录的过期字节码陷阱因此不会出现。
+
+**这个 fixture 能说明什么、不能说明什么。** 它能检验模型是否能从一个症状出发，在一个一眼看不完的仓库里找到出错的那一处并只改那一处（改动范围只允许 `discounts.py`）。它不能说明 `repository_map` 或项目规则文件起了作用：模型也可以靠 `search_text` 或逐个读文件找到同一处，fixture 无法区分这些路径；一次成功也不能说明更大、更陌生的仓库上会同样成功。
+
+**这个 fixture 目前没有真实模型的重复运行数据。** 阶段 K 的第一条退出条件因此尚未满足。补齐需要配置真实 key 并运行：
+
+```text
+uv run --locked --env-file .env proofcoder eval --fixture storefront-monthly-revenue --repeat 3
+```
+
+结果产生后，应当在本报告中新增一节记录其 eval ID、日期、代码 revision、成功率和失败分析，并在 `docs/ROADMAP.md` 中把阶段 K 标记为完成。

@@ -63,6 +63,7 @@ future dependency, environment, configuration, or source changes remain complian
 | Cross-run sessions | `proofcoder.session` | `tests/unit/test_session.py`, `tests/unit/test_cli_session.py`, `tests/unit/test_web_session.py` | Mechanical `PASS` |
 | Project instructions | `proofcoder.project_rules` | `tests/unit/test_project_rules.py`, `tests/unit/test_trace_golden.py` | Mechanical `PASS` |
 | Multi-run evaluation fixture | `evals/fixtures/session-two-step-report` | `tests/unit/test_session.py`, `tests/unit/test_eval_runner.py` | Manual review |
+| Cross-file location fixture | `evals/fixtures/storefront-monthly-revenue` | `tests/unit/test_eval_fixtures.py`, `tests/unit/test_eval_runner.py` | Manual review |
 | Non-Python evaluation fixture | `evals/fixtures/nodejs-word-count` | `tests/unit/test_eval_core.py`, `tests/unit/test_eval_fixtures.py` | Manual review |
 | Local file tools | `proofcoder.tools.files`, `proofcoder.tools.search`, `proofcoder.tools.edit`, `proofcoder.tools.paths`, `proofcoder.tools.repository` | `tests/unit/test_read_file.py`, `tests/unit/test_search_text.py`, `tests/unit/test_edit_tools.py`, `tests/unit/test_path_tools.py`, `tests/unit/test_repository_map.py` | Mechanical `PASS`; ripgrep start manually reviewed |
 | History and context | `proofcoder.context.MessageHistory`; `proofcoder.context.ContextManager`; `proofcoder.context.TokenBudget` | `tests/unit/test_context.py`, `tests/unit/test_context_manager.py`, `tests/unit/test_token_budget.py` | Mechanical `PASS` |
@@ -293,6 +294,12 @@ into automatic passes; their manual dispositions and limitations remain distinct
   opens the file. A label constrains placement, not how the model weighs the text.
   `proofcoder run --no-project-rules` leaves it out; the browser interface and
   evaluation always read it.
+- The cross-file location fixture is a 48-file package whose only failing tests sit
+  three calls above the fault and never name it. Offline tests check its size ratio, that
+  separation, and that a fix applied in the same second as the initial validation is
+  still seen. It has no real-model repeated-run data yet, so the stage K exit criterion
+  that requires completing such a task is not met, and it cannot show which tool a model
+  used to find the fault. See `docs/EVAL_REPORT.md` section 16.
 - The tools that delete, move, or overwrite destroy content in one call. They refuse to
   run without a checkpoint and never recurse, but within the captured scope their damage
   is undone only when someone actually runs a rollback; outside it, nothing undoes it.

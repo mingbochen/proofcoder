@@ -1,0 +1,29 @@
+{
+  "allowed_modified_files": [
+    "storefront/pricing/discounts.py"
+  ],
+  "category": "bug_fix",
+  "command_policy": null,
+  "follow_up_task": null,
+  "id": "storefront-monthly-revenue",
+  "required_modified_files": [
+    "storefront/pricing/discounts.py"
+  ],
+  "schema_version": 4,
+  "task": "The monthly sales report overstates net revenue. For March 2026 the orders in the test data should net 160.00 EUR, but the report shows 174.00 EUR. Find the cause and fix it there. The tests describe the intended behavior and must not be changed.",
+  "validation": {
+    "argv": [
+      "python",
+      "-m",
+      "unittest",
+      "discover",
+      "-s",
+      "tests"
+    ],
+    "cwd": ".",
+    "initial_exit_code": 1,
+    "initial_output_contains": "monthly net revenue is wrong for 2026-03",
+    "success_exit_code": 0
+  },
+  "verify_rollback": false
+}
