@@ -25,6 +25,7 @@ from proofcoder.events import (
     new_run_id,
 )
 from proofcoder.llm.base import LLMClient
+from proofcoder.project_rules import ProjectRules, load_project_rules
 from proofcoder.prompt import STAGE_B_SYSTEM_PROMPT
 from proofcoder.protocol import CompletionStatus, RunResult, TerminationReason
 from proofcoder.retry import DEFAULT_MAX_API_ATTEMPTS
@@ -76,6 +77,7 @@ class AgentRuntimeResources:
     policy: CommandPolicy | None = None
     approval: ApprovalGate | None = None
     carry: SessionCarry | None = None
+    project_rules: ProjectRules | None = None
 
     def event_sink(self, additional_sinks: Sequence[EventSink] = ()) -> CompositeSink:
         """Combine optional presentation sinks with the mandatory local trace."""
@@ -99,6 +101,7 @@ def create_agent_runtime_resources(
     policy: CommandPolicy | None = None,
     approval: ApprovalGate | None = None,
     carry: SessionCarry | None = None,
+    project_rules_enabled: bool = True,
 ) -> AgentRuntimeResources:
     """Create one fresh tool registry, trace recorder, and run checkpoint.
 
@@ -162,6 +165,11 @@ def create_agent_runtime_resources(
         policy=policy,
         approval=gate,
         carry=carry,
+        project_rules=(
+            load_project_rules(workspace_root, sensitive_values=sensitive_values)
+            if project_rules_enabled
+            else None
+        ),
     )
 
 
@@ -196,6 +204,7 @@ def build_agent_loop(
         approval=resources.approval,
         policy=resources.policy,
         carry=resources.carry,
+        project_rules=resources.project_rules,
     )
 
 

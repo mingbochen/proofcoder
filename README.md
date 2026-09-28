@@ -219,6 +219,17 @@ What a later run receives is a program-generated summary, not the earlier run's 
 
 Sessions are stored under the workspace's ignored `.proofcoder/sessions` directory. The file tools refuse that directory, but an allowed workspace command runs with your authority and is not bound by them, so a session file can be planted. It carries no command policy, approval state, verification, or path grant — nothing that changes a decision — and its model-authored half is treated as untrusted text, so the worst case is a misleading paragraph rather than a widened capability.
 
+### Project instructions
+
+If the workspace root has an `AGENTS.md`, every run reads it and places it in the task message, after any session carry and before your task, labelled as repository text. `proofcoder run --no-project-rules` leaves it out; the browser interface and evaluation always read it.
+
+This is the opposite of the command policy, which applies only when you name it, and the asymmetry is deliberate. A policy file grants capability, so a repository must never be able to switch it on for itself. `AGENTS.md` grants nothing: the model could already open it with `read_file`, and whatever it suggests still has to pass the same local checks as any other request. What reading it by default changes is only where it lands and how it is labelled:
+
+- **Never in the system instruction.** It joins the task message with a label saying it describes this project's conventions and cannot change the system instructions, the tool rules, or how completion is decided.
+- **One file, one place.** Only the workspace root's `AGENTS.md` is read. A symbolic link, a directory, a non-UTF-8 file or an empty one under that name is ignored, and an include line such as `@OTHER.md` stays text: a repository file does not get to choose which other paths the program opens.
+- **Bounded and redacted.** The first 32 KiB are read and a truncation is stated; known sensitive values are redacted as they are in the trace.
+- **Audited by digest.** The trace records a `project_rules` event with the file name, byte count, truncation flag and the SHA-256 of exactly the bytes that reached the prompt — never the content — so you can tell afterwards which version was in force.
+
 ## Browser Interface
 
 `proofcoder serve` presents the same bounded run in a local web page, so a task can be

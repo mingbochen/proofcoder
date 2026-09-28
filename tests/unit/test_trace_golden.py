@@ -21,6 +21,7 @@ from proofcoder.approval import ApprovalGate, ApprovalMode, ApprovalOutcome
 from proofcoder.checkpoint import CheckpointCapture, ScanSkips
 from proofcoder.events import EventType
 from proofcoder.llm.scripted import ScriptedClient
+from proofcoder.project_rules import ProjectRules
 from proofcoder.protocol import FunctionCall, ModelResponse, ToolCall
 from proofcoder.session import (
     RunRecord,
@@ -260,7 +261,20 @@ def _golden_carry() -> object:
     return build_session_carry(session, context_budget_bytes=256 * 1024)
 
 
-def _run_golden_trajectory(workspace: Path) -> bytes:
+# A literal rules object keeps the golden bytes stable, as GOLDEN_CHECKPOINT does for a
+# capture. The trace records only its source, size, truncation and digest, never its text.
+GOLDEN_PROJECT_RULES = ProjectRules(
+    source="AGENTS.md",
+    text="[Project instructions from AGENTS.md]\n\nKeep helpers small.\n\n",
+    byte_count=20,
+    truncated=False,
+    digest="0" * 64,
+)
+
+
+def _run_golden_trajectory(
+    workspace: Path, *, project_rules: ProjectRules | None = GOLDEN_PROJECT_RULES
+) -> bytes:
     """Run the fixed trajectory and return the raw recorded trace bytes."""
 
     _build_workspace(workspace)
@@ -282,6 +296,7 @@ def _run_golden_trajectory(workspace: Path) -> bytes:
             checkpoint=GOLDEN_CHECKPOINT,
             approval=_golden_approval(),
             carry=_golden_carry(),
+            project_rules=project_rules,
         ).run(GOLDEN_TASK)
     finally:
         recorder.close()
@@ -316,6 +331,30 @@ def test_trace_jsonl_matches_committed_golden_bytes(tmp_path: Path) -> None:
             "trace.jsonl changed. Terminal rendering must never alter the persisted "
             f"trace; regenerate only for an intended trace change.\n{difference}"
         )
+
+
+def test_without_a_rules_file_the_trace_is_the_golden_minus_that_one_event(
+    tmp_path: Path,
+) -> None:
+    """Stage K's exit criterion: a run with no rules file records what it did before.
+
+    The golden scenario carries a rules file so that every event type stays covered.
+    Removing it must remove exactly that event and shift the sequence numbers after it;
+    any other difference would mean the rules file changed the no-rules path.
+    """
+
+    produced = [
+        json.loads(line)
+        for line in _run_golden_trajectory(tmp_path, project_rules=None).splitlines()
+    ]
+    golden = [json.loads(line) for line in GOLDEN_PATH.read_bytes().splitlines()]
+    expected = [event for event in golden if event["event_type"] != "project_rules"]
+    assert len(expected) == len(golden) - 1
+    for sequence, event in enumerate(expected, start=1):
+        event["sequence"] = sequence
+    expected[-1]["payload"]["event_count"] = len(expected)
+
+    assert produced == expected
 
 
 def test_golden_trace_covers_every_event_type_and_hides_reasoning(tmp_path: Path) -> None:

@@ -210,6 +210,14 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     run.add_argument(
+        "--no-project-rules",
+        action="store_true",
+        help=(
+            "do not read the workspace-root AGENTS.md; by default it joins the task as "
+            "labelled repository text, never the system instruction"
+        ),
+    )
+    run.add_argument(
         "--stream",
         action="store_true",
         help=(
@@ -434,6 +442,7 @@ def main(
                 policy_argument=(None if args.command_policy is None else str(args.command_policy)),
                 session_argument=(None if args.session is None else str(args.session)),
                 stream=bool(args.stream),
+                project_rules_enabled=not bool(args.no_project_rules),
             )
         except KeyboardInterrupt:
             _print(output, "DONE: termination=interrupted completion=none")
@@ -835,6 +844,7 @@ def _run_agent(
     approval_responder: ApprovalResponder | None = None,
     session_argument: str | None = None,
     stream: bool = False,
+    project_rules_enabled: bool = True,
 ) -> int:
     resolved = _resolve_workspace(workspace_argument, cwd)
     if resolved is None:
@@ -892,6 +902,7 @@ def _run_agent(
             policy=policy,
             approval=gate,
             carry=carry,
+            project_rules_enabled=project_rules_enabled,
         )
     except TracePathError as error:
         _print(
