@@ -283,6 +283,7 @@ GOLDEN_SANDBOX = SandboxState(
     tcp_restricted=True,
     scoped=True,
     reason=None,
+    sockets_restricted=True,
 )
 
 

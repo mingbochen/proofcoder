@@ -105,29 +105,46 @@ def test_a_failed_probe_is_unavailable_on_linux_and_unsupported_elsewhere(
     assert not linux.isolates and not windows.isolates
 
 
-def test_an_old_kernel_is_partial_unless_the_network_was_allowed() -> None:
-    partial = decide_sandbox(SandboxSettings(), probe=_probe(3))
-    allowed = decide_sandbox(SandboxSettings(allow_network=True), probe=_probe(3))
+def test_an_old_kernel_without_the_socket_filter_is_partial() -> None:
+    partial = decide_sandbox(SandboxSettings(), probe=_probe(3), sockets=lambda: False)
 
     assert partial.status is SandboxStatus.PARTIAL
     assert partial.isolates and not partial.satisfies_required
     assert partial.filesystem and not partial.tcp_restricted
     assert "TCP" in (partial.reason or "")
-    assert allowed.status is SandboxStatus.ENFORCED
-    assert allowed.satisfies_required
+    assert "Unix sockets" in (partial.reason or "")
+
+
+def test_the_socket_filter_restricts_tcp_where_landlock_cannot() -> None:
+    state = decide_sandbox(SandboxSettings(), probe=_probe(3), sockets=lambda: True)
+
+    assert state.status is SandboxStatus.ENFORCED
+    assert state.tcp_restricted and state.sockets_restricted
+
+
+def test_without_the_socket_filter_even_an_allowed_network_is_partial() -> None:
+    """Unix sockets are refused whether or not the network is allowed, so missing that
+    layer is a shortfall on its own."""
+
+    state = decide_sandbox(
+        SandboxSettings(allow_network=True), probe=_probe(7), sockets=lambda: False
+    )
+
+    assert state.status is SandboxStatus.PARTIAL
+    assert state.reason == "Unix sockets and UDP cannot be restricted on this architecture"
 
 
 def test_a_current_kernel_restricts_tcp_and_scopes() -> None:
-    state = decide_sandbox(SandboxSettings(), probe=_probe(7))
+    state = decide_sandbox(SandboxSettings(), probe=_probe(7), sockets=lambda: True)
 
     assert state.status is SandboxStatus.ENFORCED
     assert state.tcp_restricted and state.scoped
-    assert decide_sandbox(SandboxSettings(), probe=_probe(5)).scoped is False
+    assert decide_sandbox(SandboxSettings(), probe=_probe(5), sockets=lambda: True).scoped is False
 
 
 def test_the_payload_counts_extra_paths_and_never_lists_them() -> None:
     settings = SandboxSettings(extra_read_paths=(Path("/opt/private-toolchain"),))
-    payload = sandbox_payload(decide_sandbox(settings, probe=_probe(7)))
+    payload = sandbox_payload(decide_sandbox(settings, probe=_probe(7), sockets=lambda: True))
 
     assert payload["extra_read_paths"] == 1
     assert "private-toolchain" not in json.dumps(payload)
@@ -143,7 +160,7 @@ def test_install_root_takes_the_prefix_above_bin() -> None:
 
 
 def test_wrapped_argv_starts_isolated_and_ends_with_the_command(tmp_path: Path) -> None:
-    state = decide_sandbox(SandboxSettings(), probe=_probe(7))
+    state = decide_sandbox(SandboxSettings(), probe=_probe(7), sockets=lambda: True)
     argv = wrapped_argv(
         ("/usr/bin/git", "status"),
         workspace=tmp_path,
@@ -164,6 +181,7 @@ def test_wrapped_argv_starts_isolated_and_ends_with_the_command(tmp_path: Path) 
     assert rules["/dev/null"]["access"] == AccessClass.READ_WRITE_FILE.value
     assert config["rlimits"]["cpu"] == 35
     assert config["deny_tcp"] is True and config["scope"] is True
+    assert config["sockets"] == {"restrict": True, "deny_all": True}
 
 
 def test_wrapping_needs_a_kernel_abi(tmp_path: Path) -> None:
@@ -227,7 +245,7 @@ def test_a_wrapper_that_cannot_isolate_runs_nothing(
         return argv
 
     monkeypatch.setattr(command_module, "wrapped_argv", broken)
-    state = decide_sandbox(SandboxSettings(), probe=_probe(7))
+    state = decide_sandbox(SandboxSettings(), probe=_probe(7), sockets=lambda: True)
 
     result = _run(tmp_path, ["python", "act.py"], state)
 
@@ -491,6 +509,7 @@ def _wrapper_config(tmp_path: Path, **overrides: object) -> dict[str, object]:
         ],
         "deny_tcp": True,
         "scope": True,
+        "sockets": {"restrict": True, "deny_all": True},
         "rlimits": {"core": 0, "fsize": 1024, "nofile": 64, "cpu": 10},
     }
     config.update(overrides)
@@ -504,6 +523,11 @@ def _stub_wrapper(monkeypatch: pytest.MonkeyPatch, resource: _FakeResource) -> d
     monkeypatch.setattr(wrapper, "resource", resource)
     monkeypatch.setattr(
         wrapper, "restrict_self", lambda rules, **kwargs: restricted.update(rules=rules, **kwargs)
+    )
+    monkeypatch.setattr(
+        wrapper,
+        "install_socket_filter",
+        lambda **kwargs: restricted.update(socket_filter=kwargs),
     )
     return restricted
 
@@ -539,6 +563,8 @@ def test_the_wrapper_applies_limits_and_rules_then_execs(
     # is added last and no other process's entry is.
     assert paths == [str(tmp_path), f"/proc/{os.getpid()}"]
     assert restricted["deny_tcp"] is True and restricted["scope"] is True
+    # The socket filter goes on last, after the rules, and refuses every socket here.
+    assert restricted["socket_filter"] == {"deny_all_sockets": True}
 
 
 @pytest.mark.parametrize(
@@ -554,6 +580,9 @@ def test_the_wrapper_applies_limits_and_rules_then_execs(
         ({"abi": -1}, "abi"),
         ({"rlimits": None}, "rlimits are missing"),
         ({"rlimits": {"core": 0}}, "fsize"),
+        ({"sockets": None}, "socket settings are missing"),
+        ({"sockets": {"restrict": "yes", "deny_all": True}}, "socket settings are malformed"),
+        ({"sockets": {"restrict": False, "deny_all": True}}, "needs the socket filter"),
     ],
 )
 def test_every_malformed_wrapper_input_fails_closed(

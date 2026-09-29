@@ -20,6 +20,7 @@ from pathlib import Path
 
 from proofcoder.safety.landlock import SCOPE_ABI, TCP_ABI, AccessClass, LandlockProbe
 from proofcoder.safety.landlock import probe as probe_landlock
+from proofcoder.safety.seccomp import available as seccomp_available
 
 WRAPPER_MODULE = "proofcoder.sandbox_exec"
 # A wrapper that fails before exec exits with this code and prints the marker as the
@@ -77,6 +78,9 @@ class SandboxState:
     tcp_restricted: bool
     scoped: bool
     reason: str | None
+    # Whether the seccomp filter refuses Unix sockets (and, with the network denied,
+    # every socket). Defaulted so a state built before ADR-0011 still reads the same.
+    sockets_restricted: bool = False
 
     @property
     def isolates(self) -> bool:
@@ -95,6 +99,7 @@ def decide_sandbox(
     settings: SandboxSettings,
     *,
     probe: Callable[[], LandlockProbe] | None = None,
+    sockets: Callable[[], bool] | None = None,
 ) -> SandboxState:
     """Probe once and settle the state for a whole run."""
 
@@ -121,20 +126,26 @@ def decide_sandbox(
             reason=result.reason,
         )
     abi = result.abi
-    tcp_restricted = not settings.allow_network and abi >= TCP_ABI
-    network_short = not settings.allow_network and not tcp_restricted
+    sockets_restricted = (seccomp_available if sockets is None else sockets)()
+    # Either layer restricts TCP: Landlock from ABI 4, and the socket filter by refusing
+    # every socket when the network is denied.
+    tcp_restricted = not settings.allow_network and (abi >= TCP_ABI or sockets_restricted)
+    shortfalls: list[str] = []
+    if not settings.allow_network and not tcp_restricted:
+        shortfalls.append(
+            f"TCP cannot be restricted below Landlock ABI {TCP_ABI}; this kernel has {abi}"
+        )
+    if not sockets_restricted:
+        shortfalls.append("Unix sockets and UDP cannot be restricted on this architecture")
     return SandboxState(
         settings=settings,
-        status=SandboxStatus.PARTIAL if network_short else SandboxStatus.ENFORCED,
+        status=SandboxStatus.PARTIAL if shortfalls else SandboxStatus.ENFORCED,
         abi=abi,
         filesystem=True,
         tcp_restricted=tcp_restricted,
         scoped=abi >= SCOPE_ABI,
-        reason=(
-            f"TCP cannot be restricted below Landlock ABI {TCP_ABI}; this kernel has {abi}"
-            if network_short
-            else None
-        ),
+        reason="; ".join(shortfalls) or None,
+        sockets_restricted=sockets_restricted,
     )
 
 
@@ -147,6 +158,7 @@ def sandbox_payload(state: SandboxState) -> dict[str, object]:
         "abi": state.abi,
         "filesystem": state.filesystem,
         "tcp_restricted": state.tcp_restricted,
+        "sockets_restricted": state.sockets_restricted,
         "scoped": state.scoped,
         "extra_read_paths": len(state.settings.extra_read_paths),
         "reason": state.reason,
@@ -223,8 +235,14 @@ def wrapped_argv(
             executable=execution_argv[0],
             settings=state.settings,
         ),
-        "deny_tcp": state.tcp_restricted,
+        # Landlock's own TCP rule, where the kernel has one; the socket filter below
+        # covers TCP again, and everything else, whenever it is available.
+        "deny_tcp": not state.settings.allow_network and state.abi >= TCP_ABI,
         "scope": state.scoped,
+        "sockets": {
+            "restrict": state.sockets_restricted,
+            "deny_all": state.sockets_restricted and not state.settings.allow_network,
+        },
         "rlimits": {
             "core": 0,
             "fsize": RLIMIT_FSIZE_BYTES,
