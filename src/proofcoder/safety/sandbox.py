@@ -94,7 +94,7 @@ class SandboxState:
 def decide_sandbox(
     settings: SandboxSettings,
     *,
-    probe: Callable[[], LandlockProbe] = probe_landlock,
+    probe: Callable[[], LandlockProbe] | None = None,
 ) -> SandboxState:
     """Probe once and settle the state for a whole run."""
 
@@ -108,7 +108,7 @@ def decide_sandbox(
             scoped=False,
             reason="isolation was turned off",
         )
-    result = probe()
+    result = (probe_landlock if probe is None else probe)()
     if result.abi is None:
         unsupported = not sys.platform.startswith("linux")
         return SandboxState(

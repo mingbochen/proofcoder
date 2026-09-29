@@ -63,6 +63,14 @@
             <input type="checkbox" id="stream-toggle" />
             <span data-i18n="stream">流式输出</span>
           </label>
+          <label class="session__toggle">
+            <span data-i18n="sandbox">命令隔离</span>
+            <select class="session__select" id="sandbox-select">
+              <option value="auto" data-i18n="sandboxAuto">自动</option>
+              <option value="required" data-i18n="sandboxRequired">必须隔离</option>
+              <option value="off" data-i18n="sandboxOff">关闭</option>
+            </select>
+          </label>
         </section>
 
         <section class="history">

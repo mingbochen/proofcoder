@@ -25,6 +25,12 @@ const TEXT = {
     sessionFailed: "会话操作失败",
     streaming: "生成中",
     stream: "流式输出",
+    sandbox: "命令隔离",
+    sandboxAuto: "自动",
+    sandboxRequired: "必须隔离",
+    sandboxOff: "关闭",
+    sandboxTitle: "命令隔离",
+    sandboxNotIsolated: "本次运行的命令不在操作系统隔离中",
     checking: "正在检查…",
     runDoctor: "自检",
     theme: "主题",
@@ -151,6 +157,12 @@ const TEXT = {
     sessionFailed: "Session request failed",
     streaming: "streaming",
     stream: "Stream output",
+    sandbox: "Command isolation",
+    sandboxAuto: "Automatic",
+    sandboxRequired: "Required",
+    sandboxOff: "Off",
+    sandboxTitle: "Command isolation",
+    sandboxNotIsolated: "Commands in this run are not isolated by the operating system",
     checking: "Checking…",
     runDoctor: "Doctor",
     theme: "Theme",
@@ -298,6 +310,7 @@ const state = {
   sessions: [],
   sessionId: "",
   stream: false,
+  sandbox: "auto",
 };
 
 const el = (id) => document.getElementById(id);
@@ -325,6 +338,7 @@ function saveStore() {
         recent: state.recent.slice(0, 8),
         limits: state.limits,
         stream: state.stream,
+        sandbox: state.sandbox,
       })
     );
   } catch (error) {
@@ -763,6 +777,11 @@ function renderEvent(event) {
     return;
   }
 
+  if (type === "sandbox") {
+    body.appendChild(renderSandbox(payload));
+    return;
+  }
+
   if (type === "rollback") {
     body.appendChild(renderRollbackEvent(payload));
     return;
@@ -771,6 +790,29 @@ function renderEvent(event) {
   if (type === "termination") {
     dom.messages.appendChild(renderTermination(payload, event.run_id));
   }
+}
+
+function renderSandbox(payload) {
+  const status = String(payload.status || "unknown");
+  const isolated = status === "enforced" || status === "partial";
+  const detail = isolated ? status : `${status} · ${t("sandboxNotIsolated")}`;
+  const { card, body } = collapsibleCard(t("sandboxTitle"), detail, ICONS.check);
+  const head = card.querySelector(".card__head");
+  head.insertBefore(
+    node("span", "pill " + (status === "enforced" ? "pill--ok" : "pill--warn"), status),
+    head.querySelector(".chevron")
+  );
+  body.appendChild(
+    keyValues([
+      ["mode", payload.mode],
+      ["abi", payload.abi],
+      ["tcp_restricted", payload.tcp_restricted],
+      ["scoped", payload.scoped],
+      ["extra_read_paths", payload.extra_read_paths],
+      ["reason", payload.reason],
+    ])
+  );
+  return card;
 }
 
 function renderCheckpoint(payload) {
@@ -1260,6 +1302,7 @@ async function startRun() {
   if (state.stream) {
     request.stream = true;
   }
+  request.sandbox = state.sandbox;
   let payload;
   try {
     payload = await api("/api/runs", { method: "POST", json: request });
@@ -1631,6 +1674,7 @@ function cacheDom() {
     ["sessionNew", "session-new"],
     ["sessionNote", "session-note"],
     ["streamToggle", "stream-toggle"],
+    ["sandboxSelect", "sandbox-select"],
     ["workspaceName", "workspace-name"],
     ["workspacePath", "workspace-path"],
     ["workspaceInput", "workspace-input"],
@@ -1659,6 +1703,10 @@ function bindEvents() {
   dom.sessionNew.addEventListener("click", createSession);
   dom.streamToggle.addEventListener("change", () => {
     state.stream = dom.streamToggle.checked;
+    saveStore();
+  });
+  dom.sandboxSelect.addEventListener("change", () => {
+    state.sandbox = dom.sandboxSelect.value;
     saveStore();
   });
   dom.sendButton.addEventListener("click", startRun);
@@ -1749,10 +1797,12 @@ async function main() {
   state.recent = Array.isArray(stored.recent) ? stored.recent : [];
   state.limits = stored.limits && typeof stored.limits === "object" ? stored.limits : {};
   state.stream = stored.stream === true;
+  state.sandbox = ["auto", "required", "off"].includes(stored.sandbox) ? stored.sandbox : "auto";
   applyTheme();
   applyLanguage();
   bindEvents();
   dom.streamToggle.checked = state.stream;
+  dom.sandboxSelect.value = state.sandbox;
   autoGrowSoon();
   if (stored.workspace) {
     await setWorkspace(stored.workspace, false);

@@ -39,6 +39,7 @@ from proofcoder.llm.base import LLMClient
 from proofcoder.protocol import RunResult, TerminationReason
 from proofcoder.safety.commands import load_project_command_policy
 from proofcoder.safety.policy import CommandPolicyFileError
+from proofcoder.safety.sandbox import SandboxState
 from proofcoder.safety.secrets import sensitive_environment_values
 from proofcoder.safety.writes import (
     commit_new_file,
@@ -241,6 +242,7 @@ def create_evaluation_agent_runner(
     limits: AgentRunLimits,
     environ: Mapping[str, str] | None,
     client_factory: EvaluationClientFactory,
+    sandbox: SandboxState | None = None,
 ) -> AgentRunner:
     """Create the production runner while keeping the orchestrator provider-independent."""
 
@@ -270,6 +272,7 @@ def create_evaluation_agent_runner(
                 sensitive_values=sensitive_values,
                 policy=policy,
                 carry=carry,
+                sandbox=sandbox,
             )
         except (OSError, TracePathError, ValueError) as error:
             code = getattr(error, "code", "AGENT_SETUP_FAILED")
@@ -392,6 +395,7 @@ def run_evaluation(
     eval_id_factory: Callable[[], str] = new_run_id,
     clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     on_progress: Callable[[EvaluationProgress], None] | None = None,
+    sandbox: Mapping[str, object] | None = None,
 ) -> EvaluationSessionResult:
     """Run selected fixtures in stable order and persist every completed attempt."""
 
@@ -431,6 +435,7 @@ def run_evaluation(
         limits=limits,
         command_timeout_seconds=command_timeout_seconds,
         git_state=git_state,
+        sandbox=sandbox,
     )
     initial_aggregate = aggregate_evaluation_results(())
     initial_summary = _summary_payload(
@@ -854,8 +859,9 @@ def _metadata_payload(
     limits: AgentRunLimits,
     command_timeout_seconds: int,
     git_state: _GitState,
+    sandbox: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
-    return {
+    payload: dict[str, object] = {
         "schema_version": EVALUATION_SCHEMA_VERSION,
         "eval_id": eval_id,
         "started_at": started_at,
@@ -877,6 +883,11 @@ def _metadata_payload(
         "code": {"revision": git_state.revision, "dirty": git_state.dirty},
         "warnings": list(git_state.warnings),
     }
+    if sandbox is not None:
+        # One state for the whole evaluation, decided before the first attempt; each
+        # attempt's own trace records the same state in its sandbox event.
+        payload["sandbox"] = dict(sandbox)
+    return payload
 
 
 def _attempt_payload(

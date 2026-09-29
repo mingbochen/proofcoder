@@ -13,7 +13,7 @@ import time
 from collections import OrderedDict, deque
 from collections.abc import Callable, Mapping
 from contextlib import suppress
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from enum import StrEnum
 from hmac import compare_digest
@@ -51,6 +51,7 @@ from proofcoder.llm.base import (
 )
 from proofcoder.llm.factory import create_client
 from proofcoder.protocol import CompletionStatus, RunResult, TerminationReason
+from proofcoder.safety.sandbox import SandboxMode, SandboxSettings, SandboxState, decide_sandbox
 from proofcoder.safety.secrets import sensitive_environment_values
 from proofcoder.session import (
     SessionCarry,
@@ -147,6 +148,7 @@ class BrowserRun:
     started_at: str
     session_id: str | None = None
     stream: bool = False
+    sandbox: SandboxState | None = None
     status: BrowserRunStatus = BrowserRunStatus.RUNNING
     finished_at: str | None = None
     termination_reason: str | None = None
@@ -384,6 +386,7 @@ class BrowserRunManager:
         run_id_factory: Callable[[], str] = new_run_id,
         approval_mode: ApprovalMode = ApprovalMode.ON_RISK,
         approval_timeout_seconds: int = DEFAULT_APPROVAL_TIMEOUT_SECONDS,
+        sandbox_settings: SandboxSettings | None = None,
     ) -> None:
         if max_active_runs < 1:
             raise ValueError("max_active_runs must be at least 1")
@@ -399,6 +402,9 @@ class BrowserRunManager:
         # and is refused rather than waiting forever.
         self._approval_mode = approval_mode
         self._approval_timeout_seconds = approval_timeout_seconds
+        # Read paths and network come from the serve command line only. A page may choose
+        # the mode for one run, never what an isolated command is allowed to reach.
+        self._sandbox_settings = SandboxSettings() if sandbox_settings is None else sandbox_settings
         self._lock = threading.Lock()
         self._sessions: OrderedDict[str, BrowserRun] = OrderedDict()
         self._threads: dict[str, threading.Thread] = {}
@@ -411,6 +417,7 @@ class BrowserRunManager:
         limits: AgentRunLimits,
         session_id: str | None = None,
         stream: bool = False,
+        sandbox_mode: SandboxMode | None = None,
     ) -> BrowserRun:
         """Validate one request, register the run, and start its worker thread."""
 
@@ -443,6 +450,20 @@ class BrowserRunManager:
                     "SESSION_ENDED", "this session has ended and accepts no further runs"
                 )
 
+        settings = (
+            self._sandbox_settings
+            if sandbox_mode is None
+            else replace(self._sandbox_settings, mode=sandbox_mode)
+        )
+        # Decided here, before a run exists, so a run that required isolation it cannot
+        # have fails the request instead of failing a run the browser is already showing.
+        sandbox = decide_sandbox(settings)
+        if settings.mode is SandboxMode.REQUIRED and not sandbox.satisfies_required:
+            raise BrowserRunError(
+                "SANDBOX_UNAVAILABLE",
+                f"isolation is {sandbox.status.value}: {sandbox.reason or 'not enforced'}",
+            )
+
         session = BrowserRun(
             run_id=self._run_id_factory(),
             workspace=workspace_root,
@@ -451,6 +472,7 @@ class BrowserRunManager:
             started_at=_timestamp(),
             session_id=session_id,
             stream=stream,
+            sandbox=sandbox,
         )
         with self._lock:
             active = [
@@ -566,6 +588,7 @@ class BrowserRunManager:
                 run_id_factory=lambda: session.run_id,
                 approval=gate,
                 carry=carry,
+                sandbox=session.sandbox,
             )
         except (TracePathError, OSError, ValueError):
             _stream_termination(
