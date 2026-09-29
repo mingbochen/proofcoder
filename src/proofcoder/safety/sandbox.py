@@ -177,14 +177,17 @@ def wrapper_rules(
         {"path": str(workspace), "access": AccessClass.FULL.value, "optional": False},
         {"path": str(temporary), "access": AccessClass.FULL.value, "optional": False},
     ]
-    roots = [Path(item) for item in SYSTEM_READ_PATHS]
+    # The system paths stay literal strings: the wrapper only ever runs on Linux, and a
+    # Path would render them with this platform's separator wherever the plan is built.
     as_given = Path(executable)
-    roots.extend(dict.fromkeys([install_root(as_given), install_root(as_given.resolve())]))
-    roots.extend(settings.extra_read_paths)
+    roots = [
+        *SYSTEM_READ_PATHS,
+        str(install_root(as_given)),
+        str(install_root(as_given.resolve())),
+        *(str(path) for path in settings.extra_read_paths),
+    ]
     for root in dict.fromkeys(roots):
-        rules.append(
-            {"path": str(root), "access": AccessClass.READ_EXECUTE.value, "optional": True}
-        )
+        rules.append({"path": root, "access": AccessClass.READ_EXECUTE.value, "optional": True})
     for device in DEVICE_READ_WRITE_PATHS:
         rules.append(
             {"path": device, "access": AccessClass.READ_WRITE_FILE.value, "optional": True}
