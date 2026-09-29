@@ -14,7 +14,7 @@ import pytest
 from rich.console import Console
 
 import proofcoder.cli as cli
-from proofcoder.web.server import ServerAddressError, WebServer, create_server
+from proofcoder.web.server import DEFAULT_PORT, ServerAddressError, WebServer, create_server
 
 SENSITIVE_SENTINEL = "never-print-this-serve-value"
 
@@ -207,6 +207,60 @@ def test_serve_reports_an_unavailable_address(tmp_path: Path) -> None:
     assert "FAIL serve: ADDRESS_UNAVAILABLE" in stream.getvalue()
 
 
+def test_an_unavailable_default_port_falls_back_to_an_ephemeral_one(tmp_path: Path) -> None:
+    console, stream = _console()
+    requested: list[int] = []
+    served: list[WebServer] = []
+
+    def factory(**kwargs: object) -> WebServer:
+        port = int(kwargs["port"])  # type: ignore[call-overload]
+        requested.append(port)
+        if port == DEFAULT_PORT:
+            raise ServerAddressError("ADDRESS_UNAVAILABLE", "reserved by the system")
+        return create_server(host="127.0.0.1", port=port, environ={}, cwd=tmp_path)
+
+    code = cli._run_server(
+        host="127.0.0.1",
+        port=None,
+        workspace_argument=str(tmp_path),
+        allow_browse=True,
+        open_browser=False,
+        environ={},
+        cwd=tmp_path,
+        console=console,
+        server_factory=factory,
+        serve_forever=served.append,
+    )
+    served[0].shutdown()
+
+    assert code == 0
+    assert requested == [DEFAULT_PORT, 0]
+    assert f"WARN serve: port {DEFAULT_PORT} is unavailable" in stream.getvalue()
+    assert f"SERVE http://127.0.0.1:{served[0].port}/" in stream.getvalue()
+
+
+def test_the_fallback_can_fail_too(tmp_path: Path) -> None:
+    console, stream = _console()
+
+    def factory(**kwargs: object) -> WebServer:
+        raise ServerAddressError("ADDRESS_UNAVAILABLE", "no ports at all")
+
+    code = cli._run_server(
+        host="127.0.0.1",
+        port=None,
+        workspace_argument=None,
+        allow_browse=True,
+        open_browser=False,
+        environ={},
+        cwd=tmp_path,
+        console=console,
+        server_factory=factory,
+    )
+
+    assert code == 2
+    assert "FAIL serve: ADDRESS_UNAVAILABLE" in stream.getvalue()
+
+
 def test_serve_can_open_the_browser(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     import webbrowser
 
@@ -338,7 +392,9 @@ def test_serve_arguments_have_local_defaults() -> None:
     args = cli.build_parser().parse_args(["serve"])
 
     assert args.host == "127.0.0.1"
-    assert args.port == 8765
+    # None means the default port, which falls back when it cannot be bound; an
+    # explicit value is never replaced.
+    assert args.port is None
     assert args.workspace is None
     assert args.no_browse is False
     assert args.open is False

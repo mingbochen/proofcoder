@@ -323,8 +323,11 @@ def build_parser() -> argparse.ArgumentParser:
     serve.add_argument(
         "--port",
         type=_bounded_port,
-        default=DEFAULT_PORT,
-        help=f"TCP port, 0 for an ephemeral port (default: {DEFAULT_PORT})",
+        default=None,
+        help=(
+            f"TCP port, 0 for an ephemeral port (default: {DEFAULT_PORT}, or an ephemeral "
+            "port when that one cannot be bound; an explicit port never falls back)"
+        ),
     )
     serve.add_argument(
         "--workspace",
@@ -607,7 +610,7 @@ def main(
         try:
             return _run_server(
                 host=str(args.host),
-                port=int(args.port),
+                port=None if args.port is None else int(args.port),
                 workspace_argument=None if args.workspace is None else str(args.workspace),
                 allow_browse=not bool(args.no_browse),
                 open_browser=bool(args.open),
@@ -1137,7 +1140,7 @@ def _run_agent(
 def _run_server(
     *,
     host: str,
-    port: int,
+    port: int | None,
     workspace_argument: str | None,
     allow_browse: bool,
     open_browser: bool,
@@ -1162,16 +1165,31 @@ def _run_server(
             _print(console, "FAIL serve: workspace must be an existing directory")
             return 2
 
-    try:
-        server = server_factory(
+    def bind(requested: int) -> WebServer:
+        return server_factory(
             host=host,
-            port=port,
+            port=requested,
             environ=environ,
             cwd=cwd,
             workspace=workspace,
             allow_browse=allow_browse,
             sandbox_settings=SandboxSettings() if sandbox_settings is None else sandbox_settings,
         )
+
+    try:
+        try:
+            server = bind(DEFAULT_PORT if port is None else port)
+        except ServerAddressError:
+            if port is not None:
+                raise
+            # Only the default falls back. Windows reserves port ranges that vary by
+            # machine, so a fixed default can be unbindable through no fault of the
+            # user's; a port the user chose is never silently replaced.
+            _print(
+                console,
+                f"WARN serve: port {DEFAULT_PORT} is unavailable; using an ephemeral port",
+            )
+            server = bind(0)
     except ServerAddressError as error:
         _print(console, f"FAIL serve: {error.code} ({error})")
         return 2
