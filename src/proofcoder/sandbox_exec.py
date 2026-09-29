@@ -30,6 +30,8 @@ from proofcoder.safety.sandbox import (
     SETUP_FAILED_MARKER,
     WRAPPER_CONFIG_VERSION,
 )
+from proofcoder.safety.seccomp import SeccompError
+from proofcoder.safety.seccomp import install as install_socket_filter
 
 resource: ModuleType | None
 try:
@@ -49,7 +51,8 @@ def main(argv: Sequence[str]) -> int:
         config, command = _parse(argv)
         _apply_rlimits(config.get("rlimits"))
         _apply_landlock(config)
-    except (_SetupError, LandlockError, OSError, ValueError) as error:
+        _apply_socket_filter(config.get("sockets"))
+    except (_SetupError, LandlockError, SeccompError, OSError, ValueError) as error:
         return _fail(str(error))
     try:
         os.execv(command[0], command)
@@ -121,6 +124,20 @@ def _apply_landlock(config: dict[str, object]) -> None:
     if not isinstance(deny_tcp, bool) or not isinstance(scope, bool):
         raise _SetupError("network settings are malformed")
     restrict_self(rules, abi=abi, deny_tcp=deny_tcp, scope=scope)
+
+
+def _apply_socket_filter(value: object) -> None:
+    """Install the socket filter last: after it, nothing here needs a socket."""
+
+    if not isinstance(value, dict):
+        raise _SetupError("socket settings are missing")
+    restrict, deny_all = value.get("restrict"), value.get("deny_all")
+    if not isinstance(restrict, bool) or not isinstance(deny_all, bool):
+        raise _SetupError("socket settings are malformed")
+    if restrict:
+        install_socket_filter(deny_all_sockets=deny_all)
+    elif deny_all:
+        raise _SetupError("denying every socket needs the socket filter")
 
 
 def _integer(mapping: dict[str, object], key: str) -> int:

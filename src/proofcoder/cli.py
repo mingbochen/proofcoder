@@ -463,12 +463,12 @@ def _required_refusal(state: SandboxState) -> str | None:
 
 def _sandbox_doctor_line(state: SandboxState) -> str:
     if state.status is SandboxStatus.ENFORCED:
-        parts = ["filesystem", "TCP"] + (["scope"] if state.scoped else [])
+        parts = ["filesystem", "network", "sockets"] + (["scope"] if state.scoped else [])
         return f"PASS Sandbox: Landlock ABI {state.abi}; commands are isolated ({', '.join(parts)})"
     if state.status is SandboxStatus.PARTIAL:
         return (
-            f"WARN Sandbox: Landlock ABI {state.abi}; the filesystem is isolated but TCP cannot "
-            "be restricted on this kernel, so --sandbox required refuses to start"
+            f"WARN Sandbox: Landlock ABI {state.abi}; the filesystem is isolated but "
+            f"{state.reason}, so --sandbox required refuses to start"
         )
     return (
         f"WARN Sandbox: {state.status.value} ({state.reason}); in the default auto mode commands "

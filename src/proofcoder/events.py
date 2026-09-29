@@ -399,6 +399,7 @@ def render_sandbox_payload(payload: Mapping[str, object]) -> str:
         parts.append(f"abi={_token(payload.get('abi'))}")
     if status in {"enforced", "partial"}:
         parts.append(f"tcp={'restricted' if payload.get('tcp_restricted') else 'open'}")
+        parts.append(f"sockets={'restricted' if payload.get('sockets_restricted') else 'open'}")
         extra = payload.get("extra_read_paths")
         if type(extra) is int and extra > 0:
             parts.append(f"extra_read_paths={extra}")

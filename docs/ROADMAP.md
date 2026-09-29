@@ -5,9 +5,9 @@
 ## 当前位置
 
 - 规范版本：v3.7
-- 当前阶段：阶段 L（操作系统级隔离）。阶段 I 与阶段 K 的实现已合并，只等真实模型数据
-- 下一步：小项 L.6，在执行包装进程中实现 seccomp 套接字限制
-- 最近完成：小项 L.5，[ADR-0011](adr/0011-socket-restriction.md) 与规范 v3.7：以 seccomp 关闭 Landlock 不管辖的 Unix 套接字与 UDP 通道
+- 当前阶段：阶段 L 已完成。阶段 I、J、K 的实现已合并，只等真实模型数据；阶段 M 依赖 F–L 全部完成
+- 下一步：补齐阶段 I、J、K 的真实模型评测（需要用户在本地运行）；之后开始阶段 M。阶段 M 的退出条件要求发布到公开的包管理工具，这一步由用户执行
+- 最近完成：小项 L.6，seccomp 套接字限制：隔离中的命令不能再经 Unix 套接字或 UDP 触及宿主
 - 阻塞项：阶段 I 与阶段 K 的退出条件都需要真实模型的重复运行数据。两个 fixture 都已就绪且有离线测试，重复运行数据需要真实 key，见 [EVAL_REPORT §15 与 §16](EVAL_REPORT.md)
 
 状态取值：`已完成`、`进行中`、`未开始`、`阻塞`、`暂缓`。
@@ -25,7 +25,7 @@
 | I | 多轮会话 | 0 | 进行中 | — |
 | J | 可替换模型提供方与流式响应 | 0 | 进行中 | — |
 | K | 上下文与仓库理解 | I | 进行中 | — |
-| L | 操作系统级隔离 | G、H | 进行中 | — |
+| L | 操作系统级隔离 | G、H | 已完成 | — |
 | M | 1.0 发布 | F–L | 未开始 | 1.0.0 |
 
 各阶段的目标和退出条件见开发规范 §16，约束调整的依据见 [ADR-0003](adr/0003-v3-scope-revision.md)。
@@ -110,7 +110,13 @@
 | L.3 | 模式、一次性探测与隔离事件，命令行、浏览器界面、评测与 `doctor` 的入口 | 已完成 | [#33](https://github.com/mingbochen/proofcoder/pull/33) |
 | L.4 | 威胁模型重新评估与文档同步 | 已完成 | [#34](https://github.com/mingbochen/proofcoder/pull/34) |
 | L.5 | 阶段内 ADR 与规范补全：以 seccomp 限制隔离中的命令创建套接字（[ADR-0011](adr/0011-socket-restriction.md)、规范 v3.7） | 已完成 | [#35](https://github.com/mingbochen/proofcoder/pull/35) |
-| L.6 | seccomp 套接字限制的实现、离线测试与文档同步 | 未开始 | — |
+| L.6 | seccomp 套接字限制的实现、离线测试与文档同步 | 已完成 | [#36](https://github.com/mingbochen/proofcoder/pull/36) |
+
+退出条件复核（L.6 合并时）：
+
+- 被允许的工作区脚本不能读写工作区以外的宿主文件：`tests/unit/test_sandbox.py` 与 `tests/unit/test_seccomp.py` 在 Landlock 可用的内核上断言工作区外的读、写、列目录、读取父进程环境变量、按路径连接工作区外的 Unix 套接字都失败；这些测试在 Ubuntu CI 上实际运行而不是被跳过。
+- 隔离不可用时降级明确且默认安全：降级只在运行开始前决定并记录（`sandbox` 事件、终端提示、`doctor`），`required` 模式下运行不开始，建立失败不回退（`tests/unit/test_sandbox_entries.py`）。
+- 威胁模型已重新评估：TM-10、TM-11、TM-23、TM-33 修订，新增 TM-36 至 TM-38，TM-37 的剩余风险经实测记录（[#34](https://github.com/mingbochen/proofcoder/pull/34)）。
 
 ## 阶段 M
 

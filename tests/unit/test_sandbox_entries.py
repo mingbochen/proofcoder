@@ -50,8 +50,9 @@ def _without_landlock(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
-def _with_abi(monkeypatch: pytest.MonkeyPatch, abi: int) -> None:
+def _with_abi(monkeypatch: pytest.MonkeyPatch, abi: int, *, sockets: bool = True) -> None:
     monkeypatch.setattr(sandbox_module, "probe_landlock", lambda: LandlockProbe(abi, None))
+    monkeypatch.setattr(sandbox_module, "seccomp_available", lambda: sockets)
 
 
 def _environ(workspace: Path) -> dict[str, str]:
@@ -120,10 +121,10 @@ def test_required_refuses_before_the_provider_is_contacted(
     assert not (tmp_path / ".proofcoder" / "runs").exists()
 
 
-def test_required_refuses_a_kernel_that_cannot_restrict_tcp(
+def test_required_refuses_a_host_that_can_only_isolate_files(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _with_abi(monkeypatch, 3)
+    _with_abi(monkeypatch, 3, sockets=False)
 
     code, output, _ = _run(tmp_path, ["--sandbox", "required"])
 
@@ -212,15 +213,25 @@ def test_a_run_isolates_its_commands_by_default(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    ("abi", "expected"),
-    [(7, "PASS Sandbox: Landlock ABI 7"), (3, "WARN Sandbox: Landlock ABI 3"), (None, "WARN")],
+    ("abi", "sockets", "expected"),
+    [
+        (7, True, "PASS Sandbox: Landlock ABI 7"),
+        (3, True, "PASS Sandbox: Landlock ABI 3"),
+        (7, False, "WARN Sandbox: Landlock ABI 7"),
+        (None, True, "WARN"),
+    ],
 )
 def test_doctor_reports_what_this_host_can_isolate(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, abi: int | None, expected: str
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    abi: int | None,
+    sockets: bool,
+    expected: str,
 ) -> None:
     monkeypatch.setattr(
         sandbox_module, "probe_landlock", lambda: LandlockProbe(abi, None if abi else "off")
     )
+    monkeypatch.setattr(sandbox_module, "seccomp_available", lambda: sockets)
     stream = io.StringIO()
 
     code = cli.main(
@@ -252,7 +263,11 @@ def test_serve_rejects_a_read_path_that_does_not_exist(tmp_path: Path) -> None:
 
 def test_rendering_names_the_state_and_warns_when_nothing_is_isolated() -> None:
     enforced = render_sandbox_payload(
-        sandbox_payload(decide_sandbox(SandboxSettings(), probe=lambda: LandlockProbe(7, None)))
+        sandbox_payload(
+            decide_sandbox(
+                SandboxSettings(), probe=lambda: LandlockProbe(7, None), sockets=lambda: True
+            )
+        )
     )
     missing = render_sandbox_payload(
         sandbox_payload(
@@ -260,14 +275,18 @@ def test_rendering_names_the_state_and_warns_when_nothing_is_isolated() -> None:
         )
     )
 
-    assert enforced == "SANDBOX: status=enforced mode=auto abi=7 tcp=restricted"
+    assert enforced == (
+        "SANDBOX: status=enforced mode=auto abi=7 tcp=restricted sockets=restricted"
+    )
     assert missing.endswith('reason="disabled" (commands run without OS isolation)')
 
 
 def test_the_tool_description_only_claims_isolation_that_is_in_force(tmp_path: Path) -> None:
     isolated = create_run_command_tool(
         tmp_path,
-        sandbox=decide_sandbox(SandboxSettings(), probe=lambda: LandlockProbe(7, None)),
+        sandbox=decide_sandbox(
+            SandboxSettings(), probe=lambda: LandlockProbe(7, None), sockets=lambda: True
+        ),
     )
     unisolated = create_run_command_tool(
         tmp_path, sandbox=decide_sandbox(SandboxSettings(mode=SandboxMode.OFF))
