@@ -817,6 +817,8 @@ def test_cli_eval_records_the_isolation_state_it_ran_under(
     from proofcoder.safety.landlock import LandlockProbe
 
     monkeypatch.setattr(sandbox_module, "probe_landlock", lambda: LandlockProbe(7, None))
+    # Pinned too, so the state is the same on a host without the socket filter.
+    monkeypatch.setattr(sandbox_module, "seccomp_available", lambda: True)
     root = _project(tmp_path)
     stream = io.StringIO()
 
