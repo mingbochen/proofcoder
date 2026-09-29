@@ -4,10 +4,10 @@
 
 ## 当前位置
 
-- 规范版本：v3.6
+- 规范版本：v3.7
 - 当前阶段：阶段 L（操作系统级隔离）。阶段 I 与阶段 K 的实现已合并，只等真实模型数据
-- 下一步：阶段 L 的退出条件复核；阶段 M（1.0 发布）的拆分
-- 最近完成：小项 L.4，威胁模型重新评估（TM-36 至 TM-38），实测记录 Landlock 未覆盖的通道
+- 下一步：小项 L.6，在执行包装进程中实现 seccomp 套接字限制
+- 最近完成：小项 L.5，[ADR-0011](adr/0011-socket-restriction.md) 与规范 v3.7：以 seccomp 关闭 Landlock 不管辖的 Unix 套接字与 UDP 通道
 - 阻塞项：阶段 I 与阶段 K 的退出条件都需要真实模型的重复运行数据。两个 fixture 都已就绪且有离线测试，重复运行数据需要真实 key，见 [EVAL_REPORT §15 与 §16](EVAL_REPORT.md)
 
 状态取值：`已完成`、`进行中`、`未开始`、`阻塞`、`暂缓`。
@@ -109,6 +109,8 @@
 | L.2 | Landlock 绑定、执行包装、资源限制与私有临时目录，失败即关闭，含离线测试 | 已完成 | [#32](https://github.com/mingbochen/proofcoder/pull/32) |
 | L.3 | 模式、一次性探测与隔离事件，命令行、浏览器界面、评测与 `doctor` 的入口 | 已完成 | [#33](https://github.com/mingbochen/proofcoder/pull/33) |
 | L.4 | 威胁模型重新评估与文档同步 | 已完成 | [#34](https://github.com/mingbochen/proofcoder/pull/34) |
+| L.5 | 阶段内 ADR 与规范补全：以 seccomp 限制隔离中的命令创建套接字（[ADR-0011](adr/0011-socket-restriction.md)、规范 v3.7） | 已完成 | [#35](https://github.com/mingbochen/proofcoder/pull/35) |
+| L.6 | seccomp 套接字限制的实现、离线测试与文档同步 | 未开始 | — |
 
 ## 阶段 M
 
