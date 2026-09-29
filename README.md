@@ -295,7 +295,7 @@ on disk for `trace show`.
 | Option | Purpose |
 | --- | --- |
 | `--host` | Interface to bind; defaults to `127.0.0.1` |
-| `--port` | TCP port, `0` for an ephemeral port; defaults to `8765` |
+| `--port` | TCP port, `0` for an ephemeral port; defaults to `8765`, falling back to an ephemeral port with a warning when `8765` cannot be bound. A port you pass explicitly never falls back. |
 | `--workspace` | Directory offered as the initial workspace; defaults to the current directory |
 | `--no-browse` | Disable the directory picker so only typed workspace paths are accepted |
 | `--open` | Open the URL in the default browser after binding |

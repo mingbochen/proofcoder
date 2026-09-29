@@ -22,6 +22,7 @@ No version has been tagged yet. Planned versions and stages are tracked in the [
 
 ### Changed
 
+- `proofcoder serve` without `--port` falls back to an ephemeral loopback port, with a warning, when the default port 8765 cannot be bound. Windows reserves port ranges that vary by machine, and on some machines they include 8765, so first start used to fail until the user found `--port`. A port passed explicitly is never replaced.
 - The `nodejs-word-count` evaluation fixture: the first bundled fixture that is not a Python project. Its tests run under Node's own test runner, which the built-in command policy does not know, so the fixture ships a `proofcoder.toml` and its metadata names it. That naming is the authorization — fixture metadata is never copied into the attempt workspace, so the workspace still grants itself nothing. Both the agent's run and the independent validation use that policy. Evaluation always runs with approval mode `never`, so a fixture's validation command must be an `allow` entry.
 - The `nodejs-word-count` fixture recognizes its own failing state through a custom assertion message rather than through a line that only one of Node's test reporters prints. Node picks a reporter by version and by whether output is a terminal, so the previous anchor made the fixture refuse to run on some installations.
 - Evaluation fixture metadata moves to schema version 3: every `fixture.json` now declares `command_policy`. Existing fixtures set it to `null` and are unchanged in behavior.
