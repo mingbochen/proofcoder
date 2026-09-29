@@ -42,6 +42,7 @@ from proofcoder.project_rules import ProjectRules, project_rules_payload
 from proofcoder.protocol import ModelResponse, RunResult, TerminationReason, ToolCall
 from proofcoder.retry import DEFAULT_MAX_API_ATTEMPTS, retry_delay_seconds
 from proofcoder.safety.policy import CommandPolicy
+from proofcoder.safety.sandbox import SandboxState, sandbox_payload
 from proofcoder.safety.secrets import redact_text
 from proofcoder.session import SessionCarry, session_carry_payload
 from proofcoder.state import RunState
@@ -113,6 +114,7 @@ class AgentLoop:
         carry: SessionCarry | None = None,
         context_budget_tokens: int | None = None,
         project_rules: ProjectRules | None = None,
+        sandbox: SandboxState | None = None,
     ) -> None:
         workspace_root = workspace.resolve(strict=True)
         if not workspace_root.is_dir():
@@ -167,6 +169,9 @@ class AgentLoop:
         # Read before this loop existed, as repository text. It joins the task message
         # after the session carry and never the system instruction.
         self._project_rules = project_rules
+        # Decided before this loop existed and never re-probed: every command of the run
+        # is in this state, and the trace says which one.
+        self._sandbox = sandbox
         self._events: EventEmitter | None = None
 
     @property
@@ -201,6 +206,8 @@ class AgentLoop:
             self._emit(EventType.SESSION, state, session_carry_payload(self._carry))
         if self._project_rules is not None:
             self._emit(EventType.PROJECT_RULES, state, project_rules_payload(self._project_rules))
+        if self._sandbox is not None:
+            self._emit(EventType.SANDBOX, state, sandbox_payload(self._sandbox))
         if self._checkpoint is not None:
             self._emit(
                 EventType.CHECKPOINT,

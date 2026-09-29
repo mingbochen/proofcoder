@@ -117,14 +117,7 @@ def create_run_command_tool(
 
     return ToolDefinition(
         name="run_command",
-        description=(
-            "Run an allowlisted local test, static check, build check, workspace Python script, "
-            "or read-only Git command using argv and shell=false. Unknown, shell, network, "
-            "installer, mutation, and unsafe path forms are blocked before execution. Output is "
-            "bounded, redacted, and audited under .proofcoder. Repository scripts still execute "
-            "repository code, and timeout process-tree cleanup is best effort on every platform: "
-            "this policy reduces risk but is not an operating-system sandbox."
-        ),
+        description=_run_command_description(sandbox),
         parameters={
             "type": "object",
             "properties": {
@@ -159,6 +152,31 @@ def create_run_command_tool(
         execute=execute,
         preflight=preflight,
         risk_level=RiskLevel.EXECUTE,
+    )
+
+
+_BASE_DESCRIPTION = (
+    "Run an allowlisted local test, static check, build check, workspace Python script, "
+    "or read-only Git command using argv and shell=false. Unknown, shell, network, "
+    "installer, mutation, and unsafe path forms are blocked before execution. Output is "
+    "bounded, redacted, and audited under .proofcoder. Repository scripts still execute "
+    "repository code, and timeout process-tree cleanup is best effort on every platform"
+)
+
+
+def _run_command_description(sandbox: SandboxState | None) -> str:
+    """Describe the tool as it behaves in this run, so a refusal reads as what it is."""
+
+    if sandbox is None or not sandbox.isolates:
+        return (
+            f"{_BASE_DESCRIPTION}: this policy reduces risk but is not an operating-system sandbox."
+        )
+    network = " and TCP connections are refused" if sandbox.tcp_restricted else ""
+    return (
+        f"{_BASE_DESCRIPTION}. In this run commands are also isolated by the operating "
+        "system: outside the workspace only system paths are readable, nothing is "
+        f"writable{network}, so a permission error from a command may come from that "
+        "isolation rather than from the code under test."
     )
 
 

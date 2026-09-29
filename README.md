@@ -230,6 +230,29 @@ This is the opposite of the command policy, which applies only when you name it,
 - **Bounded and redacted.** The first 32 KiB are read and a truncation is stated; known sensitive values are redacted as they are in the trace.
 - **Audited by digest.** The trace records a `project_rules` event with the file name, byte count, truncation flag and the SHA-256 of exactly the bytes that reached the prompt — never the content — so you can tell afterwards which version was in force.
 
+### Command isolation
+
+On Linux, the commands a run starts are isolated by the kernel's Landlock by default. Nothing needs installing: ProofCoder calls Landlock directly.
+
+```text
+uv run --offline proofcoder doctor --offline
+uv run --offline --env-file .env proofcoder run --workspace ../proofcoder-demo "task"
+uv run --offline --env-file .env proofcoder run --workspace ../proofcoder-demo --sandbox required "task"
+uv run --offline --env-file .env proofcoder run --workspace ../proofcoder-demo --sandbox-read ../shared-venv "task"
+```
+
+An isolated command can read and write the workspace, and a private temporary directory that is removed when it finishes. Outside the workspace it can read only the system directories, the directory its own interpreter or tool is installed in, and whatever you add with `--sandbox-read`, and it can write nothing. It cannot read your home directory, and it cannot read any other process's `/proc` entry — which is what keeps ProofCoder's own environment, and the provider key in it, out of reach of a workspace script. On kernels that support it, TCP connections are refused unless you pass `--sandbox-network allow`, and signals to processes outside the sandbox are refused. Core dumps are disabled, and file size, open files and CPU time are capped.
+
+`--sandbox` takes three values:
+
+- `auto` (the default) isolates wherever the kernel allows. Where it cannot — Windows, macOS, or a Linux kernel without Landlock — commands run exactly as they did before isolation existed, and the run says so.
+- `required` refuses to start, before the provider is contacted, unless every restriction is in force.
+- `off` runs commands without isolation.
+
+The decision is made once, before the run starts, and every run records it: a `SANDBOX:` line at the start of the terminal output, a `sandbox` trace event, and a `sandboxed` flag on every command result. `doctor` reports what this machine can isolate. If isolation was decided and then cannot be set up for one command, that command does not run and reports `SANDBOX_SETUP_FAILED`; it never falls back to running unisolated. `eval` and `serve` take the same options, and the browser sidebar can switch the mode for one run; only the command line can add read paths or allow the network.
+
+A command that needs something outside the workspace fails under isolation with an ordinary permission error. Examples are a virtual environment kept elsewhere, a cache in your home directory, or Python multiprocessing, which needs `/dev/shm`. Add the path with `--sandbox-read`, or use `--sandbox off` for that run. Isolation does not cover UDP, connections to Unix sockets by path, memory use, or the number of processes. The workspace's own `.proofcoder` directory remains writable, because Landlock can only allow, never carve an exception out of an allowed directory.
+
 ## Browser Interface
 
 `proofcoder serve` presents the same bounded run in a local web page, so a task can be
@@ -391,7 +414,7 @@ The lock check and dependency synchronization are separate from offline validati
 
 ## Security Boundaries
 
-- ProofCoder enforces an application policy, not an OS or kernel sandbox.
+- ProofCoder enforces an application policy. On Linux with Landlock, commands are additionally restricted by the kernel as described under Command isolation. With `--sandbox off`, on Windows and macOS, and on kernels without Landlock, there is no OS or kernel sandbox, and even where there is one it does not cover UDP, Unix sockets reached by path, memory, or process counts.
 - The command decision has three values. Most commands are allowed or refused outright; Git's local write subcommands are classified as needing confirmation. `proofcoder run --approval on-risk` asks at the terminal and the browser interface asks on the page; the default, `never`, refuses them without asking, which is also what evaluation uses. Git's network subcommands and `git config` are never confirmable: the first move repository content past anything a rollback reaches, and the second can set `core.hooksPath` or an alias that turns a later ordinary Git command into arbitrary execution.
 - A project may extend the default-deny command set through a policy file, but that file is repository content and never authorizes itself: it applies only when `proofcoder run --command-policy <path>` names it, is frozen for the run once read, may not redeclare any executable the built-in policy already decides, and is refused by every write tool at any path named `proofcoder.toml`.
 - The optional browser interface adds a local HTTP surface. Its loopback bind, session token, and Host/Origin checks are access controls on that surface, not isolation of the underlying file and command authority.

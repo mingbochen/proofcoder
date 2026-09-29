@@ -32,6 +32,7 @@ from proofcoder.rollback import (
     perform_rollback,
     plan_digest,
 )
+from proofcoder.safety.sandbox import SandboxMode
 from proofcoder.safety.secrets import sensitive_environment_values
 from proofcoder.session import (
     Session,
@@ -397,12 +398,19 @@ class ApiRouter:
         stream = request.body.get("stream")
         if stream is not None and not isinstance(stream, bool):
             return error_response(400, "INVALID_STREAM", "stream must be a boolean")
+        sandbox_value = request.body.get("sandbox")
+        modes = {mode.value for mode in SandboxMode}
+        if sandbox_value is not None and sandbox_value not in modes:
+            return error_response(
+                400, "INVALID_SANDBOX", f"sandbox must be one of {', '.join(sorted(modes))}"
+            )
         session = self._sessions.start(
             workspace=self._absolute(workspace_value.strip()),
             task=task,
             limits=limits,
             session_id=None if session_value in (None, "") else str(session_value),
             stream=bool(stream),
+            sandbox_mode=None if sandbox_value is None else SandboxMode(str(sandbox_value)),
         )
         return ApiResponse(201, {"run": session.summary().to_dict()})
 

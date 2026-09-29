@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import ClassVar
 from urllib.parse import parse_qs, unquote, urlsplit
 
+from proofcoder.safety.sandbox import SandboxSettings
 from proofcoder.web.api import (
     ApiRequest,
     ApiResponse,
@@ -145,15 +146,20 @@ def create_server(
     token: str | None = None,
     allow_browse: bool = True,
     request_logger: Callable[[str], None] | None = None,
+    sandbox_settings: SandboxSettings | None = None,
 ) -> WebServer:
     """Bind one local server and wire it to a fresh session manager and router."""
 
     manager = sessions
     if manager is None:
         manager = (
-            BrowserRunManager(environ=environ)
+            BrowserRunManager(environ=environ, sandbox_settings=sandbox_settings)
             if client_factory is None
-            else BrowserRunManager(environ=environ, client_factory=client_factory)
+            else BrowserRunManager(
+                environ=environ,
+                client_factory=client_factory,
+                sandbox_settings=sandbox_settings,
+            )
         )
     router_kwargs: dict[str, object] = {
         "sessions": manager,

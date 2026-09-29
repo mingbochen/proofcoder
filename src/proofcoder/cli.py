@@ -54,7 +54,7 @@ from proofcoder.eval_runner import (
     create_evaluation_agent_runner,
     run_evaluation,
 )
-from proofcoder.events import TerminalSink
+from proofcoder.events import TerminalSink, render_sandbox_payload
 from proofcoder.llm.base import (
     LLMClient,
     StreamingClient,
@@ -72,6 +72,14 @@ from proofcoder.safety.policy import (
     CommandPolicyFileError,
     unloaded_policy_warning,
     workspace_policy_path,
+)
+from proofcoder.safety.sandbox import (
+    SandboxMode,
+    SandboxSettings,
+    SandboxState,
+    SandboxStatus,
+    decide_sandbox,
+    sandbox_payload,
 )
 from proofcoder.safety.secrets import redact_text, sensitive_environment_values
 from proofcoder.session import (
@@ -233,6 +241,7 @@ def build_parser() -> argparse.ArgumentParser:
             "reads and writes no session data"
         ),
     )
+    _add_sandbox_arguments(run)
     run.add_argument("task", help="task for the local coding agent loop")
     evaluate = commands.add_parser(
         "eval",
@@ -297,6 +306,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_MAX_API_ATTEMPTS,
         help=f"API attempts per model response, 1-{DEFAULT_MAX_API_ATTEMPTS}",
     )
+    _add_sandbox_arguments(evaluate)
     serve = commands.add_parser(
         "serve",
         help="serve the local browser interface for the agent loop",
@@ -331,6 +341,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="open the interface in the default browser after binding",
     )
+    _add_sandbox_arguments(serve)
     rollback = commands.add_parser(
         "rollback",
         help="inspect run checkpoints and undo one run's workspace changes",
@@ -394,6 +405,77 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _add_sandbox_arguments(parser: argparse.ArgumentParser) -> None:
+    """Add the isolation options. They come from the command line and nowhere else."""
+
+    parser.add_argument(
+        "--sandbox",
+        choices=[mode.value for mode in SandboxMode],
+        default=SandboxMode.AUTO.value,
+        help=(
+            "isolate commands with Linux Landlock: 'auto' isolates where the kernel allows "
+            "and says so when it cannot, 'required' refuses to start without full "
+            "isolation, 'off' runs commands as before (default: auto)"
+        ),
+    )
+    parser.add_argument(
+        "--sandbox-read",
+        action="append",
+        default=[],
+        metavar="PATH",
+        help=(
+            "let isolated commands read and execute this path outside the workspace, "
+            "for example a virtual environment kept elsewhere; repeat for several paths"
+        ),
+    )
+    parser.add_argument(
+        "--sandbox-network",
+        choices=["deny", "allow"],
+        default="deny",
+        help="whether isolated commands may open TCP connections (default: deny)",
+    )
+
+
+def _sandbox_settings(args: argparse.Namespace, cwd: Path) -> SandboxSettings:
+    """Build the run's isolation settings, rejecting a read path that does not exist."""
+
+    paths: list[Path] = []
+    for raw in args.sandbox_read:
+        candidate = Path(str(raw))
+        candidate = candidate if candidate.is_absolute() else cwd / candidate
+        if not candidate.exists():
+            raise ValueError(f"--sandbox-read path does not exist: {raw}")
+        paths.append(candidate.resolve())
+    return SandboxSettings(
+        mode=SandboxMode(str(args.sandbox)),
+        extra_read_paths=tuple(dict.fromkeys(paths)),
+        allow_network=str(args.sandbox_network) == "allow",
+    )
+
+
+def _required_refusal(state: SandboxState) -> str | None:
+    """Explain why a run in required mode may not start, or return None."""
+
+    if state.settings.mode is not SandboxMode.REQUIRED or state.satisfies_required:
+        return None
+    return f"isolation is {state.status.value}: {state.reason or 'not enforced'}"
+
+
+def _sandbox_doctor_line(state: SandboxState) -> str:
+    if state.status is SandboxStatus.ENFORCED:
+        parts = ["filesystem", "TCP"] + (["scope"] if state.scoped else [])
+        return f"PASS Sandbox: Landlock ABI {state.abi}; commands are isolated ({', '.join(parts)})"
+    if state.status is SandboxStatus.PARTIAL:
+        return (
+            f"WARN Sandbox: Landlock ABI {state.abi}; the filesystem is isolated but TCP cannot "
+            "be restricted on this kernel, so --sandbox required refuses to start"
+        )
+    return (
+        f"WARN Sandbox: {state.status.value} ({state.reason}); in the default auto mode commands "
+        "run without OS isolation, and --sandbox required refuses to start"
+    )
+
+
 def main(
     argv: Sequence[str] | None = None,
     *,
@@ -422,6 +504,15 @@ def main(
         )
     if args.command == "run":
         try:
+            sandbox_settings = _sandbox_settings(args, base_cwd)
+        except ValueError as error:
+            _print(
+                output,
+                "DONE: termination=configuration_error completion=none\n"
+                f"  error_code=SANDBOX_PATH_INVALID\n  {error}",
+            )
+            return 1
+        try:
             return _run_agent(
                 task=str(args.task),
                 workspace_argument=str(args.workspace),
@@ -443,6 +534,7 @@ def main(
                 session_argument=(None if args.session is None else str(args.session)),
                 stream=bool(args.stream),
                 project_rules_enabled=not bool(args.no_project_rules),
+                sandbox_settings=sandbox_settings,
             )
         except KeyboardInterrupt:
             _print(output, "DONE: termination=interrupted completion=none")
@@ -457,6 +549,16 @@ def main(
         )
         sensitive_values = sensitive_environment_values(environ)
         try:
+            eval_sandbox = decide_sandbox(_sandbox_settings(args, base_cwd))
+        except ValueError as error:
+            _print(output, f"FAIL eval: SANDBOX_PATH_INVALID ({error})")
+            return 2
+        eval_refusal = _required_refusal(eval_sandbox)
+        if eval_refusal is not None:
+            _print(output, f"FAIL eval: SANDBOX_UNAVAILABLE ({eval_refusal})")
+            return 2
+        _print(output, render_sandbox_payload(sandbox_payload(eval_sandbox)))
+        try:
             config = ProofCoderConfig.from_env(environ=environ)
             runner = (
                 eval_agent_runner
@@ -466,6 +568,7 @@ def main(
                     limits=limits,
                     environ=environ,
                     client_factory=eval_client_factory,
+                    sandbox=eval_sandbox,
                 )
             )
             session = run_evaluation(
@@ -483,6 +586,7 @@ def main(
                 limits=limits,
                 environ=environ,
                 on_progress=lambda progress: _render_eval_progress(output, progress),
+                sandbox=sandbox_payload(eval_sandbox),
             )
         except ConfigurationError:
             _print(output, "FAIL eval: CONFIGURATION_ERROR (check model environment)")
@@ -496,6 +600,11 @@ def main(
         return session.exit_code
     if args.command == "serve":
         try:
+            serve_sandbox = _sandbox_settings(args, base_cwd)
+        except ValueError as error:
+            _print(output, f"FAIL serve: SANDBOX_PATH_INVALID ({error})")
+            return 2
+        try:
             return _run_server(
                 host=str(args.host),
                 port=int(args.port),
@@ -506,6 +615,7 @@ def main(
                 cwd=base_cwd,
                 console=output,
                 serve_forever=serve_forever,
+                sandbox_settings=serve_sandbox,
             )
         except KeyboardInterrupt:
             _print(output, "SERVE stopped")
@@ -637,6 +747,9 @@ def _run_doctor(
     for check in checks:
         status = "PASS" if check.ok else "FAIL"
         _safe_print(console, f"{status} {check.name}: {check.detail}", secret)
+    # A warning, not a failure: without Landlock the default mode still runs commands,
+    # exactly as before, and says so on every run.
+    _print(console, _sandbox_doctor_line(decide_sandbox(SandboxSettings())))
 
     _safe_print(console, f"Configuration provider: {config.provider.value}", secret)
     _safe_print(console, f"Configuration base URL: {config.base_url}", secret)
@@ -845,6 +958,7 @@ def _run_agent(
     session_argument: str | None = None,
     stream: bool = False,
     project_rules_enabled: bool = True,
+    sandbox_settings: SandboxSettings | None = None,
 ) -> int:
     resolved = _resolve_workspace(workspace_argument, cwd)
     if resolved is None:
@@ -887,6 +1001,17 @@ def _run_agent(
                 f"  error_code={error.code}\n  {error}",
             )
             return 1
+    # Decided once, before anything is created: every command of this run is in this
+    # state, and a run that asked for isolation it cannot have never reaches a provider.
+    sandbox = decide_sandbox(SandboxSettings() if sandbox_settings is None else sandbox_settings)
+    refusal = _required_refusal(sandbox)
+    if refusal is not None:
+        _print(
+            console,
+            "DONE: termination=configuration_error completion=none\n"
+            f"  error_code=SANDBOX_UNAVAILABLE\n  {refusal}",
+        )
+        return 1
     gate = ApprovalGate(
         mode=approval_mode,
         responder=_terminal_responder(console)
@@ -903,6 +1028,7 @@ def _run_agent(
             approval=gate,
             carry=carry,
             project_rules_enabled=project_rules_enabled,
+            sandbox=sandbox,
         )
     except TracePathError as error:
         _print(
@@ -1020,6 +1146,7 @@ def _run_server(
     console: Console,
     server_factory: Callable[..., WebServer] = create_server,
     serve_forever: Callable[[WebServer], None] | None = None,
+    sandbox_settings: SandboxSettings | None = None,
 ) -> int:
     """Bind the local interface, report its address, and serve until interrupted."""
 
@@ -1043,6 +1170,7 @@ def _run_server(
             cwd=cwd,
             workspace=workspace,
             allow_browse=allow_browse,
+            sandbox_settings=SandboxSettings() if sandbox_settings is None else sandbox_settings,
         )
     except ServerAddressError as error:
         _print(console, f"FAIL serve: {error.code} ({error})")

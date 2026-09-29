@@ -71,6 +71,7 @@ class EventType(StrEnum):
     APPROVAL = "approval"
     SESSION = "session"
     PROJECT_RULES = "project_rules"
+    SANDBOX = "sandbox"
     WARNING = "warning"
     COMPLETION = "completion"
     TERMINATION = "termination"
@@ -376,6 +377,8 @@ def render_terminal_event(event: RunEvent) -> str | None:
         return _render_rollback(payload)
     if event.event_type is EventType.APPROVAL:
         return _render_approval(payload)
+    if event.event_type is EventType.SANDBOX:
+        return render_sandbox_payload(payload)
     if event.event_type is EventType.WARNING:
         message = payload.get("message")
         detail = "" if not message else f" ({message})"
@@ -385,6 +388,26 @@ def render_terminal_event(event: RunEvent) -> str | None:
     if event.event_type is EventType.TERMINATION:
         return _render_termination(event)
     return None
+
+
+def render_sandbox_payload(payload: Mapping[str, object]) -> str:
+    """Render the run's isolation state, saying plainly when commands are not isolated."""
+
+    status = payload.get("status")
+    parts = [f"SANDBOX: status={_token(status)}", f"mode={_token(payload.get('mode'))}"]
+    if payload.get("abi") is not None:
+        parts.append(f"abi={_token(payload.get('abi'))}")
+    if status in {"enforced", "partial"}:
+        parts.append(f"tcp={'restricted' if payload.get('tcp_restricted') else 'open'}")
+        extra = payload.get("extra_read_paths")
+        if type(extra) is int and extra > 0:
+            parts.append(f"extra_read_paths={extra}")
+    reason = payload.get("reason")
+    if isinstance(reason, str) and reason:
+        parts.append(f"reason={json.dumps(reason, ensure_ascii=False)}")
+    if status not in {"enforced", "partial"}:
+        parts.append("(commands run without OS isolation)")
+    return " ".join(parts)
 
 
 def _render_checkpoint(payload: Mapping[str, object]) -> str:

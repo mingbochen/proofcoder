@@ -784,6 +784,58 @@ def test_cli_eval_redacts_sensitive_values_and_uses_compact_output(tmp_path: Pat
     assert "Ran 2 tests" not in persisted
 
 
+def test_cli_eval_required_isolation_refuses_before_any_attempt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import proofcoder.safety.sandbox as sandbox_module
+    from proofcoder.safety.landlock import LandlockProbe
+
+    monkeypatch.setattr(
+        sandbox_module, "probe_landlock", lambda: LandlockProbe(None, "disabled at boot")
+    )
+    root = _project(tmp_path)
+    calls: list[tuple[str, Path]] = []
+    stream = io.StringIO()
+
+    code = cli.main(
+        ["eval", "--repeat", "1", "--fixture", "bugfix-inclusive-total", "--sandbox", "required"],
+        environ=_environment(root),
+        cwd=root,
+        console=Console(file=stream, force_terminal=False, color_system=None, width=240),
+        eval_agent_runner=_successful_runner(calls),
+    )
+
+    assert code == 2
+    assert "FAIL eval: SANDBOX_UNAVAILABLE" in stream.getvalue()
+    assert calls == []
+
+
+def test_cli_eval_records_the_isolation_state_it_ran_under(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import proofcoder.safety.sandbox as sandbox_module
+    from proofcoder.safety.landlock import LandlockProbe
+
+    monkeypatch.setattr(sandbox_module, "probe_landlock", lambda: LandlockProbe(7, None))
+    root = _project(tmp_path)
+    stream = io.StringIO()
+
+    code = cli.main(
+        ["eval", "--repeat", "1", "--fixture", "bugfix-inclusive-total", "--output-root", "o"],
+        environ=_environment(root),
+        cwd=root,
+        console=Console(file=stream, force_terminal=False, color_system=None, width=240),
+        eval_agent_runner=_successful_runner([]),
+    )
+
+    assert code == 0
+    assert "SANDBOX: status=enforced mode=auto abi=7" in stream.getvalue()
+    evaluation = next((root / "o").iterdir())
+    metadata = json.loads((evaluation / "metadata.json").read_text(encoding="utf-8"))
+    assert metadata["sandbox"]["status"] == "enforced"
+    assert metadata["sandbox"]["mode"] == "auto"
+
+
 def test_cli_eval_mixed_results_continue_and_return_one(tmp_path: Path) -> None:
     root = _project(tmp_path)
     calls: list[tuple[str, Path]] = []

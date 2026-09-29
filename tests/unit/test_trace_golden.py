@@ -23,6 +23,7 @@ from proofcoder.events import EventType
 from proofcoder.llm.scripted import ScriptedClient
 from proofcoder.project_rules import ProjectRules
 from proofcoder.protocol import FunctionCall, ModelResponse, ToolCall
+from proofcoder.safety.sandbox import SandboxSettings, SandboxState, SandboxStatus
 from proofcoder.session import (
     RunRecord,
     Session,
@@ -272,6 +273,19 @@ GOLDEN_PROJECT_RULES = ProjectRules(
 )
 
 
+# A literal state keeps the golden bytes independent of the kernel that runs the test.
+# Only the event is exercised here; the golden registry's commands run unwrapped.
+GOLDEN_SANDBOX = SandboxState(
+    settings=SandboxSettings(),
+    status=SandboxStatus.ENFORCED,
+    abi=7,
+    filesystem=True,
+    tcp_restricted=True,
+    scoped=True,
+    reason=None,
+)
+
+
 def _run_golden_trajectory(
     workspace: Path, *, project_rules: ProjectRules | None = GOLDEN_PROJECT_RULES
 ) -> bytes:
@@ -297,6 +311,7 @@ def _run_golden_trajectory(
             approval=_golden_approval(),
             carry=_golden_carry(),
             project_rules=project_rules,
+            sandbox=GOLDEN_SANDBOX,
         ).run(GOLDEN_TASK)
     finally:
         recorder.close()
