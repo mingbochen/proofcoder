@@ -239,9 +239,16 @@ into automatic passes; their manual dispositions and limitations remain distinct
 
 ## 11. Security Boundaries and Limitations
 
-- ProofCoder's command policy constrains model-selected commands but does not provide
-  kernel isolation. Allowed workspace Python scripts execute with the current user's
-  OS permissions.
+- ProofCoder's command policy constrains model-selected commands. On Linux with
+  Landlock, commands additionally run under a kernel restriction by default: outside
+  the workspace only listed read-only paths are reachable, nothing is writable, and no
+  other process's `/proc` entry is readable. Tests prove this, and they run on the
+  Ubuntu CI runner. The restriction does not cover connections to Unix sockets by
+  path, UDP, memory or process counts, the workspace runtime directory, or `/etc`
+  reads. A reachable Docker socket or D-Bus session bus therefore lets a script act
+  outside it. On Windows, macOS, kernels without Landlock, and under `--sandbox off`,
+  allowed workspace scripts still execute with the current user's full OS
+  permissions. See `docs/THREAT_MODEL.md` TM-36 to TM-38.
 - The `rollback-word-wrap` and `cleanup-text-helpers` evaluation fixtures now have both
   offline coverage and real-model repeated-run data: evaluation
   `812e545045eb4f9ab3fa51ae2e109d7e` recorded 6 of 6 successful attempts with no

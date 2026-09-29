@@ -6,8 +6,8 @@
 
 - 规范版本：v3.6
 - 当前阶段：阶段 L（操作系统级隔离）。阶段 I 与阶段 K 的实现已合并，只等真实模型数据
-- 下一步：小项 L.4，威胁模型重新评估与文档同步
-- 最近完成：小项 L.3，`--sandbox auto|required|off` 与隔离事件；Linux 上命令默认在 Landlock 隔离中运行
+- 下一步：阶段 L 的退出条件复核；阶段 M（1.0 发布）的拆分
+- 最近完成：小项 L.4，威胁模型重新评估（TM-36 至 TM-38），实测记录 Landlock 未覆盖的通道
 - 阻塞项：阶段 I 与阶段 K 的退出条件都需要真实模型的重复运行数据。两个 fixture 都已就绪且有离线测试，重复运行数据需要真实 key，见 [EVAL_REPORT §15 与 §16](EVAL_REPORT.md)
 
 状态取值：`已完成`、`进行中`、`未开始`、`阻塞`、`暂缓`。
@@ -108,7 +108,7 @@
 | L.1 | 阶段 ADR 与规范补全：Landlock、执行包装进程、文件系统与网络规则、资源限制、模式与降级（[ADR-0010](adr/0010-os-level-command-isolation.md)、规范 §10.7 与 §13.8） | 已完成 | [#31](https://github.com/mingbochen/proofcoder/pull/31) |
 | L.2 | Landlock 绑定、执行包装、资源限制与私有临时目录，失败即关闭，含离线测试 | 已完成 | [#32](https://github.com/mingbochen/proofcoder/pull/32) |
 | L.3 | 模式、一次性探测与隔离事件，命令行、浏览器界面、评测与 `doctor` 的入口 | 已完成 | [#33](https://github.com/mingbochen/proofcoder/pull/33) |
-| L.4 | 威胁模型重新评估与文档同步 | 未开始 | — |
+| L.4 | 威胁模型重新评估与文档同步 | 已完成 | [#34](https://github.com/mingbochen/proofcoder/pull/34) |
 
 ## 阶段 M
 
