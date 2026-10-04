@@ -418,7 +418,7 @@ uv run --locked --env-file .env proofcoder eval --fixture nodejs-word-count --re
 
 ---
 
-## 15. 阶段 I 新增：多轮会话 fixture（尚无真实模型数据）
+## 15. 阶段 I 新增：多轮会话 fixture
 
 本节记录 fixture 集合在阶段 I 的变化，与第 14 节那次评测无关——那次评测运行时第七个 fixture 还不存在。
 
@@ -444,15 +444,15 @@ uv run --locked --env-file .env proofcoder eval --fixture nodejs-word-count --re
 
 `python -B` 能从根上消除这个问题，但内置命令策略只允许 `python` 以 `-m` 或工作区 `.py` 脚本开头，放开 `-B` 属于命令策略变更，需要单独的 ADR。
 
-**这个 fixture 目前没有真实模型的重复运行数据。** 阶段 I 的能力（跨运行会话、携带摘要、证据不继承）同样如此。补齐需要配置真实 key 并运行：
+这个 fixture 的真实模型重复运行数据现已记录在第 17 节。可复现命令为：
 
 ```text
 uv run --locked --env-file .env proofcoder eval --fixture session-two-step-report --repeat 3
 ```
 
-结果产生后，应当在本报告中新增一节记录其 eval ID、日期、代码 revision、成功率和失败分析，并在 `docs/ROADMAP.md` 中把阶段 I 标记为完成。在那之前，阶段 I 的这条退出条件尚未满足。
+第 17 节核对了三个 attempt 的六份运行轨迹、会话携带事件与每次运行重新取得的验证。证据不跨运行继承的反向情形仍由离线行为测试固定。
 
-## 16. 阶段 K 新增：跨文件定位 fixture（尚无真实模型数据）
+## 16. 阶段 K 新增：跨文件定位 fixture（真实模型结果待归档）
 
 本节记录 fixture 集合在阶段 K 的变化。在此之前，每个 fixture 都小到一眼就能看完：最大的 `cleanup-text-helpers` 是 4 个文件、2,093 字节。阶段 K 的退出条件要求在「明显大于现有 fixture」的仓库上完成需要跨文件定位的任务，并把「明显大于」定义为文件数至少 10 倍。
 
@@ -482,10 +482,75 @@ tests/test_monthly_report.py
 
 **这个 fixture 能说明什么、不能说明什么。** 它能检验模型是否能从一个症状出发，在一个一眼看不完的仓库里找到出错的那一处并只改那一处（改动范围只允许 `discounts.py`）。它不能说明 `repository_map` 或项目规则文件起了作用：模型也可以靠 `search_text` 或逐个读文件找到同一处，fixture 无法区分这些路径；一次成功也不能说明更大、更陌生的仓库上会同样成功。
 
-**这个 fixture 目前没有真实模型的重复运行数据。** 阶段 K 的第一条退出条件因此尚未满足。补齐需要配置真实 key 并运行：
+2026-10-04 已在本机找到这个 fixture 的评测产物 `32e96d7fcad34ac58fe7f1defdf9856d`。完整轨迹复核、失败分析与正式结果归档属于小项 K.5，尚未完成；本次 I.4 归档不把阶段 K 标为完成。需要再次运行时，可使用：
 
 ```text
 uv run --locked --env-file .env proofcoder eval --fixture storefront-monthly-revenue --repeat 3
 ```
 
-结果产生后，应当在本报告中新增一节记录其 eval ID、日期、代码 revision、成功率和失败分析，并在 `docs/ROADMAP.md` 中把阶段 K 标记为完成。
+复核完成后，应当在本报告中新增一节记录其 eval ID、日期、代码 revision、成功率和失败分析，再按退出条件更新 `docs/ROADMAP.md` 中阶段 K 的状态。
+
+---
+
+## 17. 阶段 I 多轮会话 fixture 的真实模型结果（2026-09-29）
+
+本节补齐第 15 节的重复运行数据。评测由用户在本机运行，2026-10-04 复核并归档；复核只读取已有产物，没有再次调用模型。来源为 `.proofcoder/evals/430e7c59b18a4fa5a3e74bea470a03f4/` 下的 `metadata.json`、`summary.json`、`attempts.jsonl`，以及各 attempt 工作区中的六份 `trace.jsonl` 和首次运行的检查点清单。
+
+### 17.1 可复现配置
+
+| 配置项 | 值 |
+|---|---|
+| Eval ID | `430e7c59b18a4fa5a3e74bea470a03f4` |
+| UTC 开始时间 | `2026-09-29T07:04:26.323935Z` |
+| UTC 完成时间 | `2026-09-29T07:05:00.019463Z` |
+| 代码 revision | `057f6cb4c32bbd79533bc461bc999b109ba741f4` |
+| `code.dirty` | `true`（见 17.4） |
+| 模型 / API base URL | `deepseek-v4-flash` / `https://api.deepseek.com` |
+| reasoning effort | `high` |
+| Fixture / 每项重复次数 | `session-two-step-report` / 3 |
+| 每次运行的最大模型步数 / 最大时间 | 8 / 600 秒 |
+| context budget | 262144 bytes |
+| 最大连续失败批次 / 最大 API attempts | 5 / 3 |
+| 独立验证超时 | 60 秒 |
+| 命令隔离 | `auto`，`unsupported`，原因 `not Linux` |
+| `metadata.warnings` | 空 |
+
+复现入口见第 15 节的命令。每个 attempt 是同一工作区、同一会话中的两次运行，8 步上限分别作用于每次运行，不是整个任务序列。命令隔离元数据明确记录文件系统、TCP、套接字创建与作用域限制均未生效；这组 Windows 数据不提供 Linux 隔离效果的证据。
+
+### 17.2 结果与失败分析
+
+下表来自 `summary.json`。统计是两次运行之和，三个 attempt 共六次运行；API retries 为 0，API attempts 与 model calls 相同。
+
+| Fixture | Attempts | Successes | Success rate | Model calls | Tool calls | API retries | Tool errors | Context compactions | Input tokens | Output tokens | Elapsed (s) |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| `session-two-step-report` | 3 | 3 | 100% | 30 | 38 | 0 | 0 | 0 | 136476 | 3845 | 31.345 |
+
+`summary.status` 为 `completed`，预期和实际记录的 attempt 数均为 3，`failure_reason_counts` 为空。三个 attempt 的完成状态均为 `completed_verified`，终止原因为 `finish_task`。每次独立初始验证退出码为 1，最终退出码为 0，命令均为 `python -m unittest discover -s tests`。三次都只改动 `report.py`，没有新增或删除任务文件，`unexpected` 与 `missing_required` 均为空，且未改动测试。
+
+没有失败 attempt，因此没有针对这组数据修改工具、提示词或预算。3/3 是本次观测值；它不能推出一般任务的成功率。
+
+### 17.3 会话与新验证的轨迹证据
+
+使用仓库的 `read_trace` 重新解析全部六份轨迹：均为完整轨迹，诊断列表为空。按会话携带事件识别前后两次运行，三组结果如下。
+
+| Attempt | 首次 run ID | 后续 run ID | 后续携带字节数 |
+|---|---|---|---:|
+| 1 | `cec7486edfb7464cabb9b7d5cf8ad2b9` | `e36aa6aeb7844838b5447c26b8845d29` | 1352 |
+| 2 | `53ac8883c9604f6bbffaf1ac68935772` | `0cd686f346ae48f6a3e358019ce81dda` | 1388 |
+| 3 | `c7980715df594b499db2f4760ee400b2` | `289853e7e7144226a8869ff2e5cee477` | 1403 |
+
+每组的两个 `session` 事件使用同一个会话标识。首次运行的 `carried_runs` 为 0，后续运行的 `carried_runs` 和 `carried_accounts` 均为 1，`dropped_runs` 为 0；携带上限均为 32768 bytes。后续运行的 `prior_verification.expired` 都是 `true`。
+
+六次运行均在第 4 步获得 `accepted: true` 的新验证，再在第 5 步以 `finish_task` 结束。新验证发生在本次运行最后的文件修改之后。首次运行的命令是 `python -m unittest tests.test_report.SummarizeTests -v`，只验证第一个任务要求的函数；后续运行的命令是 `python -m unittest tests.test_report -v`，覆盖两个函数。三个 attempt 的统计逐字段等于各自两份终止事件的统计之和，整个评测的汇总也与 attempt 记录一致（耗时按记录的毫秒精度核对）。
+
+这些证据支持的结论是：连续任务确实在同一会话中完成，后续运行携带了一份有来源标注的摘要，并在修改后重新执行验证。模型是否依赖摘要来推断修法，仍无法与重新读代码推断区分。若后续运行不执行验证就请求完成，程序必须拒绝把它判为已验证；该反向情形由 `tests/unit/test_session.py` 的行为测试覆盖，本次真实运行没有触发它。
+
+### 17.4 版本、基线与局限
+
+`code.dirty: true` 意味着本次运行对应基于 `057f6cb` 的工作区，不能声明对应该提交的精确源码树。复核把三个首次运行检查点中的 `report.py` 与 `tests/test_report.py` 的 SHA-256，逐一与当前仓库对应 fixture 的实际字节摘要比较，六次比较全部相同。这只证明 fixture 基线一致，不证明评测时的 `src/` 等其他文件未修改，也不据此推测 dirty 的原因。
+
+- 一个小型 fixture、三次任务序列、一个模型与一次运行环境。3/3 的 Wilson 95% 区间约为 `[0.44, 1.0]`，不是可靠性保证。
+- 未触发 API 重试、工具错误或上下文压缩；携带内容也没有触发裁剪。这些路径仍只有离线覆盖。
+- 六次运行均正常完成，没有中断、预算耗尽、会话伪造或服务重启的真实模型证据。
+- fixture 的 `verify_rollback` 为 `false`，三个 attempt 的 `rollback.checked` 均为 `false`，不提供回滚证据。
+- 评测走默认非流式 DeepSeek 路径，不提供阶段 J 的 Ollama 本地模型或流式评测数据。

@@ -294,9 +294,16 @@ into automatic passes; their manual dispositions and limitations remain distinct
   `proofcoder run --session` and from the browser sidebar, and because they are stored
   beside the workspace rather than in the server process, restarting `serve` recovers
   them; a run still executing at that moment is not recovered and ends with the process.
-  Sessions have offline coverage and a multi-run evaluation fixture, but no real-model
-  repeated-run data yet, so the stage I exit criterion that requires such data is not met.
-  See `docs/EVAL_REPORT.md` section 15.
+  Sessions also have real-model repeated-run evidence: evaluation
+  `430e7c59b18a4fa5a3e74bea470a03f4` recorded three successful two-run attempts.
+  All six traces parse as complete; each later run carried one prior record with the
+  earlier verification marked expired and obtained its own verification after editing.
+  This supplies stage I's repeated-run data, but cannot distinguish reliance on the
+  carried summary from inference based on rereading the code. The reverse case, asking
+  to finish without new verification, and service-restart recovery remain offline-test
+  evidence. The evaluation recorded `code.dirty: true` and unsupported OS isolation;
+  matching fixture baseline hashes do not establish the exact runtime source tree.
+  See `docs/EVAL_REPORT.md` sections 15 and 17.
 - A workspace-root `AGENTS.md` reaches every run's first user message by default,
   labelled as repository text and never placed in the system instruction. It grants
   nothing, so it cannot widen what a run may do, but a hostile repository can use it to
@@ -307,9 +314,10 @@ into automatic passes; their manual dispositions and limitations remain distinct
 - The cross-file location fixture is a 48-file package whose only failing tests sit
   three calls above the fault and never name it. Offline tests check its size ratio, that
   separation, and that a fix applied in the same second as the initial validation is
-  still seen. It has no real-model repeated-run data yet, so the stage K exit criterion
-  that requires completing such a task is not met, and it cannot show which tool a model
-  used to find the fault. See `docs/EVAL_REPORT.md` section 16.
+  still seen. Its local real-model results still need full trace review and archival
+  under item K.5, so satisfaction of stage K's completion criterion has not yet been
+  recorded. The fixture alone cannot show which tool a model used to find the fault.
+  See `docs/EVAL_REPORT.md` section 16.
 - The tools that delete, move, or overwrite destroy content in one call. They refuse to
   run without a checkpoint and never recurse, but within the captured scope their damage
   is undone only when someone actually runs a rollback; outside it, nothing undoes it.

@@ -8,6 +8,8 @@ No version has been tagged yet. Planned versions and stages are tracked in the [
 
 ### Added
 
+- Archived the Stage I real-model session evaluation from September 29, 2026: three successful two-run attempts, with all six traces checked for complete evidence, same-session carry, expired prior verification, and fresh verification after each run's edits. The report records the dirty source revision and unsupported Windows command isolation without claiming broader reliability.
+
 - Licensed under the [Apache License 2.0](LICENSE).
 - `proofcoder serve`: a local browser interface that runs the same bounded agent loop as `run`, with a workspace picker, live event rendering, run history replay, an environment self-check, and a stop button ([ADR-0002](docs/adr/0002-local-browser-interface.md)).
 - Cooperative cancellation for the agent loop, used by the browser stop button. A cancelled run ends as `interrupted`.
