@@ -80,7 +80,7 @@
 | I.1 | 阶段 ADR 与规范补全：携带什么、放在哪里、证据不跨运行继承、会话数据的信任边界（[ADR-0007](adr/0007-cross-run-sessions.md)、规范 §9.5、§10.6 与 §13.6） | 已完成 | [#19](https://github.com/mingbochen/proofcoder/pull/19) |
 | I.2 | 会话存储与校验、携带摘要的确定性组装与裁剪、证据不跨运行继承的保证，含离线测试 | 已完成 | [#20](https://github.com/mingbochen/proofcoder/pull/20) |
 | I.3 | 命令行与浏览器的会话入口，以及浏览器在服务重启后的会话恢复 | 已完成 | [#21](https://github.com/mingbochen/proofcoder/pull/21) |
-| I.4 | 声明任务序列的多轮会话评测 fixture `session-two-step-report`，以及文档同步；真实模型重复运行结果见 EVAL_REPORT §17 | 已完成 | [#22](https://github.com/mingbochen/proofcoder/pull/22)（fixture 实现；本次评测归档待提交 PR） |
+| I.4 | 声明任务序列的多轮会话评测 fixture `session-two-step-report`，以及文档同步；真实模型重复运行结果见 EVAL_REPORT §17 | 已完成 | [#22](https://github.com/mingbochen/proofcoder/pull/22)（fixture）、[#38](https://github.com/mingbochen/proofcoder/pull/38)（评测归档） |
 
 ## 阶段 J：可替换模型提供方与流式响应
 
