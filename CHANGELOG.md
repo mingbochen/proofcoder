@@ -8,6 +8,8 @@ No version has been tagged yet. Planned versions and stages are tracked in the [
 
 ### Added
 
+- Archived the Stage K real-model cross-file evaluation from September 29, 2026: two of three attempts completed successfully in the 48-file fixture. The remaining attempt passed tests but exhausted its step budget before requesting completion and remains a strict failure. The report checks all three traces and 144 baseline-file hashes, records actual repository-map use, and preserves the dirty source revision and unsupported Windows isolation limits.
+
 - Archived the Stage I real-model session evaluation from September 29, 2026: three successful two-run attempts, with all six traces checked for complete evidence, same-session carry, expired prior verification, and fresh verification after each run's edits. The report records the dirty source revision and unsupported Windows command isolation without claiming broader reliability.
 
 - Licensed under the [Apache License 2.0](LICENSE).

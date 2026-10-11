@@ -314,10 +314,16 @@ into automatic passes; their manual dispositions and limitations remain distinct
 - The cross-file location fixture is a 48-file package whose only failing tests sit
   three calls above the fault and never name it. Offline tests check its size ratio, that
   separation, and that a fix applied in the same second as the initial validation is
-  still seen. Its local real-model results still need full trace review and archival
-  under item K.5, so satisfaction of stage K's completion criterion has not yet been
-  recorded. The fixture alone cannot show which tool a model used to find the fault.
-  See `docs/EVAL_REPORT.md` section 16.
+  still seen. Evaluation `32e96d7fcad34ac58fe7f1defdf9856d` supplies repeated-run
+  evidence: two of three attempts reached verified completion, all three passed final
+  independent tests, and each changed only the required discount module. One exhausted
+  its step budget after successful verification without calling `finish_task`, so it
+  remains a strict failure. All three complete traces record use of `repository_map`,
+  which establishes use but not necessity; no comparison without the map was run.
+  The 144 baseline-file hashes match the current fixture, but do not reconstruct the
+  dirty runtime source tree. Token calibration, forced compaction and project-rule
+  reading have offline coverage only in this experiment. See `docs/EVAL_REPORT.md`
+  sections 16 and 18.
 - The tools that delete, move, or overwrite destroy content in one call. They refuse to
   run without a checkpoint and never recurse, but within the captured scope their damage
   is undone only when someone actually runs a rollback; outside it, nothing undoes it.

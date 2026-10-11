@@ -9,7 +9,7 @@ ProofCoder lets DeepSeek decide what to inspect, change, and verify while reposi
 ## Why ProofCoder
 
 - **Repository-owned agent loop.** `AgentLoop`, message history, context selection, tool dispatch, retries, progress detection, and completion logic are implemented in this repository.
-- **Seven local tools.** The model can list, search, read, create, replace, run approved commands, and request completion through a small typed interface.
+- **Twelve local tools.** The model can inspect the repository, read, create and edit files, apply patches, manage paths, run approved commands, and request completion through a typed interface.
 - **Whole-batch preflight.** Every call in a model-produced tool batch is validated before any call in that batch can have a side effect.
 - **Exact, local file safety.** Workspace containment, sensitive-path rules, bounded reads and writes, create-if-absent behavior, and exact counted replacement constrain file operations.
 - **Default-deny commands.** Commands use argv with `shell=False`; only narrow test, build, static-check, workspace-Python, and read-only Git forms are accepted.
@@ -42,7 +42,7 @@ DeepSeek proposes actions; the response first returns to `AgentLoop`, which vali
 - [uv](https://docs.astral.sh/uv/) for locked dependency and environment management.
 - Git 2.44 or newer to run the secret scanner's `history` scope locally. With older Git that scope fails with `GIT_OUTPUT_ERROR`; use `--scope working-tree --scope index` instead. The GitHub-hosted CI runners scan all three scopes.
 - Windows or Linux. CI exercises `windows-latest` and `ubuntu-latest`; this is not a claim about every OS or distribution.
-- A DeepSeek credential for online doctor, `run`, and real `eval` only. Offline doctor and trace inspection do not require it.
+- A DeepSeek credential when using the DeepSeek provider. The alternative Ollama provider uses a locally served model without cloud credentials. Offline doctor and trace inspection do not require model access.
 
 ## Installation
 
@@ -324,9 +324,9 @@ none of the project redlines in section 2: no agent framework or SDK, no provide
 execution or file access, no new runtime dependency, and no agent logic outside the
 existing repository-owned loop.
 
-The page shows the tasks for a workspace as one thread, but each task is still an
-independent run: the model does not see earlier tasks. Multi-turn sessions are a later
-stage in the [roadmap](docs/ROADMAP.md).
+Each task is an independent run. Selecting a session carries a bounded summary of
+earlier runs into the next task; without a session, the model does not see earlier
+tasks. Verification evidence is always obtained anew for the current run.
 
 ## Local Tools
 
@@ -393,7 +393,7 @@ One fixture, `nodejs-word-count`, is not a Python project: its tests run under N
 
 The default repeat count is 3, and the default fixture selection is all fixtures under `evals/fixtures`. Repeat `--fixture <fixture-id>` to select one or more fixtures. Each attempt uses an isolated workspace, initial-failure evidence, independent final validation, exact change-scope checks, and a complete trace requirement. Results are written below the ignored `.proofcoder/evals` directory.
 
-The dated real-model results and failure analysis are in the [Evaluation Report](docs/EVAL_REPORT.md), whose section 12 covers the two rollback fixtures and section 14 the Node fixture. Section 17 records three successful multi-run attempts, with complete traces showing session carry and fresh verification in each run; section 16 describes the larger cross-file fixture, whose real-model results still need to be archived. Those small-fixture results are bounded evidence, not a general success-rate claim. Real evaluation is opt-in and is not run by CI; CI configures no provider key and runs only offline validation and scanning after dependency synchronization.
+The dated real-model results and failure analysis are in the [Evaluation Report](docs/EVAL_REPORT.md), whose section 12 covers the two rollback fixtures and section 14 the Node fixture. Section 17 records three successful multi-run attempts, with complete traces showing session carry and fresh verification in each run. Section 18 records two successful cross-file attempts out of three: all three passed independent final tests, but one exhausted its step budget before requesting completion and remains a strict failure. Those fixture results are bounded evidence, not a general success-rate claim. Real evaluation is opt-in and is not run by CI; CI configures no provider key and runs only offline validation and scanning after dependency synchronization.
 
 ## Development and Verification
 
@@ -443,4 +443,6 @@ Use a low-privilege, low-quota credential, review workspace scripts before execu
 
 ## Project Status and License
 
-ProofCoder is a bounded engineering project and should not be described as production-ready or fully secure. Planned work and its status are tracked in the [roadmap](docs/ROADMAP.md). ProofCoder is licensed under the [Apache License 2.0](LICENSE).
+The `main` branch contains the integrated, runnable iteration, including the command-line and browser interfaces. DeepSeek API usage does not require installing a local model. Stage I and K evaluation results are archived; the Ollama evaluation and 1.0 release work remain pending in the [roadmap](docs/ROADMAP.md).
+
+ProofCoder is a bounded engineering project and should not be described as production-ready or fully secure. It is licensed under the [Apache License 2.0](LICENSE).
