@@ -5,10 +5,10 @@
 ## 当前位置
 
 - 规范版本：v3.7
-- 当前阶段：阶段 L 已完成。阶段 I、J、K 的实现已合并，只等真实模型数据；阶段 M 依赖 F–L 全部完成
-- 下一步：补齐阶段 I、J、K 的真实模型评测（需要用户在本地运行）；之后开始阶段 M。阶段 M 的退出条件要求发布到公开的包管理工具，这一步由用户执行
-- 最近完成：小项 L.6，seccomp 套接字限制：隔离中的命令不能再经 Unix 套接字或 UDP 触及宿主
-- 阻塞项：阶段 I 与阶段 K 的退出条件都需要真实模型的重复运行数据。两个 fixture 都已就绪且有离线测试，重复运行数据需要真实 key，见 [EVAL_REPORT §15 与 §16](EVAL_REPORT.md)
+- 当前阶段：阶段 I 与 L 已完成。阶段 J、K 的实现已合并，评测归档尚未全部完成；阶段 M 依赖 F–L 全部完成
+- 下一步：按小项 K.5 复核并归档本机已有的跨文件评测 `32e96d7fcad34ac58fe7f1defdf9856d`（初步汇总为 2/3 成功），再补齐 J.4 的 Ollama 本地模型评测；之后开始阶段 M。阶段 M 的退出条件要求发布到公开的包管理工具，这一步由用户执行
+- 最近完成：小项 I.4，归档 2026-09-29 的会话评测 `430e7c59b18a4fa5a3e74bea470a03f4`：3/3 attempt 成功，六份轨迹完整，每次运行都有新验证，见 [EVAL_REPORT §17](EVAL_REPORT.md)
+- 待补证据：阶段 K 的真实模型产物已在本机找到，需完成失败分析与报告归档；阶段 J 尚未找到 Ollama 本地模型的重复运行记录
 
 状态取值：`已完成`、`进行中`、`未开始`、`阻塞`、`暂缓`。
 
@@ -22,7 +22,7 @@
 | F | 检查点与回滚 | 0 | 已完成 | — |
 | G | 文件工具扩展 | F | 已完成 | — |
 | H | 命令策略配置与人工审批 | F | 已完成 | — |
-| I | 多轮会话 | 0 | 进行中 | — |
+| I | 多轮会话 | 0 | 已完成 | — |
 | J | 可替换模型提供方与流式响应 | 0 | 进行中 | — |
 | K | 上下文与仓库理解 | I | 进行中 | — |
 | L | 操作系统级隔离 | G、H | 已完成 | — |
@@ -80,7 +80,7 @@
 | I.1 | 阶段 ADR 与规范补全：携带什么、放在哪里、证据不跨运行继承、会话数据的信任边界（[ADR-0007](adr/0007-cross-run-sessions.md)、规范 §9.5、§10.6 与 §13.6） | 已完成 | [#19](https://github.com/mingbochen/proofcoder/pull/19) |
 | I.2 | 会话存储与校验、携带摘要的确定性组装与裁剪、证据不跨运行继承的保证，含离线测试 | 已完成 | [#20](https://github.com/mingbochen/proofcoder/pull/20) |
 | I.3 | 命令行与浏览器的会话入口，以及浏览器在服务重启后的会话恢复 | 已完成 | [#21](https://github.com/mingbochen/proofcoder/pull/21) |
-| I.4 | 声明任务序列的多轮会话评测 fixture `session-two-step-report`，以及文档同步 | 阻塞（等待真实模型重复运行数据） | [#22](https://github.com/mingbochen/proofcoder/pull/22) |
+| I.4 | 声明任务序列的多轮会话评测 fixture `session-two-step-report`，以及文档同步；真实模型重复运行结果见 EVAL_REPORT §17 | 已完成 | [#22](https://github.com/mingbochen/proofcoder/pull/22)（fixture）、[#38](https://github.com/mingbochen/proofcoder/pull/38)（评测归档） |
 
 ## 阶段 J：可替换模型提供方与流式响应
 
@@ -99,7 +99,7 @@
 | K.2 | 按 token 的上下文预算，含离线测试 | 已完成 | [#27](https://github.com/mingbochen/proofcoder/pull/27) |
 | K.3 | 只读工具 `repository_map`，含离线测试 | 已完成 | [#28](https://github.com/mingbochen/proofcoder/pull/28) |
 | K.4 | 读取工作区根目录的 `AGENTS.md`，含离线测试 | 已完成 | [#29](https://github.com/mingbochen/proofcoder/pull/29) |
-| K.5 | 需要跨文件定位的大型评测 fixture `storefront-monthly-revenue`，以及文档同步 | 阻塞（等待真实模型重复运行数据） | [#30](https://github.com/mingbochen/proofcoder/pull/30) |
+| K.5 | 需要跨文件定位的大型评测 fixture `storefront-monthly-revenue`，以及文档同步；本机已有真实模型产物，待完整复核与归档 | 进行中 | [#30](https://github.com/mingbochen/proofcoder/pull/30) |
 
 ## 阶段 L：操作系统级隔离
 
