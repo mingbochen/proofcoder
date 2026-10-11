@@ -99,7 +99,7 @@
 | K.2 | 按 token 的上下文预算，含离线测试 | 已完成 | [#27](https://github.com/mingbochen/proofcoder/pull/27) |
 | K.3 | 只读工具 `repository_map`，含离线测试 | 已完成 | [#28](https://github.com/mingbochen/proofcoder/pull/28) |
 | K.4 | 读取工作区根目录的 `AGENTS.md`，含离线测试 | 已完成 | [#29](https://github.com/mingbochen/proofcoder/pull/29) |
-| K.5 | 需要跨文件定位的大型评测 fixture `storefront-monthly-revenue`，以及文档同步；真实模型重复运行结果见 EVAL_REPORT §18 | 已完成 | [#30](https://github.com/mingbochen/proofcoder/pull/30)（fixture；本次评测归档待提交 PR） |
+| K.5 | 需要跨文件定位的大型评测 fixture `storefront-monthly-revenue`，以及文档同步；真实模型重复运行结果见 EVAL_REPORT §18 | 已完成 | [#30](https://github.com/mingbochen/proofcoder/pull/30)（fixture）、[#39](https://github.com/mingbochen/proofcoder/pull/39)（评测归档） |
 
 ## 阶段 L：操作系统级隔离
 
