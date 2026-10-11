@@ -5,10 +5,10 @@
 ## 当前位置
 
 - 规范版本：v3.7
-- 当前阶段：阶段 I 与 L 已完成。阶段 J、K 的实现已合并，评测归档尚未全部完成；阶段 M 依赖 F–L 全部完成
-- 下一步：按小项 K.5 复核并归档本机已有的跨文件评测 `32e96d7fcad34ac58fe7f1defdf9856d`（初步汇总为 2/3 成功），再补齐 J.4 的 Ollama 本地模型评测；之后开始阶段 M。阶段 M 的退出条件要求发布到公开的包管理工具，这一步由用户执行
-- 最近完成：小项 I.4，归档 2026-09-29 的会话评测 `430e7c59b18a4fa5a3e74bea470a03f4`：3/3 attempt 成功，六份轨迹完整，每次运行都有新验证，见 [EVAL_REPORT §17](EVAL_REPORT.md)
-- 待补证据：阶段 K 的真实模型产物已在本机找到，需完成失败分析与报告归档；阶段 J 尚未找到 Ollama 本地模型的重复运行记录
+- 当前阶段：阶段 I、K 与 L 的验收证据已补齐。阶段 J 的实现已合并，Ollama 评测尚未完成；阶段 M 依赖 F–L 全部完成
+- 下一步：补齐 J.4 的 Ollama 本地模型评测并归档。该项可以在另一台机器上完成，不要求用户在当前电脑安装本地模型；日常使用可以继续选择 DeepSeek API。之后开始阶段 M，其退出条件要求发布到公开的包管理工具，这一步由用户执行
+- 最近完成：小项 K.5，归档 2026-09-29 的跨文件评测 `32e96d7fcad34ac58fe7f1defdf9856d`：严格成功率 2/3，另一次测试通过但耗尽步数，三份完整轨迹与 144 个基线文件摘要已核对，见 [EVAL_REPORT §18](EVAL_REPORT.md)
+- 待补证据：阶段 J 尚未找到 Ollama 本地模型的重复运行记录；本地模型是 J.4 的验收对象，不是通过 DeepSeek 使用 ProofCoder 的前提
 
 状态取值：`已完成`、`进行中`、`未开始`、`阻塞`、`暂缓`。
 
@@ -24,7 +24,7 @@
 | H | 命令策略配置与人工审批 | F | 已完成 | — |
 | I | 多轮会话 | 0 | 已完成 | — |
 | J | 可替换模型提供方与流式响应 | 0 | 进行中 | — |
-| K | 上下文与仓库理解 | I | 进行中 | — |
+| K | 上下文与仓库理解 | I | 已完成 | — |
 | L | 操作系统级隔离 | G、H | 已完成 | — |
 | M | 1.0 发布 | F–L | 未开始 | 1.0.0 |
 
@@ -99,7 +99,7 @@
 | K.2 | 按 token 的上下文预算，含离线测试 | 已完成 | [#27](https://github.com/mingbochen/proofcoder/pull/27) |
 | K.3 | 只读工具 `repository_map`，含离线测试 | 已完成 | [#28](https://github.com/mingbochen/proofcoder/pull/28) |
 | K.4 | 读取工作区根目录的 `AGENTS.md`，含离线测试 | 已完成 | [#29](https://github.com/mingbochen/proofcoder/pull/29) |
-| K.5 | 需要跨文件定位的大型评测 fixture `storefront-monthly-revenue`，以及文档同步；本机已有真实模型产物，待完整复核与归档 | 进行中 | [#30](https://github.com/mingbochen/proofcoder/pull/30) |
+| K.5 | 需要跨文件定位的大型评测 fixture `storefront-monthly-revenue`，以及文档同步；真实模型重复运行结果见 EVAL_REPORT §18 | 已完成 | [#30](https://github.com/mingbochen/proofcoder/pull/30)（fixture；本次评测归档待提交 PR） |
 
 ## 阶段 L：操作系统级隔离
 

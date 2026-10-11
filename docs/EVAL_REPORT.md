@@ -452,7 +452,7 @@ uv run --locked --env-file .env proofcoder eval --fixture session-two-step-repor
 
 第 17 节核对了三个 attempt 的六份运行轨迹、会话携带事件与每次运行重新取得的验证。证据不跨运行继承的反向情形仍由离线行为测试固定。
 
-## 16. 阶段 K 新增：跨文件定位 fixture（真实模型结果待归档）
+## 16. 阶段 K 新增：跨文件定位 fixture
 
 本节记录 fixture 集合在阶段 K 的变化。在此之前，每个 fixture 都小到一眼就能看完：最大的 `cleanup-text-helpers` 是 4 个文件、2,093 字节。阶段 K 的退出条件要求在「明显大于现有 fixture」的仓库上完成需要跨文件定位的任务，并把「明显大于」定义为文件数至少 10 倍。
 
@@ -482,13 +482,13 @@ tests/test_monthly_report.py
 
 **这个 fixture 能说明什么、不能说明什么。** 它能检验模型是否能从一个症状出发，在一个一眼看不完的仓库里找到出错的那一处并只改那一处（改动范围只允许 `discounts.py`）。它不能说明 `repository_map` 或项目规则文件起了作用：模型也可以靠 `search_text` 或逐个读文件找到同一处，fixture 无法区分这些路径；一次成功也不能说明更大、更陌生的仓库上会同样成功。
 
-2026-10-04 已在本机找到这个 fixture 的评测产物 `32e96d7fcad34ac58fe7f1defdf9856d`。完整轨迹复核、失败分析与正式结果归档属于小项 K.5，尚未完成；本次 I.4 归档不把阶段 K 标为完成。需要再次运行时，可使用：
+这个 fixture 的真实模型重复运行数据现已记录在第 18 节，包含严格成功率与步数耗尽的失败分析。需要再次运行时，可使用：
 
 ```text
 uv run --locked --env-file .env proofcoder eval --fixture storefront-monthly-revenue --repeat 3
 ```
 
-复核完成后，应当在本报告中新增一节记录其 eval ID、日期、代码 revision、成功率和失败分析，再按退出条件更新 `docs/ROADMAP.md` 中阶段 K 的状态。
+第 18 节提供了在这个 48 文件仓库上完成跨文件定位任务的重复运行证据；两次成功与一次未完成收尾的 attempt 分开记录，成功判据保持不变。
 
 ---
 
@@ -554,3 +554,68 @@ uv run --locked --env-file .env proofcoder eval --fixture storefront-monthly-rev
 - 六次运行均正常完成，没有中断、预算耗尽、会话伪造或服务重启的真实模型证据。
 - fixture 的 `verify_rollback` 为 `false`，三个 attempt 的 `rollback.checked` 均为 `false`，不提供回滚证据。
 - 评测走默认非流式 DeepSeek 路径，不提供阶段 J 的 Ollama 本地模型或流式评测数据。
+
+---
+
+## 18. 阶段 K 跨文件定位 fixture 的真实模型结果（2026-09-29）
+
+本节补齐第 16 节的重复运行数据。评测由用户在本机运行，2026-10-04 复核并归档；本次只读取已有产物，没有再次调用模型。来源为 `.proofcoder/evals/32e96d7fcad34ac58fe7f1defdf9856d/` 下的 `metadata.json`、`summary.json`、`attempts.jsonl`，以及三个 attempt 的运行轨迹与检查点清单。
+
+### 18.1 可复现配置
+
+| 配置项 | 值 |
+|---|---|
+| Eval ID | `32e96d7fcad34ac58fe7f1defdf9856d` |
+| UTC 开始时间 | `2026-09-29T07:05:03.830327Z` |
+| UTC 完成时间 | `2026-09-29T07:05:43.588542Z` |
+| 代码 revision | `057f6cb4c32bbd79533bc461bc999b109ba741f4` |
+| `code.dirty` | `true`（见 18.4） |
+| 模型 / API base URL | `deepseek-v4-flash` / `https://api.deepseek.com` |
+| reasoning effort | `high` |
+| Fixture / 每项重复次数 | `storefront-monthly-revenue` / 3 |
+| 最大模型步数 / 最大时间 | 8 / 600 秒 |
+| context budget | 262144 bytes |
+| 最大连续失败批次 / 最大 API attempts | 5 / 3 |
+| 独立验证超时 | 60 秒 |
+| 命令隔离 | `auto`，`unsupported`，原因 `not Linux` |
+| `metadata.warnings` | 空 |
+
+复现入口见第 16 节。评测使用默认非流式路径，没有设置 token 预算。隔离记录的文件系统、TCP、套接字创建与作用域限制均未生效；本节不提供 Linux 命令隔离的验证。
+
+### 18.2 严格结果与逐次证据
+
+下表转录 `summary.json`，并与三个 attempt 的统计、各自终止事件的统计重新核对。预期与实际记录的 attempt 数均为 3，`summary.status` 为 `completed`；这个状态表示评测器完成了全部重复运行，不表示三个任务都成功。
+
+| Fixture | Attempts | Successes | Success rate | Model calls | Tool calls | API retries | Tool errors | Context compactions | Input tokens | Output tokens | Elapsed (s) |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| `storefront-monthly-revenue` | 3 | 2 | 66.7% | 23 | 47 | 0 | 0 | 0 | 275991 | 5820 | 36.718 |
+
+| Attempt | Run ID | 修改 step | 成功验证 step | 终止 step / 原因 | 完成状态 | 严格成功 |
+|---|---|---:|---|---|---|---|
+| 1 | `1bdf61bc336d49e4b1746e60551c3e9f` | 6 | 7 | 8 / `finish_task` | `completed_verified` | 是 |
+| 2 | `5bda947da9e24fa58ccc86dd2c385055` | 6 | 7、8 | 8 / `max_steps` | 未产生完成状态 | 否 |
+| 3 | `2c48be423c2946b9a726efcd70ae37a5` | 5 | 6 | 7 / `finish_task` | `completed_verified` | 是 |
+
+使用仓库的 `read_trace` 重新解析三份轨迹，均为完整轨迹且没有诊断问题。三次独立初始验证退出码都是 1，最终独立验证退出码都是 0，验证命令均为 `python -m unittest discover -s tests`。三次都只改动必改文件 `storefront/pricing/discounts.py`，没有新增或删除任务文件，`unexpected` 与 `missing_required` 均为空，测试文件未改动。
+
+每次 agent 都在修改之后取得完整测试的新证据，命令为 `python -m unittest discover -s tests -v`。前两次还在第 5 步执行了失败测试，读到故障后在第 6 步修复；这些命令正常执行并返回退出码 1，属于测试反馈，统计中的 `tool_errors: 0` 不代表从未看到失败的测试。
+
+### 18.3 失败分析与跨文件定位
+
+唯一失败原因是 `completion_not_verified`，来自第二次 attempt。这个名称是评分器对未达到 `completed_verified` 的分类，不能据此推断它没执行验证：轨迹中第 7 步的相关测试与第 8 步的完整测试都成功，最新验证事件的 `accepted` 为 `true`。最终独立验证也通过，但第 8 步已是预算上限，最后一个工具是 `run_command`，整个轨迹没有 `finish_task`，终止事件的完成状态为 `none`，attempt 记录中的完成状态为 `null`。
+
+因此该 attempt 修复了缺陷且取得了验证，但没有完成 agent 的最终收尾。独立测试通过只是严格成功判据中的一项，不能代替完成状态；本报告保留失败与 2/3 成功率。本次没有改变评分器、默认 8 步上限或提示词，也没有为得到更好的数字重新运行。增加预算可能给它一次收尾机会，但会形成另一组配置的实验，不能补写成本次的成功。
+
+三次轨迹都在第 1 步调用 `repository_map`，随后读取报表测试、`reports/monthly.py`、`reports/aggregation.py` 与定价相关文件，再修改 `discounts.py`。这一调用顺序证明模型在本次运行中实际使用了仓库地图，并沿跨文件链定位到第 16 节描述的缺陷；它不能证明地图是成功的必要条件。没有移除地图的对照实验，无法比较模型只靠搜索与读文件时的表现。
+
+阶段 K 的退出条件要求在明显大于原有 fixture 的仓库完成跨文件任务，并具有重复运行数据，没有要求所有重复运行都成功。这组 48 文件 fixture 的两次严格成功、一次失败与完整分析提供了该项证据；100% 成功率不是本次的结论。
+
+### 18.4 版本、基线与局限
+
+`code.dirty: true` 意味着评测对应基于 `057f6cb` 的工作区，不能声明对应该提交的精确源码树。复核将三个检查点的 48 个基线文件摘要，与当前仓库对应 fixture 的实际文件字节逐一比较，144 次 SHA-256 比较全部相同。每个基线为 40,640 bytes；第 16 节的 39,421 bytes 是转换为 LF 后的大小，Windows 工作区的 CRLF 换行解释了此处的字节数差异。这只证明 fixture 基线一致，不能重建当时 `src/` 等其余文件的改动，也不据此推测 dirty 的原因。
+
+- 一个 48 文件 fixture、三次运行、一个模型与一次环境。2/3 的 Wilson 95% 区间约为 `[0.21, 0.94]`，不能推算一般仓库的成功率。
+- 未触发 API 重试、工具错误或上下文压缩；没有设置 token 预算，工作区没有项目规则文件，所以本节不提供 token 校准、强制裁剪或规则文件读取的真实模型证据。这些机制仍由离线测试验证。
+- 轨迹记录了达到步数上限前的成功验证与随后按预算终止，但这不是中断、内部错误或服务重启的评测。
+- fixture 的 `verify_rollback` 为 `false`，三个 attempt 的 `rollback.checked` 均为 `false`，不提供回滚证据。
+- 评测使用 DeepSeek API，不提供阶段 J 的 Ollama 本地模型数据，也不要求用户为日常使用部署本地模型。
